@@ -57,6 +57,7 @@ type ProjectRow = {
   root: string;
   error: string | null;
   created_at: number;
+  removed_at: number | null;
 };
 
 /**
@@ -82,18 +83,25 @@ export class Projects {
       "/nix/store",
     ]);
     const pending = await options.database.all<{ id: string; root: string }>(
-      "SELECT id, root FROM pal_projects WHERE state = 'provisioning' ORDER BY rowid",
+      "SELECT id, root FROM pal_projects WHERE state = 'provisioning' AND removed_at IS NULL ORDER BY rowid",
     );
     for (const { id, root } of pending) await projects.#provision(id, root);
     return projects;
   }
 
   async list(): Promise<Project[]> {
-    return (await this.#database.all<ProjectRow>("SELECT * FROM pal_projects ORDER BY created_at, rowid")).map(project);
+    return (
+      await this.#database.all<ProjectRow>(
+        "SELECT * FROM pal_projects WHERE removed_at IS NULL ORDER BY created_at, rowid",
+      )
+    ).map(project);
   }
 
   async get(id: string): Promise<Project | undefined> {
-    const row = await this.#database.get<ProjectRow>("SELECT * FROM pal_projects WHERE id = ?", id);
+    const row = await this.#database.get<ProjectRow>(
+      "SELECT * FROM pal_projects WHERE id = ? AND removed_at IS NULL",
+      id,
+    );
     return row === undefined ? undefined : project(row);
   }
 
@@ -105,6 +113,7 @@ export class Projects {
     const existing = await this.#database.get<ProjectRow>("SELECT * FROM pal_projects WHERE request_id = ?", key);
     if (existing !== undefined) {
       if (existing.digest !== digest) throw new RequestConflict(`request ${key} created a different project`);
+      if (existing.removed_at !== null) throw new RequestConflict(`request ${key} belongs to a removed project`);
       return project(existing);
     }
     const { name, folder } = body as ProjectBody;
@@ -130,10 +139,22 @@ export class Projects {
     });
     if (recorded !== undefined) {
       if (recorded.digest !== digest) throw new RequestConflict(`request ${key} created a different project`);
+      if (recorded.removed_at !== null) throw new RequestConflict(`request ${key} belongs to a removed project`);
       return project(recorded);
     }
     if (managed) await this.#provision(id, root);
-    return (await this.get(id)) as Project;
+    const created = await this.get(id);
+    if (created === undefined) throw new RequestConflict("project was removed while it was being created");
+    return created;
+  }
+
+  /** Revoke the project and its chats atomically. Neither external nor managed files are deleted. */
+  async remove(id: string): Promise<void> {
+    await this.#database.transaction(async (tx) => {
+      const at = Date.now();
+      await tx.run("UPDATE pal_projects SET removed_at = COALESCE(removed_at, ?) WHERE id = ?", at, id);
+      await tx.run("UPDATE pal_chats SET deleted_at = COALESCE(deleted_at, ?) WHERE project_id = ?", at, id);
+    });
   }
 
   /** List a server folder's subfolders for the picker; problems are reported, not thrown. */

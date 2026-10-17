@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, realpath, rm, stat } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { request as httpRequest } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -219,6 +219,64 @@ describe("API", () => {
     cleanups.push(() => reopened.close());
     const agent = await (await reopened.harness.conversation(chat.conversationId, context))?.agent(context);
     expect(agent).toMatchObject({ model: { modelId: "gpt-5.5" }, thinkingLevel: "medium" });
+  });
+
+  it("deletes chats and removes projects without deleting files or Pi history", async () => {
+    const { api, pal, fixture, dataRoot } = await signedIn();
+    const started = await api("POST", "chatgpt/sign-in");
+    await browse(started.body.attempt.authUrl);
+    await eventually(
+      () => api("GET", "chatgpt"),
+      (state) => state.body.model !== null,
+    );
+    const folder = await realpath(await mkdtemp(join(tmpdir(), "pal-keep-files-")));
+    cleanups.push(() => rm(folder, { recursive: true, force: true }));
+    await writeFile(join(folder, "keep.txt"), "owner work");
+    const external = (await api("POST", "projects", { requestId: "remove-external", name: "External", folder })).body
+      .project;
+    const managed = (await api("POST", "projects", { requestId: "remove-managed", name: "Managed" })).body.project;
+    await writeFile(join(managed.root, "keep.txt"), "managed work");
+    const chat = (await api("POST", "chats", { requestId: "remove-chat-1", projectId: external.id })).body.chat;
+    const other = (await api("POST", "chats", { requestId: "remove-chat-2", projectId: external.id })).body.chat;
+    fixture.behavior.responses = "script";
+    fixture.behavior.script = "while (true) {}";
+    await api("POST", `chats/${chat.id}/inputs`, { requestId: "remove-input-1", text: "start" });
+    await eventually(
+      async () => fixture.apiRequests,
+      (calls) => calls.some((call) => call.path === "/v1/responses"),
+    );
+    expect((await api("DELETE", `chats/${chat.id}`)).status).toBe(200);
+    await pal.harness.waitForIdle(context);
+    expect((await api("GET", `chats/${chat.id}`)).status).toBe(404);
+    expect((await api("POST", `chats/${chat.id}/inputs`, { requestId: "remove-input-2", text: "again" })).status).toBe(
+      404,
+    );
+    expect(await pal.chats.projectOf(chat.conversationId)).toBeUndefined();
+    expect((await pal.chats.list(external.id)).map((row) => row.id)).toEqual([other.id]);
+    const history = await (await pal.harness.conversation(chat.conversationId, context))?.context(context);
+    expect(history?.messages.some((message) => message.role === "user")).toBe(true);
+    expect((await api("DELETE", `projects/${external.id}`)).status).toBe(200);
+    expect((await api("GET", `chats/${other.id}`)).status).toBe(404);
+    expect((await api("POST", "chats", { requestId: "removed-project-chat", projectId: external.id })).status).toBe(
+      409,
+    );
+    expect((await api("POST", "projects", { requestId: "remove-external", name: "External", folder })).status).toBe(
+      409,
+    );
+    expect((await api("DELETE", `projects/${managed.id}`)).status).toBe(200);
+    expect((await api("GET", "projects")).body.projects).toEqual([]);
+    expect(await readFile(join(folder, "keep.txt"), "utf8")).toBe("owner work");
+    expect(await readFile(join(managed.root, "keep.txt"), "utf8")).toBe("managed work");
+    await pal.close();
+    const reopened = await openPal(
+      { dataRoot, installRoot: "/nonexistent-install", endpoints: fixture.endpoints },
+      context,
+    );
+    cleanups.push(() => reopened.close());
+    expect(await reopened.projects.list()).toEqual([]);
+    expect(await reopened.chats.get(chat.id)).toBeUndefined();
+    expect(await reopened.chats.get(other.id)).toBeUndefined();
+    expect(await reopened.harness.conversation(chat.conversationId, context)).toBeDefined();
   });
 
   it("receives device uploads exactly, then attaches them to a message", async () => {

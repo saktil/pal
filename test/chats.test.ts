@@ -108,6 +108,31 @@ describe("chats", () => {
     await expect(chats.submit(chat.id, "input-request-2", tooLong, context)).rejects.toBeInstanceOf(InvalidRequest);
   });
 
+  it.each(["input-recorded", "input-submitted"] as const)(
+    "deletion during %s cannot revive a chat on restart",
+    async (point) => {
+      const root = await tempDir();
+      let remove = async () => {};
+      const { chats, harness } = await open(root, async (barrier) => {
+        if (barrier === point) await remove();
+      });
+      const chat = await chats.createChat("delete-chat-request", { projectId: "project-1" }, context);
+      remove = () => chats.remove(chat.id, context);
+      await expect(chats.submit(chat.id, "delete-input-request", { text: "hi" }, context)).rejects.toBeInstanceOf(
+        ChatNotFound,
+      );
+      expect(chats.stopped).toBe(false);
+      await expect(chats.createChat("delete-chat-request", { projectId: "project-1" }, context)).rejects.toBeInstanceOf(
+        ChatNotFound,
+      );
+      await harness.close(context);
+      const again = await open(root);
+      expect(await again.chats.get(chat.id)).toBeUndefined();
+      expect(await again.chats.list("project-1")).toEqual([]);
+      await again.harness.waitForIdle(context);
+    },
+  );
+
   it("stops admission when Pal's write fails, before anything reaches Pi", async () => {
     const { store, chats, userMessages } = await open(await tempDir());
     const chat = await chats.createChat("chat-request-1", { projectId: "project-1" }, context);

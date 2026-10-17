@@ -113,11 +113,13 @@ export const api = {
       name,
       ...(folder === undefined ? {} : { folder }),
     }),
+  removeProject: (id: string) => call<{ removed: true }>("DELETE", `projects/${id}`),
   folders: (path?: string) =>
     call<FolderListing>("GET", `folders${path === undefined ? "" : `?path=${encodeURIComponent(path)}`}`),
 
   createChat: (key: string, projectId: string) =>
     call<{ chat: ChatSummary }>("POST", "chats", { requestId: key, projectId }),
+  deleteChat: (id: string) => call<{ removed: true }>("DELETE", `chats/${id}`),
   chat: (id: string) => call<{ chat: ChatSummary; model: string | null; effort: Effort }>("GET", `chats/${id}`),
   send: (id: string, key: string, text: string, whenBusy: "followUp" | "steer", attachments: string[]) =>
     call<{ admission: { submissionId: number } }>("POST", `chats/${id}/inputs`, {

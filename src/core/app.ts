@@ -1,7 +1,7 @@
 import { join } from "node:path";
 import type { Context } from "@earendil-works/chord";
 import { createModels, type Models } from "@earendil-works/pi-ai";
-import { type AgentChange, createRegistry, Harness } from "@earendil-works/pi-durable";
+import { type AgentChange, type ConversationId, createRegistry, Harness } from "@earendil-works/pi-durable";
 import {
   CHATGPT_PROVIDER,
   ChatGPTConnection,
@@ -76,25 +76,23 @@ export async function openPal(options: PalOptions, context: Context): Promise<Pa
 
     // Code Mode is always on. Scripts may read their project's folder, and call MCP tools only as the MCP manager
     // grants them at the moment of each call.
+    const projectRoot = async (conversation: ConversationId) =>
+      (
+        await database.get<{ root: string }>(
+          "SELECT p.root FROM pal_chats c JOIN pal_projects p ON p.id = c.project_id WHERE c.conversation_id = ? AND c.deleted_at IS NULL AND p.removed_at IS NULL AND p.state = 'ready'",
+          conversation,
+        )
+      )?.root;
     const codemode = createPalCodemode({
-      allows: (_conversation, name) => name.startsWith(FILES_NAMESPACE.prefix) || mcp?.allows(name) === true,
+      allows: async (conversation, name) =>
+        (await projectRoot(conversation)) !== undefined &&
+        (name.startsWith(FILES_NAMESPACE.prefix) || mcp?.allows(name) === true),
       namespaces: [FILES_NAMESPACE],
     });
     sandbox = codemode.sandbox;
     const registry = createRegistry();
     for (const extension of codemode.extensions) registry.install(extension);
-    // File tools resolve a conversation's folder through services opened below.
-    const services: { chats?: ChatService; projects?: Projects } = {};
-    registry.install(
-      fileTools({
-        root: async (conversationId) => {
-          const projectId = await services.chats?.projectOf(conversationId);
-          const project = projectId === undefined ? undefined : await services.projects?.get(projectId);
-          return project?.state === "ready" ? project.root : undefined;
-        },
-        deny: [options.dataRoot],
-      }),
-    );
+    registry.install(fileTools({ root: projectRoot, deny: [options.dataRoot] }));
     const connections = await McpManager.open({
       database: store.database,
       credentials,
@@ -120,7 +118,6 @@ export async function openPal(options: PalOptions, context: Context): Promise<Pa
       dataRoot: options.dataRoot,
       installRoot: options.installRoot,
     });
-    services.projects = openedProjects;
     const uploads = await Uploads.open(database, options.dataRoot);
     const openedChats = await ChatService.open(
       {
@@ -136,7 +133,6 @@ export async function openPal(options: PalOptions, context: Context): Promise<Pa
       },
       context,
     );
-    services.chats = openedChats;
     running.resume();
     return {
       store,

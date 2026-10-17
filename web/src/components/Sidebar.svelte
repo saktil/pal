@@ -1,6 +1,8 @@
 <script lang="ts">
+  import { api } from "../lib/api.ts";
   import Icon from "../lib/Icon.svelte";
-  import { app, navigate } from "../lib/state.svelte.ts";
+  import { app, navigate, refreshProjects } from "../lib/state.svelte.ts";
+  import ConfirmRemoval from "./ConfirmRemoval.svelte";
 
   let {
     currentChatId,
@@ -16,6 +18,21 @@
   } = $props();
 
   let collapsed: Record<string, boolean> = $state({});
+  let removing: { kind: "chat" | "project"; id: string; name: string } | undefined = $state();
+
+  async function remove() {
+    const item = removing;
+    if (item === undefined) return;
+    if (item.kind === "chat") await api.deleteChat(item.id);
+    else await api.removeProject(item.id);
+    await refreshProjects();
+    if (
+      app.route.view === "chat" &&
+      !app.projects.some((project) => project.chats.some((chat) => chat.id === currentChatId))
+    )
+      navigate({ view: "home" });
+    removing = undefined;
+  }
   const current = $derived(app.projects.find((project) => project.chats.some((chat) => chat.id === currentChatId)));
   const target = $derived(current ?? app.projects.find((project) => project.state === "ready"));
 
@@ -61,6 +78,12 @@
             onclick={() => onNewChat(project.id)}
             disabled={project.state !== "ready"}><Icon name="plus" /></button
           >
+          <button
+            class="b i q sm"
+            aria-label={`Remove project ${project.name}`}
+            onclick={() => (removing = { kind: "project", id: project.id, name: project.name })}
+            ><Icon name="trash" /></button
+          >
         </div>
         {#if open}
           <ul role="list">
@@ -74,6 +97,12 @@
                   <span class="title">{chat.title ?? "New chat"}</span>
                   <span class="cmeta">{relative(chat.createdAt)}</span>
                 </button>
+                <button
+                  class="b i q sm"
+                  aria-label={`Delete chat ${chat.title ?? "New chat"}`}
+                  onclick={() => (removing = { kind: "chat", id: chat.id, name: chat.title ?? "New chat" })}
+                  ><Icon name="trash" /></button
+                >
               </li>
             {/each}
           </ul>
@@ -91,6 +120,18 @@
     </button>
   </div>
 </aside>
+
+{#if removing}
+  <ConfirmRemoval
+    title={`${removing.kind === "chat" ? "Delete chat" : "Remove project"} “${removing.name}”?`}
+    description={removing.kind === "chat"
+      ? "Stops running work and hides this chat. Its history is retained on the server."
+      : "Stops running work and removes the project and its chats from Pal. All files stay on the server, including managed workspaces. This does not delete any folder."}
+    confirmLabel={removing.kind === "chat" ? "Delete chat" : "Remove project"}
+    onCancel={() => (removing = undefined)}
+    onConfirm={remove}
+  />
+{/if}
 
 <style>
   aside {
@@ -125,6 +166,14 @@
   }
   .project {
     margin-bottom: 4px;
+  }
+  li {
+    display: flex;
+    align-items: center;
+  }
+  .chatrow {
+    flex: 1;
+    min-width: 0;
   }
   .head {
     display: flex;

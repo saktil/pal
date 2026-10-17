@@ -147,6 +147,14 @@ export const MIGRATIONS: readonly Migration[] = [
       ) STRICT`);
     },
   },
+  {
+    version: 8,
+    name: "removed_projects_and_chats",
+    up: async (transaction) => {
+      await transaction.exec("ALTER TABLE pal_projects ADD COLUMN removed_at INTEGER");
+      await transaction.exec("ALTER TABLE pal_chats ADD COLUMN deleted_at INTEGER");
+    },
+  },
 ];
 
 /**

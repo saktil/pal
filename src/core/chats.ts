@@ -96,13 +96,16 @@ export class ChatService {
   /** Complete every chat and input recorded before a crash, in recorded order, before admitting anything new. */
   static async open(options: ChatServiceOptions, context: Context): Promise<ChatService> {
     const service = new ChatService(options);
+    await service.abortDeleted(context);
     const chats = await service.#guard((db) =>
-      db.all<{ id: string }>("SELECT id FROM pal_chats WHERE state = 'provisioning' ORDER BY rowid"),
+      db.all<{ id: string }>(
+        "SELECT id FROM pal_chats WHERE state = 'provisioning' AND deleted_at IS NULL ORDER BY rowid",
+      ),
     );
     for (const { id } of chats) await service.#provision(id, context);
     const inputs = await service.#guard((db) =>
       db.all<{ chat_id: string; request_id: string; intent: string }>(
-        "SELECT chat_id, request_id, intent FROM pal_admissions WHERE state = 'admitting' ORDER BY seq",
+        "SELECT a.chat_id, a.request_id, a.intent FROM pal_admissions a JOIN pal_chats c ON c.id = a.chat_id WHERE a.state = 'admitting' AND c.deleted_at IS NULL ORDER BY a.seq",
       ),
     );
     for (const row of inputs) await service.#admit(row.chat_id, row.request_id, JSON.parse(row.intent), context);
@@ -116,7 +119,7 @@ export class ChatService {
   async list(projectId: string): Promise<ChatSummary[]> {
     const rows = await this.#guard((db) =>
       db.all<{ id: string; title: string | null; conversation_id: ConversationId; created_at: number }>(
-        "SELECT id, title, conversation_id, created_at FROM pal_chats WHERE project_id = ? AND state = 'ready' ORDER BY created_at DESC, rowid DESC",
+        "SELECT id, title, conversation_id, created_at FROM pal_chats WHERE project_id = ? AND state = 'ready' AND deleted_at IS NULL ORDER BY created_at DESC, rowid DESC",
         projectId,
       ),
     );
@@ -132,7 +135,10 @@ export class ChatService {
   /** The project a conversation's chat belongs to. */
   async projectOf(conversationId: ConversationId): Promise<string | undefined> {
     const row = await this.#guard((db) =>
-      db.get<{ project_id: string }>("SELECT project_id FROM pal_chats WHERE conversation_id = ?", conversationId),
+      db.get<{ project_id: string }>(
+        "SELECT project_id FROM pal_chats WHERE conversation_id = ? AND deleted_at IS NULL",
+        conversationId,
+      ),
     );
     return row?.project_id;
   }
@@ -140,7 +146,7 @@ export class ChatService {
   async get(chatId: string): Promise<ChatSummary | undefined> {
     const row = await this.#guard((db) =>
       db.get<{ project_id: string; title: string | null; conversation_id: ConversationId; created_at: number }>(
-        "SELECT project_id, title, conversation_id, created_at FROM pal_chats WHERE id = ? AND state = 'ready'",
+        "SELECT project_id, title, conversation_id, created_at FROM pal_chats WHERE id = ? AND state = 'ready' AND deleted_at IS NULL",
         chatId,
       ),
     );
@@ -155,6 +161,27 @@ export class ChatService {
         };
   }
 
+  /** Keep Pi history, but revoke admission and future tool calls before aborting the run. */
+  async remove(chatId: string, context: Context): Promise<void> {
+    await this.#guard((db) =>
+      db.run("UPDATE pal_chats SET deleted_at = COALESCE(deleted_at, ?) WHERE id = ?", Date.now(), chatId),
+    );
+    await this.abortDeleted(context);
+  }
+
+  /** Also reconciles a crash after a chat/project tombstone was committed but before its abort completed. */
+  async abortDeleted(context: Context): Promise<void> {
+    const rows = await this.#guard((db) =>
+      db.all<{ conversation_id: ConversationId }>(
+        "SELECT conversation_id FROM pal_chats WHERE deleted_at IS NOT NULL AND conversation_id IS NOT NULL",
+      ),
+    );
+    for (const row of rows) {
+      const conversation = await this.#options.harness.conversation(row.conversation_id, context);
+      await conversation?.abort(context, { background: true });
+    }
+  }
+
   async createChat(requestId: unknown, body: unknown, context: Context): Promise<Chat> {
     const { key, intent, digest } = normalize(requestId, ChatBody, body, (value) => ({
       projectId: value.projectId,
@@ -167,7 +194,7 @@ export class ChatService {
     const row = await this.#guard((db) =>
       db.transaction(async (tx) => {
         const existing = await tx.get<ChatRow>(
-          "SELECT id, digest, conversation_id FROM pal_chats WHERE request_id = ?",
+          "SELECT id, digest, conversation_id, deleted_at FROM pal_chats WHERE request_id = ?",
           key,
         );
         if (existing !== undefined) return existing;
@@ -182,10 +209,11 @@ export class ChatService {
           title ?? null,
           Date.now(),
         );
-        return { id, digest, conversation_id: null };
+        return { id, digest, conversation_id: null, deleted_at: null };
       }),
     );
     if (row.digest !== digest) throw new RequestConflict(`request ${key} created a different chat`);
+    if (row.deleted_at !== null) throw new ChatNotFound("this chat was deleted");
     if (row.conversation_id !== null) return { id: row.id, conversationId: row.conversation_id };
     await this.#options.barrier?.("chat-recorded");
     return await this.#provision(row.id, context);
@@ -210,7 +238,10 @@ export class ChatService {
     }
     const row = await this.#guard((db) =>
       db.transaction(async (tx) => {
-        const chat = await tx.get<{ state: string }>("SELECT state FROM pal_chats WHERE id = ?", chatId);
+        const chat = await tx.get<{ state: string }>(
+          "SELECT state FROM pal_chats WHERE id = ? AND deleted_at IS NULL",
+          chatId,
+        );
         if (chat?.state !== "ready") return undefined;
         const existing = await tx.get<AdmissionRow>(
           "SELECT digest, intent, submission_id FROM pal_admissions WHERE chat_id = ? AND request_id = ?",
@@ -271,6 +302,7 @@ export class ChatService {
 
   /** Submit under the same request ID, which Pi deduplicates per conversation, then record the acknowledgement. */
   async #admit(chatId: string, requestId: string, intent: Required<InputBody>, context: Context): Promise<Admission> {
+    if ((await this.get(chatId)) === undefined) throw new ChatNotFound("this chat was deleted before admission");
     const submissionId = await this.#guard(async (db) => {
       const row = await db.get<{ conversation_id: ConversationId; project_id: string }>(
         "SELECT conversation_id, project_id FROM pal_chats WHERE id = ?",
@@ -309,6 +341,10 @@ export class ChatService {
       return submission.id;
     });
     await this.#options.barrier?.("input-submitted");
+    if ((await this.get(chatId)) === undefined) {
+      await this.abortDeleted(context);
+      throw new ChatNotFound("this chat was deleted during admission");
+    }
     await this.#guard((db) =>
       db.transaction(async (tx) => {
         await tx.run(
@@ -342,7 +378,7 @@ export class ChatService {
   }
 }
 
-type ChatRow = { id: string; digest: string; conversation_id: ConversationId | null };
+type ChatRow = { id: string; digest: string; conversation_id: ConversationId | null; deleted_at: number | null };
 type AdmissionRow = { digest: string; intent: string; submission_id: SubmissionId | null };
 
 /** A chat's first input names it: its first line, shortened at a word boundary. */

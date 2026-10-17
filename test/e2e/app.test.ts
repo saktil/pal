@@ -240,4 +240,33 @@ describe("Pal in a browser", () => {
     await page.getByRole("navigation", { name: "Projects" }).getByText("Notes").waitFor();
     await shoot("drawer-390");
   });
+
+  it("confirms chat deletion and project removal, including cancel and Escape", async () => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.getByRole("button", { name: "New chat in Notes", exact: true }).click();
+    await page.getByRole("heading", { name: "Start the conversation" }).waitFor();
+    const removedChat = page.url();
+    await page.getByRole("button", { name: "Delete chat New chat", exact: true }).click();
+    const dialog = page.getByRole("alertdialog");
+    await dialog.waitFor();
+    expect(await dialog.getByRole("button", { name: "Cancel" }).evaluate((button) => button.matches(":focus"))).toBe(
+      true,
+    );
+    await page.keyboard.press("Escape");
+    await dialog.waitFor({ state: "detached" });
+    await page.getByRole("heading", { name: "Start the conversation" }).waitFor();
+    await page.getByRole("button", { name: "Delete chat New chat", exact: true }).click();
+    await dialog.getByRole("button", { name: "Delete chat", exact: true }).click();
+    await page.getByRole("heading", { name: "Pick a chat" }).waitFor();
+    expect((await page.request.get(`${base}/api/chats/${removedChat.split("/").at(-1)}`)).status()).toBe(404);
+    await page.getByRole("button", { name: "Remove project Notes", exact: true }).click();
+    await dialog.getByRole("button", { name: "Cancel" }).click();
+    await page.getByRole("button", { name: "Remove project Notes", exact: true }).click();
+    await shoot("remove-project-1440");
+    await dialog.getByRole("button", { name: "Remove project", exact: true }).click();
+    await page.getByRole("heading", { name: "Create your first project" }).waitFor();
+    await page.reload();
+    await page.getByRole("heading", { name: "Create your first project" }).waitFor();
+    expect(await pal.projects.list()).toEqual([]);
+  });
 });

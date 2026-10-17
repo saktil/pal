@@ -285,6 +285,11 @@ export function createApi(pal: Pal) {
         return send(200, { project: await pal.projects.create(requestId, body) });
       }
     }
+    if (resource === "projects" && id !== undefined && action === undefined && method === "DELETE") {
+      await pal.projects.remove(id);
+      await pal.chats.abortDeleted(context);
+      return send(200, { removed: true });
+    }
     if (resource === "projects" && id !== undefined && action === "uploads" && method === "POST") {
       const project = await pal.projects.get(id);
       if (project?.state !== "ready") throw new HttpError(404, "not_found", "no such ready project");
@@ -303,6 +308,10 @@ export function createApi(pal: Pal) {
         const { requestId, ...body } = validate(Keyed, await readJson(request));
         const chat = await pal.chats.createChat(requestId, body, context);
         return send(200, { chat: await pal.chats.get(chat.id) });
+      }
+      if (id !== undefined && action === undefined && method === "DELETE") {
+        await pal.chats.remove(id, context);
+        return send(200, { removed: true });
       }
       const chat = id === undefined ? undefined : await pal.chats.get(id);
       if (chat === undefined) throw new HttpError(404, "not_found", "no such chat");
