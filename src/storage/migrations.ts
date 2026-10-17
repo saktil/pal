@@ -227,6 +227,25 @@ export const MIGRATIONS: readonly Migration[] = [
       ) STRICT`);
     },
   },
+  {
+    version: 14,
+    name: "reference_folders",
+    up: async (transaction) => {
+      await transaction.exec(`CREATE TABLE pal_folder_grants (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL,
+        request_id TEXT NOT NULL,
+        digest TEXT NOT NULL,
+        root TEXT NOT NULL,
+        identity TEXT NOT NULL,
+        indexed INTEGER NOT NULL CHECK (indexed IN (0, 1)),
+        revoked_at INTEGER,
+        UNIQUE (project_id, request_id)
+      ) STRICT`);
+      await transaction.exec("CREATE INDEX pal_folder_grants_project ON pal_folder_grants (project_id)");
+      await transaction.exec("ALTER TABLE pal_admissions ADD COLUMN folder_scope TEXT");
+    },
+  },
 ];
 
 /**

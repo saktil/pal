@@ -1,7 +1,8 @@
 <script lang="ts">
   import { onMount, tick } from "svelte";
-  import { api, type Project, type ProjectFolder } from "../lib/api.ts";
+  import { api, type GrantedFolder, type Project, type ProjectFolder } from "../lib/api.ts";
   import Icon from "../lib/Icon.svelte";
+  import ReferenceFolders from "./ReferenceFolders.svelte";
 
   type Preview = Awaited<ReturnType<typeof api.file>>;
   type Found = Awaited<ReturnType<typeof api.search>>;
@@ -30,11 +31,32 @@
   let query = $state("");
   let mode: "text" | "regex" | "files" = $state("text");
   let found: Found | undefined = $state.raw();
+  let grants: GrantedFolder[] = $state.raw([]);
+  let selected = $state("primary");
+  const active = $derived(grants.find((folder) => folder.id === selected));
+  const source = $derived(
+    selected === "primary" ? "Project file" : `Reference file (folder ${selected}, ${active?.root ?? ""})`,
+  );
+
+  function selectFolder(id: string) {
+    selected = id;
+    folders = {};
+    expanded = {};
+    preview = undefined;
+    found = undefined;
+    selection = undefined;
+    void load("");
+  }
+
+  function acceptGrants(current: GrantedFolder[]) {
+    grants = current;
+    if (!current.some((folder) => folder.id === selected)) selectFolder("primary");
+  }
 
   const find = (event: SubmitEvent) => {
     event.preventDefault();
     void run(async () => {
-      found = query.trim() === "" ? undefined : await api.search(project.id, query, mode);
+      found = query.trim() === "" ? undefined : await api.search(project.id, query, mode, selected);
     });
   };
 
@@ -66,11 +88,12 @@
     const fence = "`".repeat(Math.max(3, ...[...snippet.matchAll(/`+/g)].map((run) => run[0].length + 1)));
     const range =
       selection.from === selection.to ? `line ${selection.from}` : `lines ${selection.from}–${selection.to}`;
-    onAttach(`Project file \`${preview.path}\`, ${range}:\n\n${fence}\n${snippet}\n${fence}`);
+    onAttach(`${source} \`${preview.path}\`, ${range}:\n\n${fence}\n${snippet}\n${fence}`);
     selection = undefined;
   }
 
   async function run(work: () => Promise<void>) {
+    if (busy) return;
     busy = true;
     error = undefined;
     try {
@@ -84,7 +107,7 @@
 
   const load = (path: string) =>
     run(async () => {
-      folders[path] = await api.files(project.id, path);
+      folders[path] = await api.files(project.id, path, selected);
     });
 
   function toggle(path: string) {
@@ -96,7 +119,7 @@
   async function openLink(path: string) {
     await run(async () => {
       try {
-        folders[path] = await api.files(project.id, path);
+        folders[path] = await api.files(project.id, path, selected);
         expanded[path] = true;
       } catch {
         await display(path);
@@ -107,7 +130,7 @@
   async function display(path: string) {
     opener = path;
     selection = undefined;
-    preview = await api.file(project.id, path);
+    preview = await api.file(project.id, path, selected);
     await tick();
     back?.focus();
   }
@@ -122,10 +145,22 @@
 
   function refresh() {
     void run(async () => {
+      const current = (await api.projectFolders(project.id)).folders;
+      grants = current;
+      if (!current.some((folder) => folder.id === selected)) {
+        selected = "primary";
+        folders = {};
+        expanded = {};
+        preview = undefined;
+        found = undefined;
+        selection = undefined;
+      }
       const open = ["", ...Object.keys(expanded).filter((path) => expanded[path])];
-      const reloaded = await Promise.all(open.map(async (path) => [path, await api.files(project.id, path)] as const));
+      const reloaded = await Promise.all(
+        open.map(async (path) => [path, await api.files(project.id, path, selected)] as const),
+      );
       folders = Object.fromEntries(reloaded);
-      if (preview !== undefined) preview = await api.file(project.id, preview.path);
+      if (preview !== undefined) preview = await api.file(project.id, preview.path, selected);
     });
   }
 
@@ -136,7 +171,10 @@
   }
 
   onMount(() => {
-    void load("");
+    void run(async () => {
+      grants = (await api.projectFolders(project.id)).folders;
+      folders[""] = await api.files(project.id, "");
+    });
   });
 </script>
 
@@ -150,6 +188,7 @@
             class="frow"
             style:padding-left={`${12 + depth * 16}px`}
             data-file-row={entry.path}
+            disabled={busy}
             aria-expanded={entry.kind === "folder" ? expanded[entry.path] === true : undefined}
             onclick={() =>
               entry.kind === "folder"
@@ -179,10 +218,28 @@
 
 <div class="files" aria-busy={busy}>
   <div class="info">
-    <span class="pill">{project.mode === "managed" ? "Managed" : "Host folder"}</span>
-    <span class="mono folder" title={project.root}>{project.root}</span>
+    <span class="pill">{selected === "primary" ? "Primary" : "Read-only"}</span>
+    <span class="mono folder" title={active?.root ?? project.root}>{active?.root ?? project.root}</span>
     <button class="b sm q" onclick={refresh} disabled={busy}><Icon name="refresh" />Refresh</button>
   </div>
+  <div class="folder-tools">
+    <label class="sr" for="file-folder">File folder</label>
+    <select
+      id="file-folder"
+      class="f"
+      value={selected}
+      disabled={busy}
+      onchange={(event) => selectFolder(event.currentTarget.value)}
+    >
+      {#each grants as folder (folder.id)}<option value={folder.id}
+          >{folder.id === "primary" ? "Primary workspace" : folder.root}</option
+        >{/each}
+    </select>
+    <ReferenceFolders {project} disabled={busy} onChanged={acceptGrants} />
+  </div>
+  {#if active !== undefined && !active.indexed}<p class="hint">
+      Indexing is off for this reference. Browse or read individual files; manage Folders to change the grant.
+    </p>{/if}
   {#if error}<div class="callout er" role="alert">{error}</div>{/if}
   {#if preview === undefined}
     <form class="search" role="search" onsubmit={find}>
@@ -194,7 +251,9 @@
           >
         {/each}
       </div>
-      <button class="b sm" type="submit" disabled={busy || query.trim() === ""}>Search</button>
+      <button class="b sm" type="submit" disabled={busy || active?.indexed === false || query.trim() === ""}
+        >Search</button
+      >
     </form>
     {#if found !== undefined}
       <div class="results-head">
@@ -239,7 +298,7 @@
       <span class="pill"><Icon name="lock" />Read-only</span>
     </div>
     <div class="actions">
-      <button class="b sm" onclick={() => preview && onAttach(`Project file: \`${preview.path}\``)}
+      <button class="b sm" onclick={() => preview && onAttach(`${source}: \`${preview.path}\``)}
         ><Icon name="clip" />Attach file</button
       >
       {#if preview.kind === "text"}
@@ -254,7 +313,9 @@
             >Clear selection</button
           >{/if}
       {/if}
-      <button class="b sm q" onclick={() => preview && onViewDiff(preview.path)}>View diff</button>
+      {#if selected === "primary"}<button class="b sm q" onclick={() => preview && onViewDiff(preview.path)}
+          >View diff</button
+        >{/if}
     </div>
     {#if preview.kind === "text"}
       <p class="hint">Select lines: choose a line number, then another to extend the range.</p>
@@ -306,6 +367,18 @@
   .filehead {
     gap: 6px;
     padding: 8px 10px;
+  }
+  .folder-tools {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 6px 10px;
+    border-bottom: 1px solid var(--line);
+  }
+  .folder-tools .f {
+    min-width: 0;
+    flex: 1;
+    font-size: 12px;
   }
   .folder,
   .path {

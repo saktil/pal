@@ -84,6 +84,8 @@ export type ChatServiceOptions = {
     ): Promise<readonly { id: string; name: string; size: number; mediaType: string }[]>;
     content(projectId: string, ids: readonly string[]): Promise<(TextContent | ImageContent)[]>;
   };
+  /** Host authority frozen with the admission, not recomputed during retry or restart. */
+  readonly folderScope?: (projectId: string) => Promise<string>;
   readonly barrier?: (point: Barrier) => void | Promise<void>;
 };
 
@@ -260,6 +262,19 @@ export class ChatService {
       }
       await this.#options.attachments.check(projectId.project_id, attached);
     }
+    const chat = await this.get(chatId);
+    if (chat === undefined) throw new ChatNotFound(`chat ${chatId} does not exist`);
+    const previous = await this.#guard((db) =>
+      db.get<AdmissionRow>(
+        "SELECT digest, intent, submission_id FROM pal_admissions WHERE chat_id = ? AND request_id = ?",
+        chatId,
+        key,
+      ),
+    );
+    if (previous !== undefined && previous.digest !== digest)
+      throw new RequestConflict(`request ${key} was admitted with a different body`);
+    if (previous?.submission_id != null) return { chatId, requestId: key, submissionId: previous.submission_id };
+    const scope = previous === undefined ? await this.#options.folderScope?.(chat.projectId) : undefined;
     const row = await this.#guard((db) =>
       db.transaction(async (tx) => {
         const chat = await tx.get<{ state: string }>(
@@ -274,11 +289,12 @@ export class ChatService {
         );
         if (existing !== undefined) return existing;
         await tx.run(
-          "INSERT INTO pal_admissions (chat_id, request_id, digest, intent, state, created_at) VALUES (?, ?, ?, ?, 'admitting', ?)",
+          "INSERT INTO pal_admissions (chat_id, request_id, digest, intent, folder_scope, state, created_at) VALUES (?, ?, ?, ?, ?, 'admitting', ?)",
           chatId,
           key,
           digest,
           intent,
+          scope ?? null,
           Date.now(),
         );
         return { digest, intent, submission_id: null };

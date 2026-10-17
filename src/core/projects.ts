@@ -120,7 +120,7 @@ export class Projects {
     if (name.trim() === "") throw new InvalidRequest("/name must not be blank");
     const id = randomUUID();
     const managed = folder === undefined;
-    const root = managed ? join(this.#dataRoot, "projects", id, "workspace") : await this.#existingFolder(folder);
+    const root = managed ? join(this.#dataRoot, "projects", id, "workspace") : await this.existingFolder(folder);
     const recorded = await this.#database.transaction(async (tx) => {
       const raced = await tx.get<ProjectRow>("SELECT * FROM pal_projects WHERE request_id = ?", key);
       if (raced !== undefined) return raced;
@@ -185,7 +185,7 @@ export class Projects {
     return { path: requested, ...parent, entries, truncated: folders.length > MAX_ENTRIES };
   }
 
-  async #existingFolder(folder: string): Promise<string> {
+  async existingFolder(folder: string): Promise<string> {
     if (!isAbsolute(folder)) throw new InvalidRequest("/folder must be an absolute path on the server");
     let canonical;
     try {

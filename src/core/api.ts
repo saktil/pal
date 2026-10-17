@@ -16,7 +16,7 @@ import { AdmissionStopped, ChatNotFound, ProjectUnavailable } from "./chats.ts";
 import { cookie, HttpError, isOwnOrigin, readJson, sendJson } from "./http.ts";
 import { OwnerError, SESSION_COOKIE, SESSION_MAX_AGE_SECONDS } from "./owner.ts";
 import { WorkspaceBusy } from "./execution.ts";
-import { FileAccessError } from "./files.ts";
+import { FileAccessError, searchFolder } from "./files.ts";
 import { SearchError } from "./search.ts";
 import { FolderError } from "./projects.ts";
 import { InvalidRequest, RequestConflict, validate } from "./requests.ts";
@@ -324,6 +324,17 @@ export function createApi(pal: Pal, publicOrigin?: string) {
         return send(200, { project: await pal.projects.create(requestId, body) });
       }
     }
+    if (resource === "projects" && id !== undefined && action === "folders") {
+      if (path.length === 3 && method === "GET") return send(200, { folders: await pal.folders.list(id) });
+      if (path.length === 3 && method === "POST") {
+        const { requestId, ...body } = validate(Keyed, await readJson(request));
+        return send(200, { folder: await pal.folders.add(id, requestId, body) });
+      }
+      if (path.length === 4 && path[3] !== undefined && method === "DELETE") {
+        await pal.folders.remove(id, path[3]);
+        return send(200, { removed: true });
+      }
+    }
     if (resource === "projects" && id !== undefined && action === "mcp") {
       if (path.length === 3 && method === "GET") return send(200, await pal.mcp.grants.view(id));
       if (path.length === 4 && path[3] !== undefined && method === "PUT")
@@ -343,11 +354,14 @@ export function createApi(pal: Pal, publicOrigin?: string) {
     if (resource === "projects" && id !== undefined && (action === "files" || action === "file") && path.length === 3) {
       if (method !== "GET") throw new HttpError(405, "method_not_allowed", "the Files panel is read-only");
       const relative = url.searchParams.get("path") ?? "";
+      const folder = url.searchParams.get("folder") ?? undefined;
       if (relative.length > 4096) throw new HttpError(400, "invalid_request", "path is too long");
       try {
         return send(
           200,
-          action === "files" ? await pal.files.list(id, relative) : await pal.files.preview(id, relative),
+          action === "files"
+            ? await pal.files.list(id, relative, folder)
+            : await pal.files.preview(id, relative, folder),
         );
       } catch (error) {
         const code = (error as NodeJS.ErrnoException).code;
@@ -384,18 +398,18 @@ export function createApi(pal: Pal, publicOrigin?: string) {
       }
     }
     if (resource === "projects" && id !== undefined && action === "search" && path.length === 3 && method === "GET") {
-      const project = await pal.projects.get(id);
-      if (project?.state !== "ready") throw new FileAccessError("no such ready project");
+      const folder = await pal.folders.owner(id, url.searchParams.get("folder") ?? undefined);
       const query = url.searchParams.get("q") ?? "";
       const mode = url.searchParams.get("mode") ?? "text";
       if (query.length > 500) throw new HttpError(400, "invalid_request", "the query is too long");
       if (mode !== "files" && mode !== "text" && mode !== "regex")
         throw new HttpError(400, "invalid_request", "unknown search mode");
-      return send(200, await pal.search.search(project.root, query, mode));
+      return send(200, await searchFolder(pal.search, folder, query, mode));
     }
     if (resource === "projects" && id !== undefined && action === undefined && method === "DELETE") {
       const removing = await pal.projects.get(id);
       await pal.projects.remove(id);
+      await pal.folders.forgetProject(id);
       if (removing !== undefined) await pal.search.forget(removing.root);
       pal.mcp.revokeProject(id);
       await Promise.all([pal.terminals.removeProject(id), pal.chats.abortDeleted(context)]);

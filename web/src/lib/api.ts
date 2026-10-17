@@ -5,6 +5,7 @@ export type { Change, ChangeComment, ChangeSet } from "../../../src/core/changes
 export type { TerminalInfo } from "../../../src/core/terminals.ts";
 export type { RemovedWorkspace } from "../../../src/core/workspace-purge.ts";
 export type { ProjectMcp, ProjectMcpServer } from "../../../src/core/mcp-grants.ts";
+export type { GrantedFolder } from "../../../src/core/folders.ts";
 
 export type Effort = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 export type ChatGPTModel = { slug: string; displayName: string; supported: boolean; efforts: Effort[] };
@@ -136,17 +137,29 @@ export const api = {
       tools,
     }),
   changes: (id: string) => call<import("../../../src/core/changes.ts").ChangeSet>("GET", `projects/${id}/changes`),
-  files: (id: string, path: string) =>
-    call<ProjectFolder>("GET", `projects/${id}/files?path=${encodeURIComponent(path)}`),
-  search: (id: string, query: string, mode: "text" | "regex" | "files") =>
+  projectFolders: (id: string) =>
+    call<{ folders: import("../../../src/core/folders.ts").GrantedFolder[] }>("GET", `projects/${id}/folders`),
+  addFolder: (id: string, key: string, folder: string, indexed: boolean) =>
+    call<{ folder: import("../../../src/core/folders.ts").GrantedFolder }>("POST", `projects/${id}/folders`, {
+      requestId: key,
+      folder,
+      indexed,
+    }),
+  removeFolder: (project: string, id: string) => call<{ removed: true }>("DELETE", `projects/${project}/folders/${id}`),
+  files: (id: string, path: string, folder = "primary") =>
+    call<ProjectFolder>(
+      "GET",
+      `projects/${id}/files?path=${encodeURIComponent(path)}&folder=${encodeURIComponent(folder)}`,
+    ),
+  search: (id: string, query: string, mode: "text" | "regex" | "files", folder = "primary") =>
     call<import("../../../src/core/search.ts").SearchResults>(
       "GET",
-      `projects/${id}/search?q=${encodeURIComponent(query)}&mode=${mode}`,
+      `projects/${id}/search?q=${encodeURIComponent(query)}&mode=${mode}&folder=${encodeURIComponent(folder)}`,
     ),
-  file: (id: string, path: string) =>
+  file: (id: string, path: string, folder = "primary") =>
     call<import("../../../src/core/files.ts").FilePreview>(
       "GET",
-      `projects/${id}/file?path=${encodeURIComponent(path)}`,
+      `projects/${id}/file?path=${encodeURIComponent(path)}&folder=${encodeURIComponent(folder)}`,
     ),
   discard: (id: string, path: string, revision: string) =>
     call<{ discarded: true }>("POST", `projects/${id}/discard`, { path, revision }),

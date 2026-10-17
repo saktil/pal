@@ -104,6 +104,55 @@ async function putBytes(base: string, cookie: string, id: string, bytes: Uint8Ar
 }
 
 describe("API", () => {
+  it("requires owner/origin authority for reference grants and keeps access/indexing/project scopes separate", async () => {
+    const { api, pal, base, cookie, dataRoot } = await signedIn();
+    const external = await realpath(await mkdtemp(join(tmpdir(), "pal-reference-api-")));
+    cleanups.push(() => rm(external, { recursive: true, force: true }));
+    await writeFile(join(external, "guide.txt"), "reference needle");
+    const project = (await api("POST", "projects", { requestId: "folders-project", name: "References" })).body.project;
+    const other = (await api("POST", "projects", { requestId: "other-project", name: "Other" })).body.project;
+    const path = `projects/${project.id}/folders`;
+    const body = { requestId: "reference-request", folder: external, indexed: false };
+    expect((await fetch(`${base}/api/${path}`)).status).toBe(401);
+    expect(
+      (await raw(base, `/api/${path}`, { cookie: cookie(), origin: "https://attacker.example" }, body)).status,
+    ).toBe(403);
+    for (const invalid of [
+      { ...body, indexed: undefined },
+      { ...body, access: "write" },
+      { ...body, trust: true },
+    ])
+      expect((await api("POST", path, invalid)).status).toBe(400);
+    expect((await api("POST", path, { ...body, folder: dataRoot })).status).toBe(422);
+    const added = await api("POST", path, body);
+    expect(added.status).toBe(200);
+    const granted = added.body.folder;
+    expect((await api("POST", path, body)).body.folder).toEqual(granted);
+    expect((await api("GET", path)).body.folders).toHaveLength(2);
+    const selected = `folder=${granted.id}`;
+    expect((await api("GET", `projects/${project.id}/file?path=guide.txt&${selected}`)).body.text).toBe(
+      "reference needle",
+    );
+    expect((await api("GET", `projects/${other.id}/file?path=guide.txt&${selected}`)).status).toBe(403);
+    expect((await api("GET", `projects/${project.id}/file?path=../outside&${selected}`)).status).toBe(403);
+    expect((await api("GET", `projects/${project.id}/search?q=needle&${selected}`)).status).toBe(403);
+    expect(pal.search.size).toBe(0);
+    expect((await api("DELETE", `${path}/${granted.id}`)).status).toBe(200);
+    expect((await api("GET", `projects/${project.id}/file?path=guide.txt&${selected}`)).status).toBe(403);
+    const indexed = (await api("POST", path, { ...body, requestId: "indexed-reference", indexed: true })).body.folder;
+    expect(indexed.id).not.toBe(granted.id);
+    const found = await api("GET", `projects/${project.id}/search?q=needle&folder=${indexed.id}`);
+    expect(found.status).toBe(200);
+    expect(found.body.hits).toMatchObject([{ path: "guide.txt" }]);
+    expect(pal.search.size).toBe(1);
+    await api("DELETE", `projects/${project.id}`);
+    expect(pal.search.size).toBe(0);
+    expect((await api("GET", path)).status).toBe(403);
+    expect(await readFile(join(external, "guide.txt"), "utf8")).toBe("reference needle");
+    await api("POST", "sign-out");
+    expect((await api("POST", path, body)).status).toBe(401);
+  });
+
   it("requires a separate owner-authorized request to delete a removed managed workspace", async () => {
     const { api, base, cookie, pal, dataRoot } = await signedIn();
     const project = (await api("POST", "projects", { requestId: "purge-project-api", name: "Cleanup" })).body.project;

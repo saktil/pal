@@ -16,6 +16,7 @@ import { openStore, type Store } from "../storage/store.ts";
 import { ChatService } from "./chats.ts";
 import { Changes } from "./changes.ts";
 import { FILES_NAMESPACE, fileTools, projectFiles } from "./files.ts";
+import { FolderGrants } from "./folders.ts";
 import { HostCommands, SHELL_NAMESPACE, shellTools, WorkspaceLocks } from "./execution.ts";
 import { Owner } from "./owner.ts";
 import { type Project, Projects } from "./projects.ts";
@@ -36,6 +37,7 @@ export type Pal = {
   readonly store: Store;
   readonly owner: Owner;
   readonly projects: Projects;
+  readonly folders: FolderGrants;
   readonly chats: ChatService;
   readonly chatgpt: ChatGPTConnection;
   readonly models: Models;
@@ -97,6 +99,17 @@ export async function openPal(options: PalOptions, context: Context): Promise<Pa
     const models = createModels({ credentials, authContext: NO_AMBIENT_AUTH });
     models.setProvider(chatGPTProvider(endpoints));
 
+    const openedProjects = await Projects.open({
+      database,
+      dataRoot: options.dataRoot,
+      installRoot: options.installRoot,
+    });
+    const folders = new FolderGrants(database, openedProjects, store.storage, search, [
+      options.dataRoot,
+      options.installRoot,
+      "/nix/store",
+    ]);
+
     // Host writes/commands are the owner's explicit high-trust mode; every nested call rechecks the live project grant.
     const projectFor = async (conversation: ConversationId) =>
       await database.get<{ id: string; root: string }>(
@@ -115,7 +128,18 @@ export async function openPal(options: PalOptions, context: Context): Promise<Pa
     sandbox = codemode.sandbox;
     const registry = createRegistry();
     for (const extension of codemode.extensions) registry.install(extension);
-    registry.install(fileTools({ root: projectRoot, deny: [options.dataRoot], locks, search }));
+    registry.install(
+      fileTools({
+        root: projectRoot,
+        deny: [options.dataRoot],
+        locks,
+        search,
+        folders: {
+          list: (api, ctx) => folders.forRun(api, ctx),
+          open: (api, ctx, id) => folders.forTool(api, ctx, id),
+        },
+      }),
+    );
     registry.install(shellTools({ root: projectRoot, commands, locks }));
     const connections = await McpManager.open({
       database: store.database,
@@ -138,11 +162,6 @@ export async function openPal(options: PalOptions, context: Context): Promise<Pa
         );
       },
     };
-    const openedProjects = await Projects.open({
-      database,
-      dataRoot: options.dataRoot,
-      installRoot: options.installRoot,
-    });
     changes = new Changes(database, openedProjects, options.dataRoot, locks);
     const owner = new Owner(database);
     const reviews = changes;
@@ -153,6 +172,7 @@ export async function openPal(options: PalOptions, context: Context): Promise<Pa
         database,
         harness: running,
         attachments: uploads,
+        folderScope: (projectId) => folders.capture(projectId),
         agentFor: async (projectId) => {
           const project = await openedProjects.get(projectId);
           if (project?.state !== "ready") return undefined;
@@ -167,6 +187,7 @@ export async function openPal(options: PalOptions, context: Context): Promise<Pa
       store,
       owner,
       projects: openedProjects,
+      folders,
       chats: openedChats,
       chatgpt: new ChatGPTConnection(credentials, {
         endpoints,
@@ -185,6 +206,7 @@ export async function openPal(options: PalOptions, context: Context): Promise<Pa
           return project?.state === "ready" ? project.root : undefined;
         },
         deny: [options.dataRoot],
+        folder: (project, id) => folders.owner(project, id),
       }),
       terminals,
       search,

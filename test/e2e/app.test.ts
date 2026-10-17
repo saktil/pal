@@ -489,6 +489,86 @@ describe("Pal in a browser", () => {
     await page.setViewportSize({ width: 1440, height: 900 });
   });
 
+  it("manages read-only reference folders with separate indexing and a responsive host picker", async () => {
+    const project = (await pal.projects.list())[0];
+    if (project === undefined) throw new Error("missing project");
+    const external = await realpath(await mkdtemp(join(tmpdir(), "pal-reference-e2e-")));
+    cleanups.push(() => rm(external, { recursive: true, force: true }));
+    const reference = join(external, "docs");
+    await mkdir(reference);
+    await writeFile(join(reference, "reference-guide.txt"), "reference needle\n");
+    const modelRequests = fixture.apiRequests.length;
+    await page.getByRole("button", { name: "Files", exact: true }).click();
+    const panel = page.getByRole("complementary", { name: "Workspace panel" });
+    const manage = panel.getByRole("button", { name: "Manage project folders" });
+    await manage.click();
+    const dialog = page.getByRole("dialog", { name: "Folders", exact: true });
+    const indexing = dialog.getByRole("checkbox", { name: "Allow search indexing for this reference" });
+    expect(await indexing.isChecked()).toBe(false);
+    await dialog.getByLabel("Folder on this server").fill(external);
+    await dialog.getByRole("button", { name: "Browse server folders" }).click();
+    await dialog.getByRole("button", { name: "docs", exact: true }).click();
+    await expect.poll(() => dialog.getByLabel("Folder on this server").inputValue()).toBe(reference);
+    for (const width of [1440, 768, 390]) {
+      await page.setViewportSize({ width, height: 900 });
+      expect(await page.evaluate("document.documentElement.scrollWidth <= innerWidth")).toBe(true);
+      expect(await dialog.getByLabel("Folder on this server").inputValue()).toBe(reference);
+      await shoot(`reference-grant-${width}`);
+    }
+    await dialog.getByRole("button", { name: "Grant read-only access" }).click();
+    await dialog.getByRole("region", { name: `Reference ${reference}`, exact: true }).waitFor();
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await dialog.getByRole("button", { name: "Close", exact: true }).click();
+    await expect
+      .poll(() => page.evaluate(() => document.activeElement?.getAttribute("aria-label")))
+      .toBe("Manage project folders");
+    const granted = (await pal.folders.list(project.id)).find((folder) => folder.root === reference);
+    if (granted === undefined) throw new Error("missing reference grant");
+    await panel.getByLabel("File folder").selectOption(granted.id);
+    await panel.getByRole("button", { name: /^reference-guide/ }).click();
+    await panel.getByText("reference needle", { exact: true }).waitFor();
+    expect(await panel.getByRole("button", { name: "View diff" }).count()).toBe(0);
+    await panel.getByRole("button", { name: "Select line 1", exact: true }).click();
+    await panel.getByRole("button", { name: "Attach line 1", exact: true }).click();
+    await expect
+      .poll(() => page.getByLabel("Message").inputValue())
+      .toContain(`Reference file (folder ${granted.id}, ${reference})`);
+    await page.getByLabel("Message").fill("");
+    await panel.getByRole("button", { name: "Back to files" }).click();
+    await panel.getByLabel("Search files").fill("needle");
+    expect(await panel.getByRole("button", { name: "Search", exact: true }).isDisabled()).toBe(true);
+    await shoot("reference-files-1440");
+    await page.reload();
+    await page.getByRole("button", { name: "Files", exact: true }).click();
+    await panel.getByLabel("File folder").selectOption(granted.id);
+    await manage.click();
+    await dialog.getByRole("button", { name: "Remove access", exact: true }).click();
+    await expect
+      .poll(() => dialog.getByRole("region", { name: `Reference ${reference}`, exact: true }).count())
+      .toBe(0);
+    await dialog.getByLabel("Folder on this server").fill(reference);
+    await dialog.getByRole("button", { name: "Browse server folders" }).click();
+    await indexing.check();
+    await dialog.getByRole("button", { name: "Grant read-only access" }).click();
+    await dialog.getByRole("region", { name: `Reference ${reference}`, exact: true }).waitFor();
+    await dialog.getByRole("button", { name: "Close", exact: true }).click();
+    expect(await panel.getByLabel("File folder").inputValue()).toBe("primary");
+    const indexed = (await pal.folders.list(project.id)).find((folder) => folder.root === reference);
+    if (indexed === undefined) throw new Error("missing indexed grant");
+    expect(indexed.id).not.toBe(granted.id);
+    await panel.getByLabel("File folder").selectOption(indexed.id);
+    await panel.getByLabel("Search files").fill("needle");
+    await panel.getByRole("button", { name: "Search", exact: true }).click();
+    await panel
+      .getByRole("list", { name: "Search results" })
+      .getByRole("button", { name: /reference-guide.txt:1/ })
+      .waitFor();
+    expect(fixture.apiRequests.length).toBe(modelRequests);
+    expect(await readFile(join(reference, "reference-guide.txt"), "utf8")).toBe("reference needle\n");
+    await page.keyboard.press("Escape");
+    await panel.waitFor({ state: "detached" });
+  });
+
   it("discards a file only at the revision shown, never over newer work", async () => {
     const project = (await pal.projects.list())[0];
     if (project === undefined) throw new Error("missing project");
