@@ -5,7 +5,16 @@
 
   type Preview = Awaited<ReturnType<typeof api.file>>;
 
-  let { project }: { project: Project } = $props();
+  let {
+    project,
+    onAttach,
+    onViewDiff,
+  }: {
+    project: Project;
+    /** Put a reference the owner chose into the composer; it is sent only when they send the message. */
+    onAttach: (text: string) => void;
+    onViewDiff: (path: string) => void;
+  } = $props();
   /** Loaded folders by relative path ("" is the project root); only expanded ones are fetched. */
   let folders: Record<string, ProjectFolder> = $state({});
   let expanded: Record<string, boolean> = $state({});
@@ -15,6 +24,29 @@
   let error: string | undefined = $state();
   let back: HTMLButtonElement | undefined = $state();
   const lines = $derived(preview?.kind === "text" ? preview.text.split("\n") : []);
+  /** Selected line range, 1-based and inclusive; pick a line, then another to extend. */
+  let selection: { from: number; to: number } | undefined = $state();
+  const MAX_SNIPPET_CHARS = 20_000;
+
+  function pick(line: number) {
+    selection =
+      selection === undefined || selection.from !== selection.to
+        ? { from: line, to: line }
+        : { from: Math.min(selection.from, line), to: Math.max(selection.from, line) };
+  }
+
+  function attachLines() {
+    if (preview === undefined || selection === undefined) return;
+    let snippet = lines.slice(selection.from - 1, selection.to).join("\n");
+    if (snippet.length > MAX_SNIPPET_CHARS)
+      snippet = `${snippet.slice(0, MAX_SNIPPET_CHARS)}\n[selection cut to ${MAX_SNIPPET_CHARS} characters]`;
+    // A fence longer than any backtick run inside keeps the snippet intact.
+    const fence = "`".repeat(Math.max(3, ...[...snippet.matchAll(/`+/g)].map((run) => run[0].length + 1)));
+    const range =
+      selection.from === selection.to ? `line ${selection.from}` : `lines ${selection.from}–${selection.to}`;
+    onAttach(`Project file \`${preview.path}\`, ${range}:\n\n${fence}\n${snippet}\n${fence}`);
+    selection = undefined;
+  }
 
   async function run(work: () => Promise<void>) {
     busy = true;
@@ -52,6 +84,7 @@
 
   async function display(path: string) {
     opener = path;
+    selection = undefined;
     preview = await api.file(project.id, path);
     await tick();
     back?.focus();
@@ -141,6 +174,27 @@
       >
       <span class="pill"><Icon name="lock" />Read-only</span>
     </div>
+    <div class="actions">
+      <button class="b sm" onclick={() => preview && onAttach(`Project file: \`${preview.path}\``)}
+        ><Icon name="clip" />Attach file</button
+      >
+      {#if preview.kind === "text"}
+        <button class="b sm" onclick={attachLines} disabled={selection === undefined}
+          >{selection === undefined
+            ? "Attach lines"
+            : selection.from === selection.to
+              ? `Attach line ${selection.from}`
+              : `Attach lines ${selection.from}–${selection.to}`}</button
+        >
+        {#if selection !== undefined}<button class="b sm q" onclick={() => (selection = undefined)}
+            >Clear selection</button
+          >{/if}
+      {/if}
+      <button class="b sm q" onclick={() => preview && onViewDiff(preview.path)}>View diff</button>
+    </div>
+    {#if preview.kind === "text"}
+      <p class="hint">Select lines: choose a line number, then another to extend the range.</p>
+    {/if}
     <div class="scroll code">
       {#if preview.kind === "binary"}
         <p class="note">Binary file, {size(preview.size)}. Its contents aren't shown.</p>
@@ -150,8 +204,15 @@
         {/if}
         <div class="lines">
           {#each lines as line, index (index)}
-            <div class="line">
-              <span class="number" aria-hidden="true">{index + 1}</span><span class="text">{line}</span>
+            {@const number = index + 1}
+            {@const chosen = selection !== undefined && number >= selection.from && number <= selection.to}
+            <div class="line" class:chosen>
+              <button
+                class="number"
+                aria-pressed={chosen}
+                aria-label={`Select line ${number}`}
+                onclick={() => pick(number)}>{number}</button
+              ><span class="text">{line}</span>
             </div>
           {/each}
         </div>
@@ -259,9 +320,31 @@
   .number {
     flex: 0 0 46px;
     text-align: right;
-    padding-right: 10px;
+    padding: 0 10px 0 0;
+    border: 0;
+    background: transparent;
+    font: inherit;
+    line-height: 20px;
     color: var(--tx3);
+    cursor: pointer;
     user-select: none;
+  }
+  .number:hover,
+  .number:focus-visible,
+  .number[aria-pressed="true"] {
+    color: var(--ac);
+    background: var(--acbg);
+  }
+  .chosen {
+    background: var(--acbg);
+  }
+  .actions {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+    align-items: center;
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--line);
   }
   .text {
     padding-right: 24px;

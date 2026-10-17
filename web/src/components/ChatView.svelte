@@ -49,8 +49,9 @@
   const efforts = ["off", "low", "medium", "high"] as const;
   let draft = $state("");
   let composer: HTMLTextAreaElement | undefined = $state();
+  /** Add text the owner chose elsewhere (a terminal selection, a file reference) to the draft; never sends it. */
   export function insertText(text: string) {
-    draft += `${draft ? "\n\n" : ""}Terminal selection (human shell):\n\n${text}`;
+    draft += `${draft ? "\n\n" : ""}${text}`;
     composer?.focus();
   }
   let pending: { key: string; text: string; files: string } | undefined;

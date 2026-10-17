@@ -3,9 +3,11 @@
   import { api, type ChangeSet, type Project } from "../lib/api.ts";
   import Icon from "../lib/Icon.svelte";
 
-  let { project }: { project: Project } = $props();
+  let { project, initialPath }: { project: Project; initialPath?: string | undefined } = $props();
   let changes: ChangeSet | undefined = $state.raw();
-  let selected: string | undefined = $state();
+  let chosen: string | undefined = $state();
+  // A click wins; until then, the file Files asked to see.
+  const selected = $derived(chosen ?? initialPath);
   let busy = $state(false);
   let error: string | undefined = $state();
   const file = $derived(changes?.files.find((candidate) => candidate.path === selected) ?? changes?.files[0]);
@@ -73,7 +75,7 @@
             <button
               class="frow"
               aria-current={file?.path === candidate.path ? "true" : undefined}
-              onclick={() => (selected = candidate.path)}
+              onclick={() => (chosen = candidate.path)}
             >
               <span class="status" class:add={candidate.status === "A"} class:del={candidate.status === "D"}
                 >{candidate.status}</span

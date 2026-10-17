@@ -24,8 +24,11 @@
   const filesPanel = () => import("./FilesPanel.svelte");
   const terminalPanel = () => import("./TerminalPanel.svelte");
   let panelView = $state<"Changes" | "Files" | "Terminal">("Changes");
+  /** A file Files asked Changes to open. */
+  let diffPath: string | undefined = $state();
   let chatView: { insertText(text: string): void } | undefined = $state();
   function togglePanel(view: "Changes" | "Files" | "Terminal") {
+    diffPath = undefined;
     panelRoute = panel && panelView === view ? undefined : app.route;
     panelView = view;
   }
@@ -163,7 +166,7 @@
                       <TerminalPanel
                         project={located.project}
                         onSelection={(text) => {
-                          chatView?.insertText(text);
+                          chatView?.insertText(`Terminal selection (human shell):\n\n${text}`);
                           panelRoute = undefined;
                         }}
                       />
@@ -171,13 +174,24 @@
                   {:else if panelView === "Files"}
                     {#await filesPanel()}<p role="status">Loading files…</p>
                     {:then { default: FilesPanel }}
-                      <FilesPanel project={located.project} />
+                      <FilesPanel
+                        project={located.project}
+                        onAttach={(text) => {
+                          chatView?.insertText(text);
+                          // Overlay panels give the composer back; the desktop side panel stays open.
+                          if (size !== "desktop") panelRoute = undefined;
+                        }}
+                        onViewDiff={(path) => {
+                          diffPath = path;
+                          panelView = "Changes";
+                        }}
+                      />
                     {:catch failure}<p role="alert">Couldn't load files: {String(failure)}</p>{/await}
                   {:else}
                     {#await changesPanel()}
                       <p role="status">Loading changes…</p>
                     {:then { default: ChangesPanel }}
-                      <ChangesPanel project={located.project} />
+                      <ChangesPanel project={located.project} initialPath={diffPath} />
                     {:catch failure}<p role="alert">Couldn't load changes: {String(failure)}</p>{/await}
                   {/if}
                 {/key}

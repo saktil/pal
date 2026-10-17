@@ -440,7 +440,27 @@ describe("Pal in a browser", () => {
       .getByRole("alert")
       .filter({ hasText: /outside the project folder/ })
       .waitFor();
+    // Attaching is an explicit choice that fills the composer; nothing is sent until the owner sends it.
+    await panel.getByRole("button", { name: /^docs/ }).waitFor();
+    await panel.getByRole("button", { name: /^guide\.md/ }).click();
+    await panel.getByRole("button", { name: "Select line 1" }).click();
+    await panel.getByRole("button", { name: "Select line 2" }).click();
+    await panel.getByRole("button", { name: "Attach lines 1–2" }).click();
+    await expect
+      .poll(() => page.getByLabel("Message").inputValue())
+      .toBe("Project file `docs/guide.md`, lines 1–2:\n\n```\n# Guide\nsecond version\n```");
+    await panel.getByRole("button", { name: "Attach file" }).click();
+    await expect.poll(() => page.getByLabel("Message").inputValue()).toMatch(/\n\nProject file: `docs\/guide\.md`$/);
+    await page.getByLabel("Message").fill("");
+    await panel.getByRole("button", { name: "Back to files" }).click();
+    await panel.getByRole("button", { name: /^host\.txt/ }).click();
+    await panel.getByRole("button", { name: "View diff" }).click();
+    await panel.getByRole("heading", { name: "Changes" }).waitFor();
+    await panel.getByLabel("File diff").filter({ hasText: "+manual edit" }).waitFor();
     expect(fixture.apiRequests.length).toBe(modelRequests);
+    // Switching back opens Files afresh, folders collapsed.
+    await page.getByRole("button", { name: "Files", exact: true }).click();
+    await panel.getByRole("button", { name: /^docs/ }).click();
     for (const width of [1440, 768, 390]) {
       await page.setViewportSize({ width, height: 900 });
       expect(await page.evaluate("document.documentElement.scrollWidth <= innerWidth")).toBe(true);
