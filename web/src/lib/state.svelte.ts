@@ -1,12 +1,12 @@
 import { api, type ChatGPTState, type Project } from "./api.ts";
 
-export type Route =
-  { view: "home" } | { view: "chat"; chatId: string } | { view: "settings"; tab: "general" | "models" };
+export type SettingsTab = "general" | "models" | "mcp";
+export type Route = { view: "home" } | { view: "chat"; chatId: string } | { view: "settings"; tab: SettingsTab };
 
 function parseRoute(hash: string): Route {
   const [, view, id] = hash.replace(/^#/, "").split("/");
   if (view === "chat" && id !== undefined && id !== "") return { view: "chat", chatId: id };
-  if (view === "settings") return { view: "settings", tab: id === "models" ? "models" : "general" };
+  if (view === "settings") return { view: "settings", tab: id === "models" || id === "mcp" ? id : "general" };
   return { view: "home" };
 }
 

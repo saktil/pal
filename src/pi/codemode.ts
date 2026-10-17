@@ -47,7 +47,12 @@ export type PalCodemodeOptions = {
  * Pi's durable `codemode` extension under Pal's host policy. `models: false`: no implicit model or image helpers.
  * The returned sandbox belongs to the caller, who closes it after the Harness.
  */
-export function createPalCodemode(options: PalCodemodeOptions): { extensions: Extension[]; sandbox: CodemodeSandbox } {
+export function createPalCodemode(options: PalCodemodeOptions): {
+  extensions: Extension[];
+  sandbox: CodemodeSandbox;
+  /** The `codemode` extension over the same sandbox with other namespaces; installing it replaces the current one. */
+  withNamespaces(namespaces: readonly CodemodeNamespace[]): Extension;
+} {
   const caps = options.caps ?? DEFAULT_CODEMODE_CAPS;
   let workers = 0;
   const sandbox = new CodemodeSandbox({
@@ -83,12 +88,9 @@ export function createPalCodemode(options: PalCodemodeOptions): { extensions: Ex
     ],
   });
 
-  const codemode = createCodemodeExtension({
-    sandbox,
-    models: false,
-    ...(options.namespaces === undefined ? {} : { namespaces: options.namespaces }),
-  });
-  return { extensions: [policy, codemode], sandbox };
+  const withNamespaces = (namespaces: readonly CodemodeNamespace[]) =>
+    createCodemodeExtension({ sandbox, models: false, namespaces });
+  return { extensions: [policy, withNamespaces(options.namespaces ?? [])], sandbox, withNamespaces };
 }
 
 /** Rewrite the script's options line within the caps; an invalid script is left for code mode to report. */

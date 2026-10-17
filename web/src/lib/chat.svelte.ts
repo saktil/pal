@@ -16,6 +16,17 @@ export type Message = {
   toolCallId?: string;
   toolName?: string;
   isError?: boolean;
+  /** A `codemode` result's record of the tool calls its script made. */
+  details?: { calls?: NestedCall[] };
+};
+
+export type NestedCall = {
+  id: number;
+  name: string;
+  args: string;
+  status: string;
+  durationMs?: number;
+  error?: string;
 };
 
 export type Entry = { id: number; kind: string; model?: Message[] };

@@ -10,6 +10,7 @@ import {
   OPENAI_CHATGPT,
 } from "../pi/chatgpt.ts";
 import { createPalCodemode } from "../pi/codemode.ts";
+import { McpManager } from "../pi/mcp.ts";
 import { loadMasterKey, SqliteCredentialStore } from "../storage/credentials.ts";
 import { openStore, type Store } from "../storage/store.ts";
 import { ChatService } from "./chats.ts";
@@ -33,6 +34,7 @@ export type Pal = {
   readonly models: Models;
   readonly harness: Harness;
   readonly settings: Settings;
+  readonly mcp: McpManager;
   close(): Promise<void>;
 };
 
@@ -49,10 +51,12 @@ export async function openPal(options: PalOptions, context: Context): Promise<Pa
   const store = await openStore(options.dataRoot);
   let harness: Harness | undefined;
   let sandbox: { close(): Promise<void> } | undefined;
-  // The Harness, once open, owns the storage and closes it; scripts stop before their sandbox does.
+  let mcp: McpManager | undefined;
+  // The Harness, once open, owns the storage and closes it; scripts stop before their sandbox and connections do.
   const close = async () => {
     await (harness === undefined ? store.close() : harness.close(context));
     await sandbox?.close();
+    await mcp?.close();
   };
   try {
     const { database } = store;
@@ -65,11 +69,18 @@ export async function openPal(options: PalOptions, context: Context): Promise<Pa
     const models = createModels({ credentials, authContext: NO_AMBIENT_AUTH });
     models.setProvider(chatGPTProvider(endpoints));
 
-    // Code Mode is always on; no tool is granted to it until project tools and MCP grants exist.
-    const codemode = createPalCodemode({ allows: () => false });
+    // Code Mode is always on; scripts may call only tools the MCP manager grants at the moment of each call.
+    const codemode = createPalCodemode({ allows: (_conversation, name) => mcp?.allows(name) === true });
     sandbox = codemode.sandbox;
     const registry = createRegistry();
     for (const extension of codemode.extensions) registry.install(extension);
+    const connections = await McpManager.open({
+      database: store.database,
+      credentials,
+      registry,
+      codemode: codemode.withNamespaces,
+    });
+    mcp = connections;
     const running = await Harness.open(store.storage, { models, registry }, context);
     harness = running;
 
@@ -111,6 +122,7 @@ export async function openPal(options: PalOptions, context: Context): Promise<Pa
       models,
       harness: running,
       settings,
+      mcp: connections,
       close,
     };
   } catch (error) {

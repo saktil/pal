@@ -1,7 +1,8 @@
-// A loopback Streamable HTTP MCP server with JSON responses, recording every tool call it receives.
+// A loopback Streamable HTTP MCP server with JSON responses, recording every request and tool call it receives.
+// Tests can change its tool list, force an HTTP status, or run a hook before a tool call answers.
 import { randomUUID } from "node:crypto";
 import { once } from "node:events";
-import { createServer } from "node:http";
+import { createServer, type IncomingHttpHeaders } from "node:http";
 import type { AddressInfo } from "node:net";
 
 type Call = { name: string; arguments: Record<string, unknown> };
@@ -63,7 +64,26 @@ function callTool({ name, arguments: args }: Call) {
 
 export async function startMcpFixture() {
   const calls: Call[] = [];
+  const requests: { path: string; headers: IncomingHttpHeaders }[] = [];
+  const state: {
+    tools: typeof TOOLS;
+    status: number | undefined;
+    beforeCall: ((call: Call) => Promise<void>) | undefined;
+  } = {
+    tools: structuredClone(TOOLS),
+    status: undefined,
+    beforeCall: undefined,
+  };
   const server = createServer(async (request, response) => {
+    requests.push({ path: request.url ?? "", headers: request.headers });
+    if (request.url === "/redirect") {
+      response.writeHead(307, { location: "/mcp" }).end();
+      return;
+    }
+    if (state.status !== undefined) {
+      response.writeHead(state.status, { "content-type": "text/plain" }).end(`forced ${state.status}`);
+      return;
+    }
     if (request.method !== "POST") {
       response.writeHead(405, { allow: "POST" }).end();
       return;
@@ -86,10 +106,11 @@ export async function startMcpFixture() {
         serverInfo: { name: "fixture", version: "1.0.0" },
       };
     } else if (message.method === "tools/list") {
-      result = { tools: TOOLS };
+      result = { tools: state.tools };
     } else if (message.method === "tools/call") {
       const call = message.params as Call;
       calls.push(call);
+      await state.beforeCall?.(call);
       result = callTool(call);
     } else if (message.method === "ping") {
       result = {};
@@ -102,9 +123,16 @@ export async function startMcpFixture() {
   });
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
+  const port = (server.address() as AddressInfo).port;
   return {
-    url: `http://127.0.0.1:${(server.address() as AddressInfo).port}/mcp`,
+    url: `http://127.0.0.1:${port}/mcp`,
+    port,
     calls,
-    close: () => new Promise<void>((done) => server.close(() => done())),
+    requests,
+    state,
+    close: () => {
+      server.closeAllConnections();
+      return new Promise<void>((done) => server.close(() => done()));
+    },
   };
 }

@@ -14,7 +14,9 @@ export type FixtureBehavior = {
   /** Overrides for the next ID tokens; `stranger` signs with a key the JWKS does not publish. */
   idToken: { nonce?: string; issuer?: string; audience?: string; expiresIn?: number; stranger?: boolean };
   scope: string;
-  responses: "ok" | "truncated" | "usage_limit";
+  responses: "ok" | "truncated" | "usage_limit" | "script";
+  /** In `script` mode, the first response calls `codemode` with this script; the follow-up answers in text. */
+  script: string;
 };
 
 async function body(request: IncomingMessage): Promise<string> {
@@ -39,6 +41,7 @@ export async function startOpenAIFixture() {
     idToken: {},
     scope: DIRECT_SCOPE,
     responses: "ok",
+    script: "return 1;",
   };
   const authorizations: URLSearchParams[] = [];
   const tokenRequests: URLSearchParams[] = [];
@@ -153,7 +156,36 @@ export async function startOpenAIFixture() {
       };
       const usage = { input_tokens: 3, output_tokens: 1, total_tokens: 4 };
       const events: object[] = [created];
-      if (behavior.responses === "usage_limit") {
+      // Pi returns a tool result as a function or custom (grammar) tool output; either means the script has run.
+      const answered = /"type":"(custom_tool_call|function_call)_output"/.test(
+        JSON.stringify(apiRequests.at(-1)?.body.input ?? []),
+      );
+      if (behavior.responses === "script" && !answered) {
+        const call = {
+          id: "fc_1",
+          type: "function_call",
+          call_id: "call_script",
+          name: "codemode",
+          arguments: JSON.stringify({ code: behavior.script }),
+          status: "completed",
+        };
+        events.push(
+          {
+            type: "response.output_item.added",
+            output_index: 0,
+            item: { ...call, arguments: "", status: "in_progress" },
+          },
+          { type: "response.function_call_arguments.delta", output_index: 0, item_id: "fc_1", delta: call.arguments },
+          {
+            type: "response.function_call_arguments.done",
+            output_index: 0,
+            item_id: "fc_1",
+            arguments: call.arguments,
+          },
+          { type: "response.output_item.done", output_index: 0, item: call },
+          { type: "response.completed", response: { id: "resp_1", status: "completed", output: [call], usage } },
+        );
+      } else if (behavior.responses === "usage_limit") {
         events.push({
           type: "response.failed",
           response: {
@@ -167,7 +199,7 @@ export async function startOpenAIFixture() {
           { type: "response.output_item.added", output_index: 0, item: message },
           { type: "response.output_text.delta", output_index: 0, content_index: 0, item_id: "msg_1", delta: "Hello" },
         );
-        if (behavior.responses === "ok") {
+        if (behavior.responses !== "truncated") {
           events.push(
             { type: "response.output_item.done", output_index: 0, item: done },
             { type: "response.completed", response: { id: "resp_1", status: "completed", output: [done], usage } },

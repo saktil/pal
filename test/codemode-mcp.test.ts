@@ -43,7 +43,19 @@ describe("Code Mode over MCP", () => {
     const listed = await client.listTools();
     expect(listed.map((tool) => tool.name)).toEqual(["search", "fetch", "delete_everything"]);
 
-    const granted = mcpTools("fixture", client, listed, new Set(["search", "fetch"]));
+    const granted = mcpTools(
+      "fixture",
+      { call: (remote, args, signal) => client.callTool(remote, args, signal === undefined ? {} : { signal }) },
+      listed
+        .filter((tool) => tool.name === "search" || tool.name === "fetch")
+        .map((tool) => ({
+          remote: tool.name,
+          description: tool.description ?? tool.name,
+          inputSchema: tool.inputSchema,
+          ...(tool.outputSchema === undefined ? {} : { outputSchema: tool.outputSchema }),
+        })),
+      "unsafe",
+    );
     const { extensions, sandbox } = createPalCodemode({
       allows: (_conversation, name) => granted.some((tool) => tool.name === name),
       namespaces: [{ name: "fixture", description: "Fixture web search", prefix: "mcp__fixture__" }],

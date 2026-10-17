@@ -111,6 +111,24 @@ export const MIGRATIONS: readonly Migration[] = [
       await transaction.exec("ALTER TABLE pal_chats ADD COLUMN title TEXT");
     },
   },
+  {
+    version: 6,
+    name: "mcp_servers",
+    // Keys live in the credential store as `mcp:<id>`; `approved` holds the exact tool definitions the owner approved.
+    up: async (transaction) => {
+      await transaction.exec(`CREATE TABLE pal_mcp_servers (
+        id TEXT PRIMARY KEY,
+        name TEXT NOT NULL,
+        preset TEXT,
+        url TEXT NOT NULL,
+        auth TEXT NOT NULL,
+        private INTEGER NOT NULL CHECK (private IN (0, 1)),
+        enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
+        approved TEXT NOT NULL,
+        created_at INTEGER NOT NULL
+      ) STRICT`);
+    },
+  },
 ];
 
 /**

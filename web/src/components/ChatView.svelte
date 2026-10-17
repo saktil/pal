@@ -1,6 +1,6 @@
 <script lang="ts">
   import { api, ApiError, type ChatSummary, type Project, requestId } from "../lib/api.ts";
-  import { type Block, ChatStream, type Entry, type Message, textOf } from "../lib/chat.svelte.ts";
+  import { type Block, ChatStream, type Entry, type Message, type NestedCall, textOf } from "../lib/chat.svelte.ts";
   import Icon from "../lib/Icon.svelte";
   import { renderMarkdown } from "../lib/markdown.ts";
   import { app, navigate, refreshProjects, viewport } from "../lib/state.svelte.ts";
@@ -11,7 +11,7 @@
     id: string;
     name: string;
     code: string | undefined;
-    result: { text: string; isError: boolean } | undefined;
+    result: { text: string; isError: boolean; calls: NestedCall[] } | undefined;
   };
   type Item =
     | { kind: "user"; id: string; text: string; at: number | undefined }
@@ -55,11 +55,15 @@
   const modelName = $derived(choices.find((choice) => choice.slug === model)?.displayName ?? model ?? "Choose model");
 
   function build(entries: Entry[], partial: Message | undefined): Item[] {
-    const results: Record<string, { text: string; isError: boolean }> = {};
+    const results: Record<string, { text: string; isError: boolean; calls: NestedCall[] }> = {};
     for (const entry of entries) {
       const message = entry.model?.[0];
       if (entry.kind === "pi.tool-result" && message?.toolCallId !== undefined) {
-        results[message.toolCallId] = { text: textOf(message), isError: message.isError === true };
+        results[message.toolCallId] = {
+          text: textOf(message),
+          isError: message.isError === true,
+          calls: message.details?.calls ?? [],
+        };
       }
     }
     const assistant = (id: string, message: Message, live: boolean): Item => {
@@ -142,6 +146,12 @@
     }
   }
 
+  /** `mcp__exa__web_search_exa` reads as "exa · web_search_exa". */
+  function toolLabel(name: string): string {
+    const [, server, tool] = /^mcp__(.+?)__(.+)$/.exec(name) ?? [];
+    return server === undefined || tool === undefined ? name : `${server} · ${tool}`;
+  }
+
   function time(at: number | undefined): string {
     return at === undefined ? "" : new Date(at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
   }
@@ -204,6 +214,18 @@
                         {:else}<span class="pill ok">Done</span>{/if}
                       </div>
                       {#if step.code !== undefined}<pre class="out">{step.code}</pre>{/if}
+                      {#each step.result?.calls ?? [] as call (call.id)}
+                        <div class="steprow call">
+                          <Icon name={call.name.startsWith("mcp__") ? "globe" : "run"} />
+                          <span>{toolLabel(call.name)}</span>
+                          <span class="mono args">{call.args}</span>
+                          {#if call.status === "ok"}<span class="pill ok">Done</span>
+                          {:else if call.status === "running"}<span class="pill">Interrupted</span>
+                          {:else}<span class="pill er">{call.status === "cancelled" ? "Cancelled" : "Failed"}</span
+                            >{/if}
+                        </div>
+                        {#if call.error}<div class="dim small call">{call.error}</div>{/if}
+                      {/each}
                       {#if step.result !== undefined}<pre class="out">{step.result.text}</pre>{/if}
                     </li>
                   {/each}
@@ -461,6 +483,18 @@
   }
   .strong {
     color: var(--tx);
+  }
+  .call {
+    margin-left: 24px;
+  }
+  .args {
+    font-size: 12px;
+    color: var(--tx3);
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    flex: 1;
   }
   .dim {
     color: var(--tx3);

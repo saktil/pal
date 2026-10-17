@@ -1,9 +1,10 @@
 <script lang="ts">
   import { api, ApiError, type ChatGPTState } from "../lib/api.ts";
   import Icon from "../lib/Icon.svelte";
-  import { app, navigate, refreshChatGPT, saveSetting, viewport } from "../lib/state.svelte.ts";
+  import { app, navigate, refreshChatGPT, saveSetting, type SettingsTab, viewport } from "../lib/state.svelte.ts";
+  import McpSettings from "./McpSettings.svelte";
 
-  let { tab, onSignOut }: { tab: "general" | "models"; onSignOut: () => void } = $props();
+  let { tab, onSignOut }: { tab: SettingsTab; onSignOut: () => void } = $props();
 
   let paste = $state("");
   let busy = $state(false);
@@ -45,6 +46,7 @@
   const tabs = [
     { id: "general", label: "General", icon: "gear" },
     { id: "models", label: "Models", icon: "model" },
+    { id: "mcp", label: "MCP servers", icon: "plug" },
   ] as const;
 </script>
 
@@ -96,6 +98,8 @@
             <button class="b" onclick={onSignOut}>Sign out of Pal</button>
           </div>
         </div>
+      {:else if tab === "mcp"}
+        <McpSettings />
       {:else}
         <h2 class="h2">Models</h2>
         <p class="sub">Pal uses your ChatGPT subscription. It never falls back to an API key or another provider.</p>

@@ -9,6 +9,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createApi } from "../../src/core/api.ts";
 import { openPal, type Pal } from "../../src/core/app.ts";
 import { startServer } from "../../src/core/server.ts";
+import { startMcpFixture } from "../fixtures/mcp-server.ts";
 import { browse, startOpenAIFixture } from "../fixtures/openai-server.ts";
 
 const webRoot = join(import.meta.dirname, "..", "..", "dist", "public");
@@ -16,6 +17,7 @@ const webRoot = join(import.meta.dirname, "..", "..", "dist", "public");
 const shots = process.env.PAL_E2E_SCREENSHOTS;
 
 let fixture: Awaited<ReturnType<typeof startOpenAIFixture>>;
+let mcp: Awaited<ReturnType<typeof startMcpFixture>>;
 let pal: Pal;
 let dataRoot: string;
 let base: string;
@@ -26,6 +28,8 @@ const cleanups: (() => Promise<unknown>)[] = [];
 beforeAll(async () => {
   fixture = await startOpenAIFixture();
   cleanups.push(fixture.close);
+  mcp = await startMcpFixture();
+  cleanups.push(mcp.close);
   dataRoot = await realpath(await mkdtemp(join(tmpdir(), "pal-e2e-")));
   cleanups.push(() => rm(dataRoot, { recursive: true, force: true }));
   pal = await openPal({ dataRoot, installRoot: "/nonexistent-install", endpoints: fixture.endpoints }, context);
@@ -99,6 +103,42 @@ describe("Pal in a browser", () => {
     await page.getByLabel("Message").fill("again");
     await page.getByRole("button", { name: "Send" }).click();
     await page.getByText("ChatGPT usage limit reached.").waitFor();
+    fixture.behavior.responses = "ok";
+  });
+
+  it("adds a private MCP server, approves its tools, and a chat script calls them", async () => {
+    await page.goto(`${base}/#/settings/mcp`);
+    await page.getByText("Enable internet tools?").waitFor();
+    await page.getByRole("button", { name: "Not now" }).click();
+    await page.getByRole("button", { name: "Add server" }).click();
+    await page.getByLabel("Name").fill("Fixture");
+    await page.getByLabel("URL").fill(mcp.url);
+    await page.getByLabel(/Private endpoint/).check();
+    await page.getByRole("button", { name: "Add and test" }).click();
+    await page.getByRole("checkbox", { name: /^search/ }).check();
+    await page.getByRole("checkbox", { name: /^fetch/ }).check();
+    await page.getByRole("button", { name: "Approve selected tools" }).click();
+    await page.getByRole("switch", { name: "Enable Fixture" }).check();
+    await page.getByText("Ready", { exact: true }).waitFor();
+    // Testing and approving never called a tool.
+    expect(mcp.calls).toEqual([]);
+    await shoot("settings-mcp-1440");
+
+    const server = (await pal.mcp.list()).find((candidate) => candidate.name === "Fixture");
+    fixture.behavior.responses = "script";
+    fixture.behavior.script = `return (await tools.mcp__${server?.id}__search({ query: "durable" })).results[0].title;`;
+    await page.goBack();
+    await page.goBack();
+    await page.getByRole("navigation", { name: "Projects" }).getByText("hi").click();
+    await page.getByLabel("Message").fill("research durable agents");
+    await page.getByRole("button", { name: "Send" }).click();
+    await page.getByRole("button", { name: /Ran a script/ }).click();
+    await page.getByText(`${server?.id} · search`).waitFor();
+    // The model answers once the script's result is back; the run ends instead of looping.
+    await page.getByText("Hello").last().waitFor();
+    await page.getByRole("status").filter({ hasText: "Running" }).waitFor({ state: "detached" });
+    expect(mcp.calls.map((call) => call.name)).toEqual(["search"]);
+    await shoot("chat-mcp-1440");
     fixture.behavior.responses = "ok";
   });
 

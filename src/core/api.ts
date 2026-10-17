@@ -10,6 +10,7 @@ import {
   type ChatGPTModel,
   listChatGPTModels,
 } from "../pi/chatgpt.ts";
+import { McpConfigError } from "../pi/mcp.ts";
 import type { Pal } from "./app.ts";
 import { AdmissionStopped, ChatNotFound, ProjectUnavailable } from "./chats.ts";
 import { cookie, HttpError, isOwnOrigin, readJson, sendJson } from "./http.ts";
@@ -31,6 +32,29 @@ const ModelChoice = Type.Object(
   { additionalProperties: false },
 );
 const Keyed = Type.Object({ requestId: Type.Unknown() }, { additionalProperties: true });
+const McpServerBody = Type.Object(
+  {
+    name: Type.String({ minLength: 1, maxLength: 80 }),
+    url: Type.String({ minLength: 1, maxLength: 2048 }),
+    auth: Type.Union([
+      Type.Object({ kind: Type.Literal("none") }, { additionalProperties: false }),
+      Type.Object(
+        { kind: Type.Literal("header"), header: Type.String({ maxLength: 64 }) },
+        { additionalProperties: false },
+      ),
+      Type.Object({ kind: Type.Literal("bearer") }, { additionalProperties: false }),
+    ]),
+    private: Type.Boolean(),
+  },
+  { additionalProperties: false },
+);
+const KeyBody = Type.Object({ key: Type.String({ maxLength: 4096 }) }, { additionalProperties: false });
+const Toggle = Type.Object({ enabled: Type.Boolean() }, { additionalProperties: false });
+const ToolChoice = Type.Object(
+  { tools: Type.Array(Type.String({ maxLength: 200 }), { maxItems: 128 }) },
+  { additionalProperties: false },
+);
+const Review = Type.Object({ enable: Type.Boolean() }, { additionalProperties: false });
 
 /** A sign-in in progress, bridging Pi's prompt/notify interaction to HTTP polling and a paste endpoint. */
 class SignInAttempt {
@@ -204,6 +228,44 @@ export function createApi(pal: Pal) {
       }
     }
 
+    if (resource === "mcp") {
+      const [, , serverId, part] = path;
+      const listing = async () => ({ review: await pal.mcp.reviewPending(), servers: await pal.mcp.list() });
+      if (path.length === 1 && method === "GET") return send(200, await listing());
+      if (id === "review" && method === "POST") {
+        await pal.mcp.finishReview(validate(Review, await readJson(request)).enable);
+        return send(200, await listing());
+      }
+      if (id === "servers" && serverId === undefined && method === "POST") {
+        return send(200, { server: await pal.mcp.add(validate(McpServerBody, await readJson(request))) });
+      }
+      if (id === "servers" && serverId !== undefined) {
+        if (part === undefined && method === "PUT") {
+          return send(200, {
+            server: await pal.mcp.update(serverId, validate(McpServerBody, await readJson(request))),
+          });
+        }
+        if (part === undefined && method === "DELETE") {
+          await pal.mcp.remove(serverId);
+          return send(200, await listing());
+        }
+        if (part === "key" && method === "PUT") {
+          return send(200, { server: await pal.mcp.setKey(serverId, validate(KeyBody, await readJson(request)).key) });
+        }
+        if (part === "key" && method === "DELETE") return send(200, { server: await pal.mcp.setKey(serverId, null) });
+        if (part === "enabled" && method === "PUT") {
+          const { enabled } = validate(Toggle, await readJson(request));
+          return send(200, { server: await pal.mcp.setEnabled(serverId, enabled) });
+        }
+        if (part === "test" && method === "POST") return send(200, { server: await pal.mcp.test(serverId) });
+        if (part === "tools" && method === "PUT") {
+          return send(200, {
+            server: await pal.mcp.approve(serverId, validate(ToolChoice, await readJson(request)).tools),
+          });
+        }
+      }
+    }
+
     if (resource === "projects" && path.length === 1) {
       if (method === "GET") {
         const projects = await pal.projects.list();
@@ -311,6 +373,7 @@ function classify(error: unknown): [number, string] {
   if (error instanceof ProjectUnavailable) return [409, "project_unavailable"];
   if (error instanceof FolderError) return [422, `folder_${error.code}`];
   if (error instanceof AdmissionStopped) return [503, "admission_stopped"];
+  if (error instanceof McpConfigError) return [400, "mcp_config"];
   if (error instanceof ChatGPTAuthError) return [400, `chatgpt_${error.code}`];
   if (error instanceof OwnerError) {
     const status = { exists: 409, invalid_setup: 403, weak_passphrase: 400, wrong_passphrase: 401, throttled: 429 };

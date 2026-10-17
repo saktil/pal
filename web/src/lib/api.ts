@@ -31,6 +31,34 @@ export type FolderListing = {
   problem?: "denied" | "missing" | "not_directory";
 };
 
+export type McpAuth = { kind: "none" } | { kind: "header"; header: string } | { kind: "bearer" };
+export type McpState =
+  | "disabled"
+  | "idle"
+  | "connecting"
+  | "ready"
+  | "key_required"
+  | "rate_limited"
+  | "unreachable"
+  | "blocked"
+  | "changed"
+  | "error";
+export type McpServer = {
+  id: string;
+  name: string;
+  preset: string | null;
+  url: string;
+  auth: McpAuth;
+  private: boolean;
+  enabled: boolean;
+  keyConfigured: boolean;
+  state: McpState;
+  detail: string | null;
+  tools: { name: string; description: string; approved: boolean; changed: boolean }[];
+};
+export type McpServerInput = { name: string; url: string; auth: McpAuth; private: boolean };
+export type McpListing = { review: boolean; servers: McpServer[] };
+
 export class ApiError extends Error {
   readonly status: number;
   readonly code: string;
@@ -93,4 +121,19 @@ export const api = {
     call<{ admission: { submissionId: number } }>("POST", `chats/${id}/inputs`, { requestId: key, text, whenBusy }),
   stop: (id: string) => call<{ stopped: true }>("POST", `chats/${id}/stop`),
   setChatModel: (id: string, model: string) => call<{ model: string }>("PUT", `chats/${id}/model`, { model }),
+
+  mcp: () => call<McpListing>("GET", "mcp"),
+  mcpReview: (enable: boolean) => call<McpListing>("POST", "mcp/review", { enable }),
+  mcpAdd: (input: McpServerInput) => call<{ server: McpServer }>("POST", "mcp/servers", input),
+  mcpRemove: (id: string) => call<McpListing>("DELETE", `mcp/servers/${id}`),
+  mcpKey: (id: string, key: string | null) =>
+    call<{ server: McpServer }>(
+      key === null ? "DELETE" : "PUT",
+      `mcp/servers/${id}/key`,
+      key === null ? undefined : { key },
+    ),
+  mcpEnabled: (id: string, enabled: boolean) =>
+    call<{ server: McpServer }>("PUT", `mcp/servers/${id}/enabled`, { enabled }),
+  mcpTest: (id: string) => call<{ server: McpServer }>("POST", `mcp/servers/${id}/test`),
+  mcpTools: (id: string, tools: string[]) => call<{ server: McpServer }>("PUT", `mcp/servers/${id}/tools`, { tools }),
 };
