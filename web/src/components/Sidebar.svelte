@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { api } from "../lib/api.ts";
+  import { api, type ChatSummary } from "../lib/api.ts";
   import Icon from "../lib/Icon.svelte";
   import { app, navigate, refreshProjects } from "../lib/state.svelte.ts";
   import ConfirmRemoval from "./ConfirmRemoval.svelte";
@@ -8,11 +8,13 @@
     currentChatId,
     onNewChat,
     onCreateProject,
+    onRenameChat,
     onClose,
   }: {
     currentChatId: string | undefined;
     onNewChat: (projectId: string) => void;
     onCreateProject: () => void;
+    onRenameChat: (chat: ChatSummary) => void;
     /** Present when the sidebar is a drawer. */
     onClose?: () => void;
   } = $props();
@@ -97,6 +99,11 @@
                   <span class="title">{chat.title ?? "New chat"}</span>
                   <span class="cmeta">{relative(chat.createdAt)}</span>
                 </button>
+                <button
+                  class="b i q sm"
+                  aria-label={`Rename chat ${chat.title ?? "New chat"}`}
+                  onclick={() => onRenameChat(chat)}><Icon name="edit" /></button
+                >
                 <button
                   class="b i q sm"
                   aria-label={`Delete chat ${chat.title ?? "New chat"}`}

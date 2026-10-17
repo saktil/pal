@@ -149,7 +149,7 @@ describe("Pal in a browser", () => {
   it("adds a private MCP server, approves its tools, and a chat script calls them", async () => {
     await page.goto(`${base}/#/settings/mcp`);
     await page.getByRole("button", { name: "Add server" }).click();
-    await page.getByLabel("Name").fill("Fixture");
+    await page.getByLabel("Name", { exact: true }).fill("Fixture");
     await page.getByLabel("URL").fill(mcp.url);
     await page.getByLabel(/Private endpoint/).check();
     await page.getByRole("button", { name: "Add and test" }).click();
@@ -751,6 +751,61 @@ describe("Pal in a browser", () => {
     page.off("pageerror", onError);
     await panel.getByRole("button", { name: "Close panel", exact: true }).click();
     await page.setViewportSize({ width: 1440, height: 900 });
+  });
+
+  it("renames a chat with cancel, mobile resizing, persistence and stale-edit protection", async () => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.getByRole("button", { name: "New chat in Notes", exact: true }).click();
+    await page.getByRole("heading", { name: "Start the conversation" }).waitFor();
+    const id = page.url().split("/").at(-1);
+    if (id === undefined) throw new Error("missing chat");
+    const dialog = page.getByRole("dialog", { name: "Rename chat", exact: true });
+    const input = dialog.getByLabel("Chat name");
+    try {
+      const trigger = page.getByRole("button", { name: "Rename chat New chat", exact: true });
+      await trigger.click();
+      expect(await input.evaluate((element) => element.matches(":focus"))).toBe(true);
+      await input.fill("Canceled name");
+      await page.keyboard.press("Escape");
+      await dialog.waitFor({ state: "detached" });
+      expect(await trigger.evaluate((element) => element.matches(":focus"))).toBe(true);
+      await trigger.click();
+      await input.fill("Release notes");
+      for (const width of [1440, 768, 390]) {
+        await page.setViewportSize({ width, height: 900 });
+        expect(await input.inputValue()).toBe("Release notes");
+        expect(await page.evaluate("document.documentElement.scrollWidth <= innerWidth")).toBe(true);
+        await shoot(`rename-chat-${width}`);
+      }
+      await input.press("Enter");
+      await dialog.waitFor({ state: "detached" });
+      await page.setViewportSize({ width: 1440, height: 900 });
+      await page.reload();
+      await page.getByRole("heading", { name: "Release notes", exact: true }).waitFor();
+      fixture.behavior.responses = "ok";
+      await page.getByLabel("Message").fill("Do not replace the chosen title");
+      await page.getByRole("button", { name: "Send" }).click();
+      await page.getByText("Hello", { exact: true }).waitFor();
+      await page.getByRole("heading", { name: "Release notes", exact: true }).waitFor();
+      await page.getByRole("button", { name: "Rename chat Release notes", exact: true }).click();
+      await input.fill("Stale saved name");
+      await pal.chats.rename(id, { title: "Updated elsewhere", expectedTitle: "Release notes" });
+      await dialog.getByRole("button", { name: "Save name" }).click();
+      await dialog.getByRole("alert").filter({ hasText: "chat name changed" }).waitFor();
+      expect(await input.inputValue()).toBe("Stale saved name");
+      expect((await pal.chats.get(id))?.title).toBe("Updated elsewhere");
+      await dialog.getByRole("button", { name: "Cancel" }).click();
+      await page.getByRole("button", { name: "Rename chat Updated elsewhere", exact: true }).click();
+      expect(await input.inputValue()).toBe("Updated elsewhere");
+      await input.fill("Final name");
+      await dialog.getByRole("button", { name: "Save name" }).click();
+      await dialog.waitFor({ state: "detached" });
+      await page.getByRole("heading", { name: "Final name", exact: true }).waitFor();
+    } finally {
+      await pal.chats.remove(id, context);
+      await page.goto(chatUrl);
+      await page.reload();
+    }
   });
 
   it("clicks Send in a legacy chat created before ChatGPT sign-in", async () => {

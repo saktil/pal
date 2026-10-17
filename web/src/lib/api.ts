@@ -204,6 +204,8 @@ export const api = {
     return data.upload;
   },
   stop: (id: string) => call<{ stopped: true }>("POST", `chats/${id}/stop`),
+  renameChat: (id: string, title: string, expectedTitle: string | null) =>
+    call<{ chat: ChatSummary }>("PUT", `chats/${id}/title`, { title, expectedTitle }),
   setChatModel: (id: string, model: string, effort?: Effort) =>
     call<{ model: string; effort: Effort }>("PUT", `chats/${id}/model`, { model, effort }),
 

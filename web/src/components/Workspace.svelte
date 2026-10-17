@@ -1,12 +1,13 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { api, ApiError, requestId } from "../lib/api.ts";
+  import { api, ApiError, type ChatSummary, requestId } from "../lib/api.ts";
   import Icon from "../lib/Icon.svelte";
   import { app, navigate, refreshChatGPT, refreshProjects, type Route, viewport } from "../lib/state.svelte.ts";
   import ChatView from "./ChatView.svelte";
   import CreateProject from "./CreateProject.svelte";
   import Onboarding from "./Onboarding.svelte";
   import ProjectMcpSettings from "./ProjectMcpSettings.svelte";
+  import RenameChat from "./RenameChat.svelte";
   import Settings from "./Settings.svelte";
   import Sidebar from "./Sidebar.svelte";
 
@@ -16,6 +17,7 @@
   let drawerRoute: Route | undefined = $state();
   const drawer = $derived(drawerRoute !== undefined && drawerRoute === app.route);
   let creating = $state(false);
+  let renaming: ChatSummary | undefined = $state.raw();
   let error: string | undefined = $state();
   let loaded = $state(false);
   let panelRoute: Route | undefined = $state();
@@ -100,6 +102,7 @@
             currentChatId={chatId}
             onNewChat={newChat}
             onCreateProject={() => (creating = true)}
+            onRenameChat={(chat) => (renaming = { ...chat })}
             {...size === "desktop" ? {} : { onClose: () => (drawerRoute = undefined) }}
           />
         </div>
@@ -234,6 +237,10 @@
       await newChat(project.id);
     }}
   />
+{/if}
+
+{#if renaming}
+  <RenameChat chat={renaming} onClose={() => (renaming = undefined)} />
 {/if}
 
 <style>

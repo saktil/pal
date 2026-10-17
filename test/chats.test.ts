@@ -83,6 +83,44 @@ describe("chats", () => {
     expect((await store.storage.scanConversations({}, 100, undefined, context)).items).toHaveLength(2);
   });
 
+  it("persists explicit names without changing identity/history or letting stale updates stop admission", async () => {
+    const dataRoot = await tempDir();
+    const { chats, harness, store, userMessages } = await open(dataRoot);
+    const chat = await chats.createChat("rename-chat-request", { projectId: "project-1" }, context);
+    expect(await chats.rename(chat.id, { title: "  Review name  ", expectedTitle: null })).toMatchObject({
+      ...chat,
+      title: "Review name",
+    });
+    expect(await userMessages(chat.conversationId)).toBe(0);
+    expect((await store.storage.scanConversations({}, 100, undefined, context)).items).toHaveLength(1);
+    await expect(chats.rename(chat.id, { title: "Outdated", expectedTitle: null })).rejects.toBeInstanceOf(
+      RequestConflict,
+    );
+    await expect(chats.rename(chat.id, { title: " ", expectedTitle: "Review name" })).rejects.toBeInstanceOf(
+      InvalidRequest,
+    );
+    expect(chats.stopped).toBe(false);
+    await chats.submit(chat.id, "rename-input-request", { text: "first input should not replace the name" }, context);
+    expect(await userMessages(chat.conversationId)).toBe(1);
+    expect((await chats.get(chat.id))?.title).toBe("Review name");
+    expect(await chats.createChat("rename-chat-request", { projectId: "project-1" }, context)).toEqual(chat);
+    await harness.close(context);
+    const again = await open(dataRoot);
+    expect(await again.chats.get(chat.id)).toMatchObject({ ...chat, title: "Review name" });
+    const outcomes = await Promise.allSettled([
+      again.chats.rename(chat.id, { title: "One", expectedTitle: "Review name" }),
+      again.chats.rename(chat.id, { title: "Two", expectedTitle: "Review name" }),
+    ]);
+    expect(outcomes.filter((result) => result.status === "fulfilled")).toHaveLength(1);
+    expect(outcomes.filter((result) => result.status === "rejected")).toHaveLength(1);
+    expect(again.chats.stopped).toBe(false);
+    await again.chats.remove(chat.id, context);
+    await expect(again.chats.rename(chat.id, { title: "Removed", expectedTitle: "One" })).rejects.toBeInstanceOf(
+      ChatNotFound,
+    );
+    expect(again.chats.stopped).toBe(false);
+  });
+
   it("admits an input once per request ID and body, whatever the key order or defaults", async () => {
     const { harness, chats, userMessages } = await open(await tempDir());
     const chat = await chats.createChat("chat-request-1", { projectId: "project-1" }, context);

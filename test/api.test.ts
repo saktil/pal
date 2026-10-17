@@ -104,6 +104,36 @@ async function putBytes(base: string, cookie: string, id: string, bytes: Uint8Ar
 }
 
 describe("API", () => {
+  it("renames only the title snapshot shown, preserving chat identity and enforcing owner authorization", async () => {
+    const { api, pal, base, cookie } = await signedIn();
+    const project = (await api("POST", "projects", { requestId: "rename-project-api", name: "Notes" })).body.project;
+    const chat = (await api("POST", "chats", { requestId: "rename-chat-api", projectId: project.id })).body.chat;
+    const path = `chats/${chat.id}/title`;
+    const renamed = await api("PUT", path, { title: "  Renamed chat  ", expectedTitle: null });
+    expect(renamed.status).toBe(200);
+    expect(renamed.body.chat).toMatchObject({
+      id: chat.id,
+      conversationId: chat.conversationId,
+      projectId: project.id,
+      title: "Renamed chat",
+    });
+    expect((await api("PUT", path, { title: "Stale update", expectedTitle: null })).status).toBe(409);
+    expect((await api("GET", `chats/${chat.id}`)).body.chat.title).toBe("Renamed chat");
+    for (const title of ["", " ", "x".repeat(201)])
+      expect((await api("PUT", path, { title, expectedTitle: "Renamed chat" })).status).toBe(400);
+    expect(pal.chats.stopped).toBe(false);
+    const crossOrigin = await fetch(`${base}/api/${path}`, {
+      method: "PUT",
+      headers: { origin: "https://attacker.example", cookie: cookie(), "content-type": "application/json" },
+      body: JSON.stringify({ title: "Unapproved update", expectedTitle: "Renamed chat" }),
+    });
+    expect(crossOrigin.status).toBe(403);
+    await api("DELETE", `projects/${project.id}`);
+    expect((await api("PUT", path, { title: "Removed", expectedTitle: "Renamed chat" })).status).toBe(404);
+    await api("POST", "sign-out");
+    expect((await api("PUT", path, { title: "Signed out", expectedTitle: "Renamed chat" })).status).toBe(401);
+  });
+
   it("bounds review comments and scopes their updates to an authenticated ready project", async () => {
     const { pal, api, base, cookie } = await signedIn();
     const project = (await api("POST", "projects", { requestId: "review-comments-api", name: "Review" })).body.project;

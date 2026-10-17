@@ -426,6 +426,8 @@ export function createApi(pal: Pal, publicOrigin?: string) {
       }
       const chat = id === undefined ? undefined : await pal.chats.get(id);
       if (chat === undefined) throw new HttpError(404, "not_found", "no such chat");
+      if (action === "title" && path.length === 3 && method === "PUT")
+        return send(200, { chat: await pal.chats.rename(chat.id, await readJson(request)) });
       const conversation = await pal.harness.conversation(chat.conversationId, context);
       if (conversation === undefined) throw new HttpError(404, "not_found", "the chat's conversation is missing");
       if (action === undefined && method === "GET") {

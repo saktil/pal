@@ -10,7 +10,7 @@ import {
 } from "@earendil-works/pi-durable";
 import type { SqliteDatabase } from "@earendil-works/pi-durable/storage/sqlite";
 import { type Static, Type } from "typebox";
-import { normalize, RequestConflict } from "./requests.ts";
+import { InvalidRequest, normalize, RequestConflict, validate } from "./requests.ts";
 
 export const MAX_INPUT_CHARS = 100_000;
 
@@ -18,6 +18,13 @@ export const ChatBody = Type.Object(
   {
     projectId: Type.String({ minLength: 1, maxLength: 64 }),
     title: Type.Optional(Type.String({ minLength: 1, maxLength: 200 })),
+  },
+  { additionalProperties: false },
+);
+const RenameBody = Type.Object(
+  {
+    title: Type.String({ minLength: 1, maxLength: 200 }),
+    expectedTitle: Type.Union([Type.String({ maxLength: 200 }), Type.Null()]),
   },
   { additionalProperties: false },
 );
@@ -159,6 +166,23 @@ export class ChatService {
           conversationId: row.conversation_id,
           createdAt: row.created_at,
         };
+  }
+
+  async rename(chatId: string, input: unknown): Promise<ChatSummary> {
+    const body = validate(RenameBody, input);
+    const title = body.title.trim();
+    if (title === "") throw new InvalidRequest("enter a chat name");
+    const renamed = await this.#guard((db) =>
+      db.get<ChatSummary>(
+        "UPDATE pal_chats SET title = ? WHERE id = ? AND state = 'ready' AND deleted_at IS NULL AND title IS ? RETURNING id, project_id AS projectId, conversation_id AS conversationId, title, created_at AS createdAt",
+        title,
+        chatId,
+        body.expectedTitle,
+      ),
+    );
+    if (renamed !== undefined) return renamed;
+    if ((await this.get(chatId)) === undefined) throw new ChatNotFound("no such chat");
+    throw new RequestConflict("The chat name changed. Close and reopen this dialog before trying again.");
   }
 
   /** Keep Pi history, but revoke admission and future tool calls before aborting the run. */
