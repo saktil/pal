@@ -6,6 +6,9 @@
   fetchPnpmDeps,
   pnpmConfigHook,
   makeWrapper,
+  bash,
+  coreutils,
+  git,
   autoPatchelfHook,
   node-gyp,
   python3,
@@ -79,7 +82,9 @@ stdenv.mkDerivation (finalAttrs: {
     pnpm prune --prod --ignore-scripts
     mkdir -p $out/lib/pal $out/bin
     cp -r dist node_modules package.json $out/lib/pal/
-    makeWrapper ${lib.getExe nodejs_24} $out/bin/pal --add-flags $out/lib/pal/dist/main.js
+    makeWrapper ${lib.getExe nodejs_24} $out/bin/pal --add-flags $out/lib/pal/dist/main.js \
+      --prefix PATH : ${lib.makeBinPath [ bash coreutils git nodejs_24 ]} \
+      --set PAL_BASH ${lib.getExe bash} --set PAL_TIMEOUT ${coreutils}/bin/timeout
     runHook postInstall
   '';
 

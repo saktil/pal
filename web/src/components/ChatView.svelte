@@ -7,6 +7,7 @@
     type Entry,
     type Message,
     type NestedCall,
+    type ShellReceipt,
     textOf,
   } from "../lib/chat.svelte.ts";
   import Icon from "../lib/Icon.svelte";
@@ -33,7 +34,8 @@
         stopped: boolean;
         live: boolean;
       }
-    | { kind: "note"; id: string; text: string };
+    | { kind: "note"; id: string; text: string }
+    | { kind: "shell"; id: string; receipt: ShellReceipt };
 
   const USAGE_URL = "https://chatgpt.com/settings/usage";
 
@@ -119,8 +121,21 @@
         live,
       };
     };
+    const receipts = new Map(
+      entries.flatMap((entry) =>
+        entry.data?.shell?.status === "finished" ? [[entry.data.shell.callId, entry.data.shell] as const] : [],
+      ),
+    );
     const built: Item[] = [];
     for (const entry of entries) {
+      if (entry.kind === "pal.shell" && entry.data?.shell?.status === "started") {
+        built.push({
+          kind: "shell",
+          id: String(entry.id),
+          receipt: receipts.get(entry.data.shell.callId) ?? entry.data.shell,
+        });
+        continue;
+      }
       const message = entry.model?.[0];
       if ((entry.kind === "pi.user" || entry.kind === "pal.user") && message !== undefined) {
         // An input with attachments shows its own text; the attachments' contents went to the model, not the bubble.
@@ -258,6 +273,26 @@
           </div>
         {:else if item.kind === "note"}
           <div class="note"><Icon name="info" /><span>{item.text}</span></div>
+        {:else if item.kind === "shell"}
+          <details class="activity">
+            <summary class="acth"
+              ><Icon name="term" /><span class="grow">Host command <span class="dim">· not sandboxed</span></span>
+              <span class="pill" class:er={item.receipt.timedOut || (item.receipt.exitCode ?? 0) !== 0}>
+                {item.receipt.timedOut
+                  ? "Timed out"
+                  : item.receipt.exitCode !== undefined
+                    ? `Exit ${item.receipt.exitCode}`
+                    : "Pending receipt"}
+              </span>
+            </summary>
+            <div class="small dim mono ellipsis" title={item.receipt.cwd}>{item.receipt.cwd}</div>
+            <pre class="out">{item.receipt.command}</pre>
+            {#if item.receipt.output !== undefined}<pre class="out">{item.receipt.output}</pre>{/if}
+            {#if item.receipt.truncated}<p class="small dim">Output truncated to the last 64 KiB.</p>{/if}
+            {#if item.receipt.status !== "finished"}<p class="small dim">
+                No completion receipt yet. If interrupted, inspect the workspace before retrying.
+              </p>{/if}
+          </details>
         {:else}
           {#if item.steps.length > 0}
             {@const open = openSteps[item.id] === true}

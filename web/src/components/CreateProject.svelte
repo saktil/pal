@@ -193,6 +193,10 @@
             </div>
           {/if}
         {/if}
+        <p class="note">
+          High-trust host workspace: Pal can write files and run commands as its server user. Commands are not
+          sandboxed; the working folder does not confine their access.
+        </p>
         {#if error !== undefined}<div class="callout er" role="alert">{error}</div>{/if}
       </div>
       <div class="foot">

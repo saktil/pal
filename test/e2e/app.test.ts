@@ -1,5 +1,5 @@
 // The built UI in Chromium against the real server, with ChatGPT replaced by the loopback OpenAI fixture.
-import { mkdir, mkdtemp, realpath, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm } from "node:fs/promises";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -197,6 +197,32 @@ describe("Pal in a browser", () => {
       .click();
     await page.getByText("files_list", { exact: true }).waitFor();
     await shoot("chat-upload-1440");
+    fixture.behavior.responses = "ok";
+  });
+
+  it("writes a project file and shows a real host command receipt through Code Mode", async () => {
+    fixture.behavior.responses = "script";
+    fixture.behavior.script =
+      'await tools.files_write({ path: "host.txt", content: "before\\n", expectedHash: null }); return await tools.shell_run({ command: "printf after >> host.txt; printf host-output", timeout: 2 });';
+    await page.getByLabel("Message").fill("write and test the file");
+    await page.getByRole("button", { name: "Send" }).click();
+    await page.getByText("Exit 0", { exact: true }).waitFor();
+    await page.locator("summary").filter({ hasText: "Host command" }).click();
+    await page.getByText("host-output", { exact: true }).waitFor();
+    await page.getByRole("status").filter({ hasText: "Running" }).waitFor({ state: "detached" });
+    const project = (await pal.projects.list())[0];
+    if (project === undefined) throw new Error("missing project");
+    expect(await readFile(join(project.root, "host.txt"), "utf8")).toBe("before\nafter");
+    const chat = (await pal.chats.list(project.id))[0];
+    if (chat === undefined) throw new Error("missing chat");
+    const agent = await (await pal.harness.conversation(chat.conversationId, context))?.agent(context);
+    expect(agent?.tools.map((tool) => tool.name)).toEqual(["codemode"]);
+    for (const name of ["files_write", "files_edit", "shell_run"])
+      expect(agent?.callable.find((tool) => tool.name === name)).toMatchObject({
+        replay: "unsafe",
+        callers: ["tools"],
+      });
+    await shoot("host-command-1440");
     fixture.behavior.responses = "ok";
   });
 

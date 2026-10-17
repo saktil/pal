@@ -32,7 +32,22 @@ export type NestedCall = {
 export type Attachment = { id: string; name: string; size: number; mediaType: string };
 
 /** `pal.user` entries are user inputs with attachments; their `data` holds the labels. */
-export type Entry = { id: number; kind: string; model?: Message[]; data?: { attachments?: Attachment[] } };
+export type ShellReceipt = {
+  callId: string;
+  command: string;
+  cwd: string;
+  status: string;
+  output?: string;
+  exitCode?: number;
+  truncated?: boolean;
+  timedOut?: boolean;
+};
+export type Entry = {
+  id: number;
+  kind: string;
+  model?: Message[];
+  data?: { attachments?: Attachment[]; shell?: ShellReceipt };
+};
 
 type Change =
   | { type: "text_start" | "thinking_start" | "toolcall_start" | "block"; contentIndex: number; block: Block }

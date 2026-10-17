@@ -15,6 +15,7 @@ import { loadMasterKey, SqliteCredentialStore } from "../storage/credentials.ts"
 import { openStore, type Store } from "../storage/store.ts";
 import { ChatService } from "./chats.ts";
 import { FILES_NAMESPACE, fileTools } from "./files.ts";
+import { HostCommands, SHELL_NAMESPACE, shellTools, WorkspaceLocks } from "./execution.ts";
 import { Owner } from "./owner.ts";
 import { type Project, Projects } from "./projects.ts";
 import { Uploads } from "./uploads.ts";
@@ -52,6 +53,8 @@ const NO_AMBIENT_AUTH = { env: async () => undefined, fileExists: async () => fa
 
 export async function openPal(options: PalOptions, context: Context): Promise<Pal> {
   const store = await openStore(options.dataRoot);
+  const commands = new HostCommands();
+  const locks = new WorkspaceLocks();
   let harness: Harness | undefined;
   let sandbox: { close(): Promise<void> } | undefined;
   let mcp: McpManager | undefined;
@@ -59,9 +62,12 @@ export async function openPal(options: PalOptions, context: Context): Promise<Pa
   let closing: Promise<void> | undefined;
   const close = () =>
     (closing ??= (async () => {
-      await (harness === undefined ? store.close() : harness.close(context));
-      await sandbox?.close();
-      await mcp?.close();
+      try {
+        await (harness === undefined ? store.close() : harness.close(context));
+      } finally {
+        await commands.close();
+        await Promise.all([sandbox?.close(), mcp?.close()]);
+      }
     })());
   try {
     const { database } = store;
@@ -74,8 +80,7 @@ export async function openPal(options: PalOptions, context: Context): Promise<Pa
     const models = createModels({ credentials, authContext: NO_AMBIENT_AUTH });
     models.setProvider(chatGPTProvider(endpoints));
 
-    // Code Mode is always on. Scripts may read their project's folder, and call MCP tools only as the MCP manager
-    // grants them at the moment of each call.
+    // Host writes/commands are the owner's explicit high-trust mode; every nested call rechecks the live project grant.
     const projectRoot = async (conversation: ConversationId) =>
       (
         await database.get<{ root: string }>(
@@ -86,18 +91,19 @@ export async function openPal(options: PalOptions, context: Context): Promise<Pa
     const codemode = createPalCodemode({
       allows: async (conversation, name) =>
         (await projectRoot(conversation)) !== undefined &&
-        (name.startsWith(FILES_NAMESPACE.prefix) || mcp?.allows(name) === true),
-      namespaces: [FILES_NAMESPACE],
+        (name.startsWith(FILES_NAMESPACE.prefix) || name === "shell_run" || mcp?.allows(name) === true),
+      namespaces: [FILES_NAMESPACE, SHELL_NAMESPACE],
     });
     sandbox = codemode.sandbox;
     const registry = createRegistry();
     for (const extension of codemode.extensions) registry.install(extension);
-    registry.install(fileTools({ root: projectRoot, deny: [options.dataRoot] }));
+    registry.install(fileTools({ root: projectRoot, deny: [options.dataRoot], locks }));
+    registry.install(shellTools({ root: projectRoot, commands, locks }));
     const connections = await McpManager.open({
       database: store.database,
       credentials,
       registry,
-      codemode: (namespaces) => codemode.withNamespaces([FILES_NAMESPACE, ...namespaces]),
+      codemode: (namespaces) => codemode.withNamespaces([FILES_NAMESPACE, SHELL_NAMESPACE, ...namespaces]),
     });
     mcp = connections;
     const running = await Harness.open(store.storage, { models, registry }, context);
@@ -164,6 +170,7 @@ function agentFor(project: Project, model: string | undefined): AgentChange {
     instructions: [
       `You are Pal, the owner's personal assistant, working in the project "${project.name}".`,
       `The project's folder on the server is ${project.root}${project.mode === "managed" ? " (a workspace Pal manages)" : ""}.`,
+      "File writes and shell commands are available through Code Mode. Commands run as the host user, not in a sandbox. Never access Pal data or credentials. Inspect interrupted effects before retrying.",
       "Say plainly what you did and did not verify. Never claim a lookup, file read or action that did not happen.",
     ].join("\n"),
   };
