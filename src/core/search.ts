@@ -1,11 +1,14 @@
 import { realpath } from "node:fs/promises";
 import { isAbsolute, join, relative } from "node:path";
+import { setTimeout as sleep } from "node:timers/promises";
 import { FileFinder } from "@ff-labs/fff-node";
 import { isProtected } from "./files.ts";
 
 const MAX_FINDERS = 3;
 const IDLE_MS = 5 * 60_000;
 const SCAN_WAIT_MS = 10_000;
+const WATCH_WAIT_MS = 1_000;
+const WATCH_NOT_READY = "Failed to subscribe: File system watcher is not ready";
 const PAGE = 50;
 const LINE_CHARS = 300;
 
@@ -23,14 +26,21 @@ export type SearchResults = {
   readonly hits: readonly SearchHit[];
   /** More matches exist, or the time budget ran out, than are shown. */
   readonly truncated: boolean;
-  /** The index's first scan had not finished, so results may be incomplete. */
+  /** A scan or watcher-gap recovery has not finished, so results may be incomplete. */
   readonly indexing: boolean;
 };
 
 /** A folder Pal will not index, or a query it will not run; reported, never replaced by another search. */
 export class SearchError extends Error {}
 
-type Index = { finder: FileFinder; used: number; scanned: boolean };
+type Index = {
+  finder: FileFinder;
+  used: number;
+  scanned: boolean;
+  rescan: boolean;
+  unwatch?: () => void;
+  pending?: Promise<void>;
+};
 
 /**
  * Shared, lazy fff indexes for project folders: created on first search, at most a few alive, destroyed after idling
@@ -120,9 +130,10 @@ export class ProjectSearch {
     const existing = this.#indexes.get(root);
     if (existing !== undefined && !existing.finder.isDestroyed) {
       existing.used = Date.now();
-      if (!existing.scanned) existing.scanned = (await existing.finder.waitForScan(SCAN_WAIT_MS)).ok === true;
+      await this.#scan(root, existing);
       return existing;
     }
+    if (existing !== undefined) this.#drop(root);
     if (this.#deny.some((denied) => isAncestorOf(root, denied) && !isAncestorOf(denied, root))) {
       throw new SearchError(
         "this folder contains Pal's own data, so Pal does not index it; search a project inside it",
@@ -142,16 +153,69 @@ export class ProjectSearch {
       if (oldest === undefined) break;
       this.#drop(oldest[0]);
     }
-    const index: Index = { finder: created.value, used: Date.now(), scanned: false };
+    const index: Index = { finder: created.value, used: Date.now(), scanned: false, rescan: false };
     this.#indexes.set(root, index);
-    const scan = await index.finder.waitForScan(SCAN_WAIT_MS);
-    index.scanned = scan.ok && scan.value === true;
+    await this.#scan(root, index);
     return index;
+  }
+
+  async #scan(root: string, index: Index): Promise<void> {
+    const pending = (index.pending ??= this.#ready(root, index));
+    try {
+      await pending;
+    } finally {
+      if (index.pending === pending) delete index.pending;
+    }
+  }
+
+  async #ready(root: string, index: Index): Promise<void> {
+    if (index.rescan) {
+      const started = index.finder.scanFiles();
+      if (!started.ok) throw new SearchError(`search recovery failed: ${started.error}`);
+      index.rescan = false;
+    }
+    if (!index.scanned) {
+      const scan = await index.finder.waitForScan(SCAN_WAIT_MS);
+      if (!scan.ok) throw new SearchError(`search scan failed: ${scan.error}`);
+      if (index.finder.isDestroyed) throw new SearchError("search index was released; try again");
+      // A second gap during the wait still needs a scan; never label that snapshot complete.
+      index.scanned = scan.value === true && !index.rescan;
+    }
+    if (index.scanned && index.unwatch === undefined) {
+      const deadline = Date.now() + WATCH_WAIT_MS;
+      let retried = false;
+      // In fff 0.11, scan completion can precede native watcher startup.
+      for (;;) {
+        if (this.#indexes.get(root) !== index || index.finder.isDestroyed)
+          throw new SearchError("search index was released; try again");
+        const watching = index.finder.watch((events) => {
+          if (this.#indexes.get(root) !== index || !events.some((event) => event.kind === "rescan")) return;
+          index.scanned = false;
+          index.rescan = true;
+        });
+        if (watching.ok) {
+          index.unwatch = watching.value;
+          break;
+        }
+        if (watching.error !== WATCH_NOT_READY || Date.now() >= deadline) {
+          this.#drop(root);
+          throw new SearchError(`search watcher is unavailable: ${watching.error}`);
+        }
+        retried = true;
+        await sleep(50);
+      }
+      if (retried) {
+        index.scanned = false;
+        index.rescan = true;
+        await this.#ready(root, index);
+      }
+    }
   }
 
   #drop(root: string): void {
     const index = this.#indexes.get(root);
     this.#indexes.delete(root);
+    index?.unwatch?.();
     if (index !== undefined && !index.finder.isDestroyed) index.finder.destroy();
   }
 }

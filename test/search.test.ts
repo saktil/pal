@@ -1,7 +1,8 @@
 import { mkdir, mkdtemp, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import { FileFinder, type WatchBatchCallback } from "@ff-labs/fff-node";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import type { ConversationId, ToolExecutionApi, ToolRegistration } from "@earendil-works/pi-durable";
 import { fileTools } from "../src/core/files.ts";
@@ -10,6 +11,7 @@ import { ProjectSearch, SearchError } from "../src/core/search.ts";
 const cleanups: (() => unknown)[] = [];
 afterEach(async () => {
   for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
+  vi.restoreAllMocks();
 });
 
 async function folder(files: Record<string, string | Buffer>): Promise<string> {
@@ -28,7 +30,131 @@ function searcher(deny: string[] = []): ProjectSearch {
   return search;
 }
 
+/** Miss real events deliberately; deliver the SDK's documented rescan signal against a real native index. */
+function interruptedWatcher() {
+  const create = FileFinder.create;
+  vi.spyOn(FileFinder, "create").mockImplementation((options) => create({ ...options, disableWatch: true }));
+  const stop = vi.fn();
+  let notify: WatchBatchCallback | undefined;
+  vi.spyOn(FileFinder.prototype, "watch").mockImplementation(
+    (pattern: string | WatchBatchCallback, callback?: WatchBatchCallback) => {
+      notify = typeof pattern === "function" ? pattern : callback;
+      return { ok: true, value: stop };
+    },
+  );
+  return {
+    stop,
+    gap: (root: string) => {
+      if (notify === undefined) throw new Error("Pal did not subscribe to watcher gap signals");
+      notify([{ path: root, kind: "rescan" }]);
+    },
+  };
+}
+
 describe("project search", () => {
+  it("does not label a timed-out scan complete on a later search", async () => {
+    const root = await folder({ "initial.txt": "needle" });
+    vi.spyOn(FileFinder.prototype, "waitForScan")
+      .mockResolvedValueOnce({ ok: true, value: false })
+      .mockResolvedValueOnce({ ok: true, value: false });
+    const search = searcher();
+    expect((await search.search(root, "needle", "text")).indexing).toBe(true);
+    expect((await search.search(root, "needle", "text")).indexing).toBe(true);
+    expect((await search.search(root, "needle", "text")).indexing).toBe(false);
+  });
+
+  it("coalesces watcher gaps into a real rescan before the next query and releases the subscription", async () => {
+    const watcher = interruptedWatcher();
+    const rescans = vi.spyOn(FileFinder.prototype, "scanFiles");
+    const root = await folder({ "initial.txt": "needle" });
+    const search = searcher();
+    await search.search(root, "needle", "text");
+    await writeFile(join(root, "missed.txt"), "needle after a missed event");
+    expect((await search.search(root, "missed.txt", "files")).hits).toEqual([]);
+    watcher.gap(root);
+    watcher.gap(root);
+    watcher.gap(root);
+    const recovered = await search.search(root, "needle", "text");
+    expect(recovered.indexing).toBe(false);
+    expect(recovered.hits.map((hit) => hit.path).sort()).toEqual(["initial.txt", "missed.txt"]);
+    expect(rescans).toHaveBeenCalledTimes(1);
+    await search.forget(root);
+    expect(watcher.stop).toHaveBeenCalledTimes(1);
+    watcher.gap(root);
+    expect(search.size).toBe(0);
+    expect(rescans).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps a second gap received during recovery incomplete until another scan finishes", async () => {
+    const watcher = interruptedWatcher();
+    const root = await folder({ "initial.txt": "needle" });
+    const search = searcher();
+    await search.search(root, "needle", "text");
+    const rescans = vi.spyOn(FileFinder.prototype, "scanFiles");
+    vi.spyOn(FileFinder.prototype, "waitForScan").mockImplementationOnce(async () => {
+      watcher.gap(root);
+      return { ok: true, value: true };
+    });
+    watcher.gap(root);
+    expect((await search.search(root, "needle", "text")).indexing).toBe(true);
+    expect((await search.search(root, "needle", "text")).indexing).toBe(false);
+    expect(rescans).toHaveBeenCalledTimes(2);
+  });
+
+  it("reports a refused recovery scan and retries the still-dirty index on the next query", async () => {
+    const watcher = interruptedWatcher();
+    const root = await folder({ "initial.txt": "needle" });
+    const search = searcher();
+    await search.search(root, "needle", "text");
+    const rescans = vi
+      .spyOn(FileFinder.prototype, "scanFiles")
+      .mockReturnValueOnce({ ok: false, error: "fixture scan refused" });
+    watcher.gap(root);
+    await expect(search.search(root, "needle", "text")).rejects.toThrow(/fixture scan refused/);
+    expect((await search.search(root, "needle", "text")).indexing).toBe(false);
+    expect(rescans).toHaveBeenCalledTimes(2);
+  });
+
+  it("bounds transient watcher startup retries and coalesces concurrent initialization", async () => {
+    const watcher = interruptedWatcher();
+    const watch = vi.spyOn(FileFinder.prototype, "watch").mockReturnValueOnce({
+      ok: false,
+      error: "Failed to subscribe: File system watcher is not ready",
+    });
+    const rescans = vi.spyOn(FileFinder.prototype, "scanFiles");
+    const root = await folder({ "initial.txt": "needle" });
+    const search = searcher();
+    const results = await Promise.all([search.search(root, "needle", "text"), search.search(root, "initial", "files")]);
+    expect(results.every((result) => !result.indexing && result.hits.length === 1)).toBe(true);
+    expect(watch).toHaveBeenCalledTimes(2);
+    expect(rescans).toHaveBeenCalledTimes(1);
+    search.close();
+    expect(watcher.stop).toHaveBeenCalledTimes(1);
+  });
+
+  it("stops waiting for an unready watcher instead of retrying forever", async () => {
+    const watch = vi.spyOn(FileFinder.prototype, "watch").mockReturnValue({
+      ok: false,
+      error: "Failed to subscribe: File system watcher is not ready",
+    });
+    const root = await folder({ "initial.txt": "needle" });
+    const search = searcher();
+    await expect(search.search(root, "needle", "text")).rejects.toThrow(/watcher is not ready/);
+    expect(search.size).toBe(0);
+    expect(watch.mock.calls.length).toBeGreaterThan(1);
+    expect(watch.mock.calls.length).toBeLessThan(25);
+  });
+
+  it("destroys a finder whose watch subscription could not be established", async () => {
+    const root = await folder({ "initial.txt": "needle" });
+    const destroy = vi.spyOn(FileFinder.prototype, "destroy");
+    vi.spyOn(FileFinder.prototype, "watch").mockReturnValue({ ok: false, error: "fixture watcher unavailable" });
+    const search = searcher();
+    await expect(search.search(root, "needle", "text")).rejects.toThrow(/fixture watcher unavailable/);
+    expect(search.size).toBe(0);
+    expect(destroy).toHaveBeenCalledTimes(1);
+  });
+
   it("finds exact text with lines and ranges, never turning zero matches into a guess", async () => {
     const root = await folder({
       "src/app.ts": "const x = 1;\nconsole.log('needle here');\n",
