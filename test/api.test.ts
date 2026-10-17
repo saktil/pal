@@ -15,14 +15,20 @@ afterEach(async () => {
   for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
 });
 
-async function start() {
+async function start(publicOrigin?: string) {
   const fixture = await startOpenAIFixture();
   cleanups.push(fixture.close);
   const dataRoot = await realpath(await mkdtemp(join(tmpdir(), "pal-api-test-")));
   cleanups.push(() => rm(dataRoot, { recursive: true, force: true }));
   const pal = await openPal({ dataRoot, installRoot: "/nonexistent-install", endpoints: fixture.endpoints }, context);
   cleanups.push(() => pal.close());
-  const server = await startServer({ host: "127.0.0.1", port: 0, version: "test", api: createApi(pal) });
+  const server = await startServer({
+    host: "127.0.0.1",
+    port: 0,
+    version: "test",
+    publicOrigin,
+    api: createApi(pal, publicOrigin),
+  });
   cleanups.push(() => {
     server.closeAllConnections();
     return new Promise((resolve) => server.close(resolve));
@@ -49,14 +55,23 @@ async function start() {
 }
 
 /** A raw request, for headers fetch will not let a test forge. */
-function raw(base: string, path: string, headers: Record<string, string>): Promise<number> {
+function raw(
+  base: string,
+  path: string,
+  headers: Record<string, string>,
+  body?: unknown,
+): Promise<{ status: number; cookies: string[] }> {
   return new Promise((resolve, reject) => {
-    const request = httpRequest(`${base}${path}`, { headers }, (response) => {
-      response.resume();
-      resolve(response.statusCode ?? 0);
-    });
+    const request = httpRequest(
+      `${base}${path}`,
+      { method: body === undefined ? "GET" : "POST", headers: { "content-type": "application/json", ...headers } },
+      (response) => {
+        response.resume();
+        resolve({ status: response.statusCode ?? 0, cookies: response.headers["set-cookie"] ?? [] });
+      },
+    );
     request.on("error", reject);
-    request.end();
+    request.end(body === undefined ? undefined : JSON.stringify(body));
   });
 }
 
@@ -69,8 +84,8 @@ async function eventually<T>(read: () => Promise<T>, done: (value: T) => boolean
   throw new Error("condition not reached");
 }
 
-async function signedIn() {
-  const app = await start();
+async function signedIn(publicOrigin?: string) {
+  const app = await start(publicOrigin);
   await app.api("POST", "setup", { token: app.pal.owner.setupToken, passphrase: "correct horse battery" });
   return app;
 }
@@ -88,8 +103,8 @@ describe("API", () => {
   it("answers only its own host and accepts writes only from its own origin", async () => {
     const { base, api } = await start();
     const port = new URL(base).port;
-    expect(await raw(base, "/api/health", { host: `attacker.example:${port}` })).toBe(421);
-    expect(await raw(base, "/api/health", { host: `localhost:${port}` })).toBe(200);
+    expect((await raw(base, "/api/health", { host: `attacker.example:${port}` })).status).toBe(421);
+    expect((await raw(base, "/api/health", { host: `localhost:${port}` })).status).toBe(200);
     const response = await fetch(`${base}/api/sign-in`, {
       method: "POST",
       headers: { origin: "http://attacker.example", "content-type": "application/json" },
@@ -98,6 +113,33 @@ describe("API", () => {
     expect(response.status).toBe(403);
     expect((await api("GET", "projects")).status).toBe(401);
   });
+
+  it.each(["https://pal.example", "http://100.64.0.10:7337"])(
+    "accepts only the exact configured public Host/Origin %s, retaining loopback access",
+    async (origin) => {
+      const { base, api } = await signedIn(origin);
+      const host = new URL(origin).host;
+      expect((await raw(base, "/api/health", { host })).status).toBe(200);
+      expect((await raw(base, "/api/health", { host: `${host}.evil`, "x-forwarded-host": host })).status).toBe(421);
+      const body = { passphrase: "correct horse battery" };
+      for (const wrong of [
+        "null",
+        `${origin}/`,
+        "https://attacker.example",
+        origin.replace(/^https?:/, origin.startsWith("https:") ? "http:" : "https:"),
+      ]) {
+        expect(
+          (await raw(base, "/api/sign-in", { host, origin: wrong, "x-forwarded-proto": "https" }, body)).status,
+        ).toBe(403);
+      }
+      expect((await raw(base, "/api/sign-in", { host, origin: base }, body)).status).toBe(403);
+      expect((await raw(base, "/api/sign-in", { host: new URL(base).host, origin }, body)).status).toBe(403);
+      const accepted = await raw(base, "/api/sign-in", { host, origin }, body);
+      expect(accepted.status).toBe(200);
+      expect(accepted.cookies[0]?.includes("; Secure")).toBe(origin.startsWith("https:"));
+      expect((await api("GET", "projects")).status).toBe(200);
+    },
+  );
 
   it("sets up the owner once with the terminal's token, then signs in with the passphrase", async () => {
     const { pal, api, cookie } = await start();

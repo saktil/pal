@@ -52,15 +52,21 @@ export function cookie(request: IncomingMessage, name: string): string | undefin
 const LOOPBACK_NAMES = ["127.0.0.1", "localhost", "[::1]"];
 
 /**
- * Whether the request names this server: a loopback name and the port it arrived on. A DNS-rebinding page reaches the
- * same socket under its own host name, which this refuses.
+ * A loopback name at the arrival port, or the exact configured public host. No forwarded headers or wildcard hosts.
  */
-export function isOwnHost(request: IncomingMessage): boolean {
+export function isOwnHost(request: IncomingMessage, external?: URL): boolean {
   const host = request.headers.host;
-  return host !== undefined && LOOPBACK_NAMES.some((name) => host === `${name}:${request.socket.localPort}`);
+  return (
+    host !== undefined &&
+    (host === external?.host || LOOPBACK_NAMES.some((name) => host === `${name}:${request.socket.localPort}`))
+  );
 }
 
 /** Whether a state-changing request comes from this server's own pages: the exact origin, not merely same-site. */
-export function isOwnOrigin(request: IncomingMessage): boolean {
-  return request.headers.origin === `http://${request.headers.host}`;
+export function isOwnOrigin(request: IncomingMessage, external?: URL): boolean {
+  const origin =
+    external !== undefined && request.headers.host === external.host
+      ? external.origin
+      : `http://${request.headers.host}`;
+  return request.headers.origin === origin;
 }

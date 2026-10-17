@@ -44,6 +44,8 @@ beforeAll(async () => {
   browser = await chromium.launch({ headless: true, chromiumSandbox: true });
   cleanups.push(() => browser.close());
   page = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+  // A private-network HTTP page lacks randomUUID, but must still be able to create projects and send messages.
+  await page.addInitScript(() => Object.defineProperty(crypto, "randomUUID", { value: undefined }));
   if (shots !== undefined) await mkdir(shots, { recursive: true });
 });
 
@@ -58,6 +60,7 @@ async function shoot(name: string): Promise<void> {
 describe("Pal in a browser", () => {
   it("refuses to start without the terminal's setup link, then sets up the owner from it", async () => {
     await page.goto(base);
+    expect(await page.evaluate(() => typeof crypto.randomUUID)).toBe("undefined");
     await expect.poll(() => page.getByRole("heading", { name: "Pal isn't set up yet" }).count()).toBe(1);
     await page.goto(`${base}/#setup=${pal.owner.setupToken}`);
     await page.getByLabel("Passphrase", { exact: true }).fill("correct horse battery");

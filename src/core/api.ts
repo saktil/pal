@@ -123,7 +123,8 @@ class SignInAttempt {
  * Pal's JSON API. Everything except health, session state, setup and sign-in requires the owner's session; every
  * state-changing request must come from Pal's own origin.
  */
-export function createApi(pal: Pal) {
+export function createApi(pal: Pal, publicOrigin?: string) {
+  const external = publicOrigin === undefined ? undefined : new URL(publicOrigin);
   let attempt: SignInAttempt | undefined;
   let listing: { models: ChatGPTModel[] } | { error: string } | undefined;
 
@@ -157,10 +158,10 @@ export function createApi(pal: Pal) {
     return await pal.owner.authenticate(cookie(request, SESSION_COOKIE));
   }
 
-  function setSession(response: ServerResponse, token: string): void {
+  function setSession(response: ServerResponse, token: string, request: IncomingMessage): void {
     response.setHeader(
       "set-cookie",
-      `${SESSION_COOKIE}=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${SESSION_MAX_AGE_SECONDS}`,
+      `${SESSION_COOKIE}=${token}; Path=/; HttpOnly; SameSite=Strict; Max-Age=${SESSION_MAX_AGE_SECONDS}${external?.protocol === "https:" && request.headers.host === external.host ? "; Secure" : ""}`,
     );
   }
 
@@ -169,7 +170,7 @@ export function createApi(pal: Pal) {
     const path = url.pathname.split("/").filter(Boolean).slice(1);
     const [resource, id, action] = path;
     const send = (status: number, body: unknown) => sendJson(request, response, status, body);
-    if (method !== "GET" && method !== "HEAD" && !isOwnOrigin(request)) {
+    if (method !== "GET" && method !== "HEAD" && !isOwnOrigin(request, external)) {
       throw new HttpError(403, "cross_origin", "requests must come from Pal's own page");
     }
 
@@ -179,12 +180,12 @@ export function createApi(pal: Pal) {
     }
     if (resource === "setup" && path.length === 1 && method === "POST") {
       const body = validate(Setup, await readJson(request));
-      setSession(response, await pal.owner.setup(body.token, body.passphrase));
+      setSession(response, await pal.owner.setup(body.token, body.passphrase), request);
       return send(200, { signedIn: true });
     }
     if (resource === "sign-in" && path.length === 1 && method === "POST") {
       const body = validate(Passphrase, await readJson(request));
-      setSession(response, await pal.owner.signIn(body.passphrase));
+      setSession(response, await pal.owner.signIn(body.passphrase), request);
       return send(200, { signedIn: true });
     }
     if (!(await signedIn(request))) throw new HttpError(401, "signed_out", "sign in to Pal first");

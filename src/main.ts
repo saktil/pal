@@ -39,7 +39,7 @@ async function main(argv: readonly string[]): Promise<number> {
       return results.every((result) => result.ok) ? 0 : 1;
     }
     case "serve": {
-      const { host, port, dataRoot } = command.config;
+      const { host, port, dataRoot, publicOrigin } = command.config;
       let pal;
       try {
         pal = await openPal({ dataRoot, installRoot }, BACKGROUND_CONTEXT);
@@ -54,8 +54,9 @@ async function main(argv: readonly string[]): Promise<number> {
           host,
           port,
           version: pkg.version,
+          publicOrigin,
           webRoot: existsSync(join(webRoot, "index.html")) ? webRoot : undefined,
-          api: createApi(pal),
+          api: createApi(pal, publicOrigin),
         });
       } catch (error) {
         await pal.close();
@@ -63,7 +64,7 @@ async function main(argv: readonly string[]): Promise<number> {
       }
       const address = server.address() as AddressInfo;
       const shown = address.family === "IPv6" ? `[${address.address}]` : address.address;
-      const origin = `http://${shown}:${address.port}`;
+      const origin = publicOrigin ?? `http://${shown}:${address.port}`;
       process.stdout.write(`pal ${pkg.version} listening on ${origin} (data: ${dataRoot})\n`);
       if (!(await pal.owner.exists())) {
         // Only someone who can read this terminal can claim the installation.

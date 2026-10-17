@@ -36,8 +36,9 @@ describe("parseCommand", () => {
   });
 
   it.each([
-    [["--host", "0.0.0.0"], /loopback/],
-    [["--host", "192.168.1.2"], /loopback/],
+    [["--host", "0.0.0.0"], /public-origin/],
+    [["--host", "192.168.1.2"], /public-origin/],
+    [["--host", "attacker.example", "--public-origin", "https://pal.example"], /address/],
     [["--port", "65536"], /--port/],
     [["--port", "80a"], /--port/],
     [["--data-dir", "relative/dir"], /absolute/],
@@ -51,6 +52,28 @@ describe("parseCommand", () => {
   ])("rejects %j", (argv, message) => {
     expect(() => parseCommand(argv, linux)).toThrow(UsageError);
     expect(() => parseCommand(argv, linux)).toThrow(message);
+  });
+
+  it("requires explicit canonical public origins for remote binding", () => {
+    expect(serve(["--host", "100.64.0.10", "--public-origin", "http://100.64.0.10:7337/"])).toMatchObject({
+      host: "100.64.0.10",
+      publicOrigin: "http://100.64.0.10:7337",
+    });
+    expect(serve(["--public-origin", "https://pal.example/"])).toMatchObject({
+      host: "127.0.0.1",
+      publicOrigin: "https://pal.example",
+    });
+    for (const origin of [
+      "invalid",
+      "ftp://pal.example",
+      "https://user:pass@pal.example",
+      "https://pal.example/path",
+      "https://pal.example?key=x",
+      "https://pal.example#x",
+    ]) {
+      expect(() => serve(["--public-origin", origin])).toThrow(UsageError);
+    }
+    expect(() => serve(["probe", "--public-origin", "https://pal.example"])).toThrow(/does not accept/);
   });
 
   it("requires an explicit data directory where no default exists", () => {

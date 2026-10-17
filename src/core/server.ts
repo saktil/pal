@@ -5,6 +5,7 @@ import { isOwnHost, sendJson } from "./http.ts";
 
 export type ServerOptions = {
   version: string;
+  publicOrigin?: string | undefined;
   /** Built frontend directory; absent in development, where Vite serves the UI. */
   webRoot?: string | undefined;
   /** Handles every other `/api/` route; absent, they are 404. */
@@ -20,7 +21,8 @@ const BASE_HEADERS = {
     "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'",
 };
 
-export function createRequestListener({ version, webRoot, api }: ServerOptions): RequestListener {
+export function createRequestListener({ version, webRoot, api, publicOrigin }: ServerOptions): RequestListener {
+  const external = publicOrigin === undefined ? undefined : new URL(publicOrigin);
   const assets = webRoot === undefined ? undefined : sirv(webRoot, { single: true });
 
   return (request, response) => {
@@ -28,7 +30,7 @@ export function createRequestListener({ version, webRoot, api }: ServerOptions):
     // A throw here would crash the process, so malformed request targets get a 400 instead.
     const url = URL.parse(request.url ?? "/", "http://pal.invalid");
     if (url === null) return sendJson(request, response, 400, { error: "bad_request" });
-    if (!isOwnHost(request)) return sendJson(request, response, 421, { error: "wrong_host" });
+    if (!isOwnHost(request, external)) return sendJson(request, response, 421, { error: "wrong_host" });
     const { pathname } = url;
     const readOnly = request.method === "GET" || request.method === "HEAD";
 

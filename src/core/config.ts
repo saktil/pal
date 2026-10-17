@@ -5,7 +5,7 @@ import { parseArgs } from "node:util";
 export const DEFAULT_HOST = "127.0.0.1";
 export const DEFAULT_PORT = 7337;
 
-export type ServeConfig = { host: string; port: number; dataRoot: string };
+export type ServeConfig = { host: string; port: number; dataRoot: string; publicOrigin?: string };
 
 export type Command =
   { kind: "help" } | { kind: "version" } | { kind: "probe" } | { kind: "serve"; config: ServeConfig };
@@ -22,6 +22,7 @@ export type HostFacts = {
 export class UsageError extends Error {}
 
 export const USAGE = `Usage: pal [serve] [--host <address>] [--port <number>] [--data-dir <path>]
+                 [--public-origin <url>]
        pal probe
 
 Commands:
@@ -29,7 +30,9 @@ Commands:
   probe              Check SQLite FTS5, fff, Code Mode and PTY support on this host, then exit
 
 Options:
-  --host <address>   Loopback address to listen on (default ${DEFAULT_HOST})
+  --host <address>   Address to listen on (default ${DEFAULT_HOST})
+                     Non-loopback binding requires --public-origin.
+  --public-origin <url>  Exact browser origin; use HTTPS or a trusted private access layer
   --port <number>    TCP port (default ${DEFAULT_PORT}; 0 picks a free port)
   --data-dir <path>  Absolute path for Pal's writable data
                      (default: $XDG_DATA_HOME/pal or ~/.local/share/pal on Linux,
@@ -47,6 +50,7 @@ export function parseCommand(argv: readonly string[], host: HostFacts): Command 
         host: { type: "string" },
         port: { type: "string" },
         "data-dir": { type: "string" },
+        "public-origin": { type: "string" },
         help: { type: "boolean", short: "h" },
         version: { type: "boolean", short: "v" },
       },
@@ -61,28 +65,47 @@ export function parseCommand(argv: readonly string[], host: HostFacts): Command 
   const [name = "serve", extra] = positionals;
   if (extra !== undefined) throw new UsageError(`unexpected argument '${extra}'`);
   if (name === "probe") {
-    const options = ["host", "port", "data-dir"] as const;
+    const options = ["host", "port", "data-dir", "public-origin"] as const;
     const given = options.find((option) => values[option] !== undefined);
     if (given !== undefined) throw new UsageError(`'probe' does not accept --${given}`);
     return { kind: "probe" };
   }
   if (name !== "serve") throw new UsageError(`unknown command '${name}'`);
 
+  const publicOrigin = parsePublicOrigin(values["public-origin"]);
   return {
     kind: "serve",
     config: {
-      host: parseHost(values.host ?? DEFAULT_HOST),
+      host: parseHost(values.host ?? DEFAULT_HOST, publicOrigin),
       port: parsePort(values.port ?? String(DEFAULT_PORT)),
       dataRoot: resolveDataRoot(values["data-dir"], host),
+      ...(publicOrigin === undefined ? {} : { publicOrigin }),
     },
   };
 }
 
-function parseHost(value: string): string {
+function parseHost(value: string, publicOrigin: string | undefined): string {
   const loopback = value === "localhost" || value === "::1" || (isIP(value) === 4 && value.startsWith("127."));
-  // Remote binding needs owner authentication and Origin/CSRF checks, which do not exist yet.
-  if (!loopback) throw new UsageError(`--host must be a loopback address until owner sign-in exists; got '${value}'`);
+  if (!loopback && isIP(value) === 0) throw new UsageError("--host must be an IP address or localhost");
+  if (!loopback && publicOrigin === undefined) throw new UsageError("non-loopback --host requires --public-origin");
   return value;
+}
+
+function parsePublicOrigin(value: string | undefined): string | undefined {
+  if (value === undefined) return undefined;
+  const url = URL.parse(value);
+  if (
+    url === null ||
+    !["http:", "https:"].includes(url.protocol) ||
+    url.username !== "" ||
+    url.password !== "" ||
+    url.pathname !== "/" ||
+    url.search !== "" ||
+    url.hash !== ""
+  ) {
+    throw new UsageError("--public-origin must be an HTTP(S) origin without credentials, path, query or fragment");
+  }
+  return url.origin;
 }
 
 function parsePort(value: string): number {

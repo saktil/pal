@@ -92,7 +92,9 @@ async function call<T>(method: string, path: string, body?: unknown): Promise<T>
 }
 
 /** A fresh idempotency key: retrying the same request reuses it, so the server admits it once. */
-export const requestId = (): string => crypto.randomUUID();
+// getRandomValues also works on HTTP over a private access layer, where randomUUID is unavailable.
+export const requestId = (): string =>
+  Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) => byte.toString(16).padStart(2, "0")).join("");
 
 export const api = {
   session: () => call<Session>("GET", "session"),
