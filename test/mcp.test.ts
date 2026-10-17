@@ -10,13 +10,20 @@ import {
   fauxToolCall,
   type ToolResultMessage,
 } from "@earendil-works/pi-ai";
-import { createRegistry, Harness, MemoryStorage } from "@earendil-works/pi-durable";
+import {
+  createRegistry,
+  Harness,
+  MemoryStorage,
+  type ConversationId,
+  type ToolExecutionApi,
+} from "@earendil-works/pi-durable";
 import { afterEach, describe, expect, it } from "vitest";
 import { createPalCodemode } from "../src/pi/codemode.ts";
 import { type McpAuth, McpConfigError, McpManager, PRESETS } from "../src/pi/mcp.ts";
 import { loadMasterKey, SqliteCredentialStore } from "../src/storage/credentials.ts";
 import { openStore } from "../src/storage/store.ts";
 import { startMcpFixture } from "./fixtures/mcp-server.ts";
+import { Projects } from "../src/core/projects.ts";
 
 const cleanups: (() => Promise<unknown>)[] = [];
 afterEach(async () => {
@@ -35,14 +42,24 @@ async function setup() {
     await loadMasterKey(join(dataRoot, "credentials.key")),
     store.installationId,
   );
+  const projects = await Projects.open({ database: store.database, dataRoot, installRoot: "/nonexistent" });
+  const project = await projects.create("mcp-project-fixture", { name: "Fixture" });
   const registry = createRegistry();
   // The policy closure exists before the manager it asks.
   const ref: { manager?: McpManager } = {};
-  const codemode = createPalCodemode({ allows: (_conversation, name) => ref.manager?.allows(name) === true });
+  const codemode = createPalCodemode({
+    allows: async (conversation, name) => (await ref.manager?.allowsInConversation(conversation, name)) === true,
+  });
   cleanups.push(() => codemode.sandbox.close());
   for (const extension of codemode.extensions) registry.install(extension);
   const open = () =>
-    McpManager.open({ database: store.database, credentials, registry, codemode: codemode.withNamespaces });
+    McpManager.open({
+      database: store.database,
+      credentials,
+      registry,
+      projectId: async () => (await projects.get(project.id))?.id,
+      codemode: codemode.withNamespaces,
+    });
   const manager = await open();
   ref.manager = manager;
   cleanups.push(() => manager.close());
@@ -68,7 +85,7 @@ async function setup() {
     return result?.content.map((block) => (block.type === "text" ? block.text : "")).join("") ?? "";
   }
 
-  return { fixture, store, credentials, registry, manager, open, add, script };
+  return { fixture, store, credentials, registry, manager, open, add, script, projects, project };
 }
 
 const tryCall = (call: string) => `try { return await ${call}; } catch (error) { return "error: " + error.message; }`;
@@ -215,12 +232,151 @@ describe("MCP connections", () => {
     const changed = await manager.test(server.id);
     expect(changed.state).toBe("changed");
     expect(changed.tools.find((tool) => tool.name === "search")?.changed).toBe(true);
-    expect(await script(tryCall(`tools.mcp__${server.id}__search({ query: "x" })`))).toMatch(/error: .*not granted/);
+    expect(await script(tryCall(`tools.mcp__${server.id}__search({ query: "x" })`))).toMatch(/error: .*does not exist/);
     expect(fixture.calls).toEqual([]);
 
     await manager.approve(server.id, ["search"]);
     expect(await script(tryCall(`tools.mcp__${server.id}__search({ query: "x" })`))).not.toMatch(/error: /);
     expect(fixture.calls.map((call) => call.name)).toEqual(["search"]);
+  });
+
+  it("narrows one project's exact tools, hides ungranted discovery metadata, and persists the decision", async () => {
+    const { manager, add, script, project, projects, open } = await setup();
+    const server = await add();
+    await manager.test(server.id);
+    await manager.approve(server.id, ["search", "fetch"]);
+    await manager.setEnabled(server.id, true);
+    const grant = (await manager.grants.view(project.id)).servers.find((candidate) => candidate.id === server.id);
+    if (grant === undefined) throw new Error("missing grant");
+    await manager.grants.set(project.id, server.id, { revision: grant.revision, mode: "subset", tools: ["search"] });
+    expect(await script("return ALL_TOOLS.map(tool => tool.name);")).toContain(`mcp__${server.id}__search`);
+    expect(await script("return ALL_TOOLS.map(tool => tool.name);")).not.toContain(`mcp__${server.id}__fetch`);
+    expect(await script(tryCall(`tools.mcp__${server.id}__fetch({ url: "https://fixture.invalid/durable" })`))).toMatch(
+      /does not exist/,
+    );
+    const other = await projects.create("another-project", { name: "Other" });
+    expect(await manager.grants.decision(other.id, server.id, "fetch")).toMatchObject({ allowed: true });
+    const restored = await open();
+    cleanups.push(() => restored.close());
+    expect(await restored.grants.decision(project.id, server.id, "search")).toMatchObject({ allowed: true });
+    expect(await restored.grants.decision(project.id, server.id, "fetch")).toMatchObject({ allowed: false });
+    await projects.remove(project.id);
+    expect(await restored.grants.decision(project.id, server.id, "search")).toMatchObject({ allowed: false });
+  });
+
+  it("requires project re-approval after schema, endpoint or credential authority changes", async () => {
+    const { manager, add, script, project, fixture, open } = await setup();
+    const server = await add({ kind: "header", header: "x-api-key" });
+    await manager.test(server.id);
+    await manager.approve(server.id, ["search"]);
+    await manager.setEnabled(server.id, true);
+    const select = async () => {
+      const current = (await manager.grants.view(project.id)).servers.find((candidate) => candidate.id === server.id);
+      if (current === undefined) throw new Error("missing grant");
+      await manager.grants.set(project.id, server.id, {
+        revision: current.revision,
+        mode: "subset",
+        tools: ["search"],
+      });
+    };
+    await select();
+    await manager.setKey(server.id, "new-fixture-key");
+    expect(await manager.grants.decision(project.id, server.id, "search")).toMatchObject({ allowed: false });
+    expect(
+      (await manager.grants.view(project.id)).servers.find((candidate) => candidate.id === server.id)?.authorityStale,
+    ).toBe(true);
+    await select();
+    const tool = fixture.state.tools[0];
+    if (tool === undefined) throw new Error("missing fixture tool");
+    tool.description = "Changed capability";
+    await manager.test(server.id);
+    await manager.approve(server.id, ["search"]);
+    expect(await manager.grants.decision(project.id, server.id, "search")).toMatchObject({ allowed: false });
+    await select();
+    await manager.update(server.id, {
+      name: "Moved",
+      url: fixture.url + "?changed=1",
+      auth: { kind: "header", header: "x-api-key" },
+      private: true,
+    });
+    await manager.test(server.id);
+    await manager.approve(server.id, ["search"]);
+    await manager.setEnabled(server.id, true);
+    const restored = await open();
+    cleanups.push(() => restored.close());
+    expect(await restored.grants.decision(project.id, server.id, "search")).toMatchObject({ allowed: false });
+    expect(await script(tryCall(`tools.mcp__${server.id}__search({ query: "not approved" })`))).toMatch(
+      /does not exist/,
+    );
+  });
+
+  it("cancels in-flight and queued project calls; re-enabling cannot release their old grant", async () => {
+    const { manager, add, script, project, fixture } = await setup();
+    const server = await add();
+    await manager.test(server.id);
+    await manager.approve(server.id, ["search"]);
+    await manager.setEnabled(server.id, true);
+    const release = Promise.withResolvers<undefined>();
+    fixture.state.beforeCall = async () => {
+      await release.promise;
+    };
+    try {
+      const running = script(
+        `return await Promise.all([0,1,2].map(async n => { try { await tools.mcp__${server.id}__search({ query: String(n) }); return "leaked"; } catch { return "revoked"; } }));`,
+      );
+      await expect.poll(() => fixture.calls.length).toBe(2);
+      let current = (await manager.grants.view(project.id)).servers.find((candidate) => candidate.id === server.id);
+      if (current === undefined) throw new Error("missing grant");
+      await manager.grants.set(project.id, server.id, { revision: current.revision, mode: "subset", tools: [] });
+      current = (await manager.grants.view(project.id)).servers.find((candidate) => candidate.id === server.id);
+      if (current === undefined) throw new Error("missing grant");
+      await manager.grants.set(project.id, server.id, { revision: current.revision, mode: "inherit", tools: [] });
+      release.resolve(undefined);
+      const output = await running;
+      expect(output).toContain('["revoked","revoked","revoked"]');
+      expect(fixture.calls).toHaveLength(2);
+      expect(await script(tryCall(`tools.mcp__${server.id}__search({ query: "new grant" })`))).not.toContain("error:");
+      expect(fixture.calls).toHaveLength(3);
+    } finally {
+      release.resolve(undefined);
+    }
+  });
+
+  it("bounds queued calls and releases the queue without admitting over-limit work", async () => {
+    const { manager, registry, add, fixture } = await setup();
+    const server = await add();
+    await manager.test(server.id);
+    await manager.approve(server.id, ["search"]);
+    await manager.setEnabled(server.id, true);
+    const tool = registry
+      .snapshot()
+      .tools()
+      .find((entry) => entry.tool.name === `mcp__${server.id}__search`)?.tool;
+    if (tool === undefined) throw new Error("missing tool");
+    const release = Promise.withResolvers<undefined>();
+    fixture.state.beforeCall = async () => {
+      await release.promise;
+    };
+    let rejected = 0;
+    try {
+      const pending = Array.from({ length: 12 }, (_, n) =>
+        tool.execute({ query: String(n) }, { conversationId: 2 as ConversationId } as ToolExecutionApi, context).then(
+          () => true,
+          () => {
+            rejected++;
+            return false;
+          },
+        ),
+      );
+      await expect.poll(() => rejected).toBe(2);
+      expect(fixture.calls).toHaveLength(2);
+      release.resolve(undefined);
+      const results = await Promise.all(pending);
+      expect(results.filter(Boolean)).toHaveLength(10);
+      expect(fixture.calls).toHaveLength(10);
+    } finally {
+      release.resolve(undefined);
+    }
   });
 
   it("enforces HTTPS, public addresses and no redirects for public endpoints", async () => {

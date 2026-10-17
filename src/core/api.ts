@@ -304,6 +304,11 @@ export function createApi(pal: Pal, publicOrigin?: string) {
         return send(200, { project: await pal.projects.create(requestId, body) });
       }
     }
+    if (resource === "projects" && id !== undefined && action === "mcp") {
+      if (path.length === 3 && method === "GET") return send(200, await pal.mcp.grants.view(id));
+      if (path.length === 4 && path[3] !== undefined && method === "PUT")
+        return send(200, await pal.mcp.grants.set(id, path[3], await readJson(request)));
+    }
     if (resource === "projects" && id !== undefined && action === "terminals") {
       if (path.length === 3 && method === "GET") return send(200, { terminals: await pal.terminals.list(id) });
       if (path.length === 3 && method === "POST") {
@@ -325,6 +330,7 @@ export function createApi(pal: Pal, publicOrigin?: string) {
     }
     if (resource === "projects" && id !== undefined && action === undefined && method === "DELETE") {
       await pal.projects.remove(id);
+      pal.mcp.revokeProject(id);
       await Promise.all([pal.terminals.removeProject(id), pal.chats.abortDeleted(context)]);
       return send(200, { removed: true });
     }

@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import type { JsonValue } from "@earendil-works/chord";
-import { defineTool, type ToolRegistration } from "@earendil-works/pi-durable";
+import { defineTool, type ToolExecutionApi, type ToolRegistration } from "@earendil-works/pi-durable";
 import { type CallToolResult, toLlmContent } from "@earendil-works/pi-mcp";
 import { Type } from "typebox";
 
@@ -17,7 +17,12 @@ export type McpToolDefinition = {
 
 /** Calls one server's tools; the caller decides connection, limits and whether the tool may still run. */
 export type McpConnection = {
-  call(remote: string, args: Record<string, unknown>, signal: AbortSignal | undefined): Promise<CallToolResult>;
+  call(
+    remote: string,
+    args: Record<string, unknown>,
+    signal: AbortSignal | undefined,
+    api: ToolExecutionApi,
+  ): Promise<CallToolResult>;
 };
 
 /**
@@ -57,8 +62,8 @@ export function mcpTools(
       ...(structured ? { structuredOutputSchema: Type.Unsafe(tool.outputSchema) } : {}),
       callers: ["tools"],
       replay,
-      execute: async (args, _api, context) => {
-        const result = await connection.call(tool.remote, args, context.abortSignal);
+      execute: async (args, api, context) => {
+        const result = await connection.call(tool.remote, args, context.abortSignal, api);
         return {
           output: bounded(toLlmContent(result)),
           isError: result.isError === true,

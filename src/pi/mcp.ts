@@ -1,6 +1,6 @@
 import { createHash, randomBytes } from "node:crypto";
 import type { CredentialStore } from "@earendil-works/pi-ai";
-import { defineExtension, type Extension, type Registry } from "@earendil-works/pi-durable";
+import { type ConversationId, defineExtension, type Extension, type Registry } from "@earendil-works/pi-durable";
 import type { CodemodeNamespace } from "@earendil-works/pi-durable/codemode";
 import type { SqliteDatabase } from "@earendil-works/pi-durable/storage/sqlite";
 import {
@@ -13,6 +13,7 @@ import {
 } from "@earendil-works/pi-mcp";
 import { type McpToolDefinition, mcpToolName, mcpTools } from "./mcp-tools.ts";
 import { NetworkPolicyError, policyFetch } from "./network.ts";
+import { McpGrants } from "../core/mcp-grants.ts";
 
 export type McpAuth =
   { readonly kind: "none" } | { readonly kind: "header"; readonly header: string } | { readonly kind: "bearer" };
@@ -102,6 +103,7 @@ export type McpManagerOptions = {
   readonly registry: Registry;
   /** Builds the `codemode` extension for these namespaces; installing it replaces the current one. */
   readonly codemode: (namespaces: readonly CodemodeNamespace[]) => Extension;
+  readonly projectId: (conversation: ConversationId) => Promise<string | undefined>;
 };
 
 type Approved = McpToolDefinition & { readonly fingerprint: string };
@@ -115,6 +117,7 @@ type Server = {
   fakeIp: boolean;
   enabled: boolean;
   approved: Record<string, Approved>;
+  authority: number;
 };
 type Live = {
   state: McpState;
@@ -122,13 +125,16 @@ type Live = {
   discovered: McpTool[] | undefined;
   client: Promise<McpClient> | undefined;
   active: number;
-  queue: (() => void)[];
+  changing: number;
+  generation: number;
+  queue: { start: () => void }[];
 };
+type PendingCall = { project: string; server: string; controller: AbortController; done: Promise<undefined> };
 
 /**
  * Pal's MCP connections. Approved tools of enabled servers are installed as Durable tools that only Code Mode scripts
  * can call; `allows` answers for every nested call, so disabling a server or a changed tool stops the next call at
- * once, including from a script already running. Connections open on first use and are pooled per server.
+ * once, including from a script already running. Only owner discovery connections are pooled; model calls are isolated.
  */
 export class McpManager {
   readonly #database: SqliteDatabase;
@@ -137,6 +143,10 @@ export class McpManager {
   readonly #codemode: (namespaces: readonly CodemodeNamespace[]) => Extension;
   readonly #servers = new Map<string, Server>();
   readonly #live = new Map<string, Live>();
+  readonly grants: McpGrants;
+  readonly #projectId: McpManagerOptions["projectId"];
+  readonly #calls = new Set<PendingCall>();
+  #closed = false;
   /** Installed tool name → its server and remote name. */
   #installed = new Map<string, { server: string; remote: string }>();
 
@@ -145,6 +155,20 @@ export class McpManager {
     this.#credentials = options.credentials;
     this.#registry = options.registry;
     this.#codemode = options.codemode;
+    this.#projectId = options.projectId;
+    this.grants = new McpGrants(
+      this.#database,
+      () =>
+        [...this.#servers.values()].map((server) => ({
+          id: server.id,
+          name: server.name,
+          url: server.url,
+          authority: server.authority,
+          enabled: server.enabled && !this.#closed && this.#state(server.id).changing === 0,
+          tools: this.#toolViews(server),
+        })),
+      (project, server) => this.revokeProject(project, server),
+    );
   }
 
   /** Seed the presets once (disabled, pending the owner's first-run review), then install what is enabled. */
@@ -176,6 +200,7 @@ export class McpManager {
       fake_ip: number;
       enabled: number;
       approved: string;
+      authority: number;
     }>("SELECT * FROM pal_mcp_servers ORDER BY created_at, rowid");
     for (const row of rows) {
       manager.#servers.set(row.id, {
@@ -188,6 +213,7 @@ export class McpManager {
         fakeIp: row.fake_ip === 1,
         enabled: row.enabled === 1,
         approved: JSON.parse(row.approved),
+        authority: row.authority,
       });
     }
     manager.#install();
@@ -224,7 +250,7 @@ export class McpManager {
         .replace(/[^a-z0-9]/g, "")
         .slice(0, 10) || "server";
     const id = `${slug}${randomBytes(3).toString("hex")}`;
-    const server: Server = { id, ...input, preset: null, fakeIp: false, enabled: false, approved: {} };
+    const server: Server = { id, ...input, preset: null, fakeIp: false, enabled: false, approved: {}, authority: 0 };
     await this.#database.run(
       "INSERT INTO pal_mcp_servers (id, name, preset, url, auth, private, enabled, approved, created_at) VALUES (?, ?, NULL, ?, ?, ?, 0, '{}', ?)",
       id,
@@ -246,7 +272,11 @@ export class McpManager {
       JSON.stringify([value.url, value.auth, value.private]);
     const moved = identity(server) !== identity(input);
     if (server.preset !== null && moved) throw new McpConfigError("a preset's endpoint and authentication are fixed");
-    Object.assign(server, input, moved ? { enabled: false, approved: {}, fakeIp: false } : {});
+    Object.assign(
+      server,
+      input,
+      moved ? { enabled: false, approved: {}, fakeIp: false, authority: server.authority + 1 } : {},
+    );
     await this.#save(server);
     if (moved) await this.#drop(id);
     this.#install();
@@ -258,7 +288,7 @@ export class McpManager {
     const server = this.#require(id);
     if (server.private && enabled) throw new McpConfigError("private endpoints do not need fake-IP routing");
     if (server.fakeIp === enabled) return await this.#view(server);
-    Object.assign(server, { fakeIp: enabled, enabled: false, approved: {} });
+    Object.assign(server, { fakeIp: enabled, enabled: false, approved: {}, authority: server.authority + 1 });
     await this.#save(server);
     await this.#drop(id);
     this.#install();
@@ -268,13 +298,20 @@ export class McpManager {
   /** Store or remove the server's API key. Keys are write-only: views report only whether one is configured. */
   async setKey(id: string, key: string | null): Promise<McpServerView> {
     const server = this.#require(id);
-    if (key === null) await this.#credentials.delete(`mcp:${id}`);
-    else {
-      if (key.trim() === "" || key.length > 4096 || /[\r\n]/.test(key))
-        throw new McpConfigError("that key is not valid");
-      await this.#credentials.modify(`mcp:${id}`, async () => ({ type: "api_key", key: key.trim() }));
+    if (key !== null && (key.trim() === "" || key.length > 4096 || /[\r\n]/.test(key)))
+      throw new McpConfigError("that key is not valid");
+    const live = this.#state(id);
+    live.changing++;
+    try {
+      // Invalidate project approvals durably before a different credential can be committed.
+      server.authority++;
+      await this.#save(server);
+      await this.#drop(id);
+      if (key === null) await this.#credentials.delete(`mcp:${id}`);
+      else await this.#credentials.modify(`mcp:${id}`, async () => ({ type: "api_key", key: key.trim() }));
+    } finally {
+      live.changing--;
     }
-    await this.#drop(id);
     return await this.#view(server);
   }
 
@@ -336,11 +373,39 @@ export class McpManager {
     const target = this.#installed.get(toolName);
     const server = target === undefined ? undefined : this.#servers.get(target.server);
     if (server === undefined || target === undefined || !server.enabled) return false;
-    return server.approved[target.remote] !== undefined && !this.#changed(server, target.remote);
+    return (
+      !this.#closed &&
+      this.#state(server.id).changing === 0 &&
+      Object.hasOwn(server.approved, target.remote) &&
+      !this.#changed(server, target.remote)
+    );
+  }
+
+  async allowsInConversation(conversation: ConversationId, name: string): Promise<boolean> {
+    const target = this.#installed.get(name);
+    const project = await this.#projectId(conversation);
+    return (
+      target !== undefined &&
+      project !== undefined &&
+      this.allows(name) &&
+      (await this.grants.decision(project, target.server, target.remote)).allowed
+    );
+  }
+
+  revokeProject(project: string, server?: string): void {
+    for (const call of this.#calls)
+      if (call.project === project && (server === undefined || call.server === server))
+        call.controller.abort(
+          new Error(
+            "MCP project permissions changed; already transmitted actions may have completed. Inspect before retrying.",
+          ),
+        );
   }
 
   async close(): Promise<void> {
+    this.#closed = true;
     for (const id of this.#live.keys()) await this.#drop(id);
+    await Promise.all([...this.#calls].map((call) => call.done));
   }
 
   #require(id: string): Server {
@@ -352,7 +417,16 @@ export class McpManager {
   #state(id: string): Live {
     let live = this.#live.get(id);
     if (live === undefined) {
-      live = { state: "idle", detail: null, discovered: undefined, client: undefined, active: 0, queue: [] };
+      live = {
+        state: "idle",
+        detail: null,
+        discovered: undefined,
+        client: undefined,
+        active: 0,
+        changing: 0,
+        generation: 0,
+        queue: [],
+      };
       this.#live.set(id, live);
     }
     return live;
@@ -360,7 +434,7 @@ export class McpManager {
 
   async #save(server: Server): Promise<void> {
     await this.#database.run(
-      "UPDATE pal_mcp_servers SET name = ?, url = ?, auth = ?, private = ?, fake_ip = ?, enabled = ?, approved = ? WHERE id = ?",
+      "UPDATE pal_mcp_servers SET name = ?, url = ?, auth = ?, private = ?, fake_ip = ?, enabled = ?, approved = ?, authority = ? WHERE id = ?",
       server.name,
       server.url,
       JSON.stringify(server.auth),
@@ -368,6 +442,7 @@ export class McpManager {
       server.fakeIp ? 1 : 0,
       server.enabled ? 1 : 0,
       JSON.stringify(server.approved),
+      server.authority,
       server.id,
     );
   }
@@ -375,7 +450,13 @@ export class McpManager {
   async #drop(id: string): Promise<void> {
     const live = this.#live.get(id);
     const client = live?.client;
+    for (const call of this.#calls)
+      if (call.server === id)
+        call.controller.abort(
+          new Error("MCP connection changed; already transmitted actions may have completed. Inspect before retrying."),
+        );
     if (live !== undefined) {
+      live.generation++;
       live.client = undefined;
       live.state = "idle";
       live.detail = null;
@@ -388,46 +469,68 @@ export class McpManager {
     return credential?.type === "api_key" ? credential.key : undefined;
   }
 
-  #connect(server: Server): Promise<McpClient> {
+  #connect(server: Server, signal?: AbortSignal, isolated = false): Promise<McpClient> {
     const live = this.#state(server.id);
-    live.client ??= (async () => {
+    if (!isolated && live.client !== undefined) return live.client;
+    const spec = { ...server },
+      generation = live.generation;
+    const pending = (async () => {
+      const setup = AbortSignal.any([
+        AbortSignal.timeout(CONNECT_TIMEOUT_MS),
+        ...(signal === undefined ? [] : [signal]),
+      ]);
+      const key = await this.#key(spec.id);
+      setup.throwIfAborted();
+      if (this.#closed || generation !== live.generation)
+        throw new McpConfigError("MCP connection changed during setup");
       live.state = "connecting";
-      const key = await this.#key(server.id);
       const headers: Record<string, string> =
-        key === undefined || server.auth.kind === "none"
+        key === undefined || spec.auth.kind === "none"
           ? {}
-          : server.auth.kind === "bearer"
+          : spec.auth.kind === "bearer"
             ? { authorization: `Bearer ${key}` }
-            : { [server.auth.header]: key };
+            : { [spec.auth.header]: key };
       const client = new McpClient({ name: "pal", version: "0.0.0", requestTimeoutMs: CONNECT_TIMEOUT_MS });
-      const network = policyFetch({ endpoint: server.url, allowPrivate: server.private, allowFakeIp: server.fakeIp });
-      const transport = new StreamableHttpTransport({
-        url: server.url,
-        headers,
-        fetch: network,
-        openGetStream: false,
+      const network = policyFetch({ endpoint: spec.url, allowPrivate: spec.private, allowFakeIp: spec.fakeIp });
+      const cancel = () => {
+        void client.close().catch(() => {});
+      };
+      setup.addEventListener("abort", cancel, { once: true });
+      client.onClose(() => {
+        if (!isolated && live.client === pending) live.client = undefined;
+        void network.close().catch(() => {});
       });
       try {
-        await client.connect(transport);
-        const tools = await client.listTools({ timeoutMs: CONNECT_TIMEOUT_MS });
+        setup.throwIfAborted();
+        await client.connect(
+          new StreamableHttpTransport({ url: spec.url, headers, fetch: network, openGetStream: false }),
+        );
+        const tools = await client.listTools({ timeoutMs: CONNECT_TIMEOUT_MS, signal: setup });
+        setup.throwIfAborted();
+        if (this.#closed || generation !== live.generation || spec.authority !== server.authority)
+          throw new McpConfigError("MCP connection changed during setup");
         if (tools.length > MAX_TOOLS)
           throw new McpConfigError(`the server lists ${tools.length} tools; Pal takes at most ${MAX_TOOLS}`);
         live.discovered = tools;
         this.#refreshState(server);
-        client.onClose(() => {
-          if (live.client !== undefined) live.client = undefined;
-          void network.close().catch(() => {});
-        });
         return client;
       } catch (error) {
         await client.close().catch(() => {});
         await network.close();
-        live.client = undefined;
-        this.#fail(server, error, key);
-        throw error;
+        if (!setup.aborted && generation === live.generation) this.#fail(server, error, key);
+        else if (live.state === "connecting") live.state = "idle";
+        throw redactedCause(error, key);
+      } finally {
+        setup.removeEventListener("abort", cancel);
       }
     })();
-    return live.client;
+    if (!isolated) {
+      live.client = pending;
+      void pending.catch(() => {
+        if (live.client === pending) live.client = undefined;
+      });
+    }
+    return pending;
   }
 
   async #discover(server: Server): Promise<McpTool[]> {
@@ -469,36 +572,105 @@ export class McpManager {
     } else Object.assign(live, { state: "error", detail: message });
   }
 
-  async #call(server: Server, remote: string, args: Record<string, unknown>, signal: AbortSignal | undefined) {
-    const live = this.#state(server.id);
-    if (live.active >= MAX_CONCURRENT_CALLS) await new Promise<void>((resolve) => live.queue.push(resolve));
-    live.active += 1;
+  async #slot(live: Live, signal: AbortSignal): Promise<void> {
+    signal.throwIfAborted();
+    if (live.active < MAX_CONCURRENT_CALLS) {
+      live.active++;
+      return;
+    }
+    if (live.queue.length >= 8) throw new McpConfigError("MCP server is busy; its eight-call queue is full");
+    await new Promise<void>((resolve, reject) => {
+      const abort = () => {
+        const index = live.queue.indexOf(waiter);
+        if (index >= 0) live.queue.splice(index, 1);
+        signal.removeEventListener("abort", abort);
+        reject(signal.reason);
+      };
+      const waiter = {
+        start: () => {
+          signal.removeEventListener("abort", abort);
+          live.active++;
+          resolve();
+        },
+      };
+      live.queue.push(waiter);
+      signal.addEventListener("abort", abort, { once: true });
+      if (signal.aborted) abort();
+    });
+  }
+
+  async #call(
+    server: Server,
+    remote: string,
+    args: Record<string, unknown>,
+    signal: AbortSignal | undefined,
+    conversation: ConversationId,
+  ) {
+    const project = await this.#projectId(conversation);
+    const grant = project === undefined ? undefined : await this.grants.decision(project, server.id, remote);
+    const name = mcpToolName(server.id, remote);
+    if (project === undefined || grant?.allowed !== true || !this.allows(name))
+      throw new McpConfigError("MCP tool is not granted to this project");
+    const live = this.#state(server.id),
+      generation = live.generation;
+    const controller = new AbortController(),
+      finished = Promise.withResolvers<undefined>();
+    const call = { project, server: server.id, controller, done: finished.promise };
+    this.#calls.add(call);
+    const deadline = AbortSignal.any([
+      controller.signal,
+      AbortSignal.timeout(CALL_TIMEOUT_MS),
+      ...(signal === undefined ? [] : [signal]),
+    ]);
+    let acquired = false,
+      client: McpClient | undefined;
+    const ensure = async () => {
+      deadline.throwIfAborted();
+      const currentProject = await this.#projectId(conversation);
+      const current = currentProject === project ? await this.grants.decision(project, server.id, remote) : undefined;
+      deadline.throwIfAborted();
+      if (
+        !current?.allowed ||
+        current.revision !== grant.revision ||
+        generation !== live.generation ||
+        !this.allows(name)
+      )
+        throw new McpConfigError(
+          "MCP permissions changed; already transmitted actions may have completed. Inspect before retrying.",
+        );
+    };
     try {
-      const client = await this.#connect(server);
-      // The listing a connection made may show the tool changed after approval: refuse rather than call it.
-      if (!this.allows(mcpToolName(server.id, remote)))
-        throw new Error(`${remote} is not approved as currently described`);
+      await this.#slot(live, deadline);
+      acquired = true;
+      await ensure();
+      // shortcut: disposable model connections prevent cross-project session reuse; pool by scope if handshake latency warrants it.
+      client = await this.#connect(server, deadline, true);
+      await ensure();
+      const key = await this.#key(server.id);
+      await ensure();
+      let result: CallToolResult;
       try {
-        return await client.callTool(remote, args, {
-          timeoutMs: CALL_TIMEOUT_MS,
-          ...(signal === undefined ? {} : { signal }),
-        });
+        result = await client.callTool(remote, args, { timeoutMs: CALL_TIMEOUT_MS, signal: deadline });
       } catch (error) {
-        this.#fail(server, error, await this.#key(server.id));
-        throw new Error(redact(error instanceof Error ? error.message : String(error), await this.#key(server.id)), {
-          cause: error,
-        });
+        if (deadline.aborted) throw deadline.reason;
+        this.#fail(server, error, key);
+        throw redactedCause(error, key);
       }
+      await ensure();
+      return result;
     } finally {
-      live.active -= 1;
-      live.queue.shift()?.();
+      await client?.close().catch(() => {});
+      if (acquired) {
+        live.active--;
+        live.queue.shift()?.start();
+      }
+      this.#calls.delete(call);
+      finished.resolve(undefined);
     }
   }
 
   async #view(server: Server): Promise<McpServerView> {
     const live = this.#live.get(server.id);
-    const listed = live?.discovered;
-    const names = new Set([...(listed ?? []).map((tool) => tool.name), ...Object.keys(server.approved)]);
     return {
       id: server.id,
       name: server.name,
@@ -512,14 +684,23 @@ export class McpManager {
       // The latest connection outcome, even for a disabled server the owner is testing; otherwise idle or disabled.
       state: live === undefined || live.state === "idle" ? (server.enabled ? "idle" : "disabled") : live.state,
       detail: live?.detail ?? null,
-      tools: [...names].map((name) => ({
-        name,
-        description:
-          listed?.find((tool) => tool.name === name)?.description ?? server.approved[name]?.description ?? "",
-        approved: server.approved[name] !== undefined,
-        changed: server.approved[name] !== undefined && this.#changed(server, name),
-      })),
+      tools: this.#toolViews(server),
     };
+  }
+
+  #toolViews(server: Server) {
+    const listed = this.#live.get(server.id)?.discovered;
+    return [...new Set([...(listed ?? []).map((tool) => tool.name), ...Object.keys(server.approved)])].map((name) => {
+      const current = listed?.find((tool) => tool.name === name),
+        approved = Object.hasOwn(server.approved, name);
+      return {
+        name,
+        description: current?.description ?? server.approved[name]?.description ?? "",
+        approved,
+        changed: approved && this.#changed(server, name),
+        fingerprint: current === undefined ? (server.approved[name]?.fingerprint ?? "") : approval(current).fingerprint,
+      };
+    });
   }
 
   /** Publish the enabled servers' approved tools, their Code Mode namespaces and the model's guidance. */
@@ -534,8 +715,12 @@ export class McpManager {
       for (const tool of approved)
         installed.set(mcpToolName(server.id, tool.remote), { server: server.id, remote: tool.remote });
       const connection = {
-        call: (remote: string, args: Record<string, unknown>, signal: AbortSignal | undefined) =>
-          this.#call(server, remote, args, signal),
+        call: (
+          remote: string,
+          args: Record<string, unknown>,
+          signal: AbortSignal | undefined,
+          api: { conversationId: ConversationId },
+        ) => this.#call(server, remote, args, signal, api.conversationId),
       };
       return [
         ...mcpTools(
@@ -560,8 +745,12 @@ export class McpManager {
         sections: [
           {
             key: "internet",
-            render: () =>
-              enabled.length === 0
+            render: async (input) =>
+              !(
+                await Promise.all(
+                  [...installed.keys()].map((name) => this.allowsInConversation(input.conversationId, name)),
+                )
+              ).some(Boolean)
                 ? undefined
                 : [
                     "Scripts can reach these internet tools through `tools.*`; see each namespace for its use.",
@@ -640,6 +829,20 @@ function causes(error: unknown): unknown[] {
     chain.push(current);
   }
   return chain;
+}
+
+function redactedCause(error: unknown, key: string | undefined, depth = 0): Error {
+  const message = redact(error instanceof Error ? error.message : String(error), key);
+  const cause =
+    error instanceof Error && error.cause !== undefined && depth < 7
+      ? redactedCause(error.cause, key, depth + 1)
+      : undefined;
+  const safe = new Error(message, cause === undefined ? {} : { cause });
+  if (error instanceof Error) {
+    safe.name = redact(error.name, key);
+    safe.stack = redact(error.stack ?? safe.stack ?? message, key);
+  }
+  return safe;
 }
 
 function redact(text: string, key: string | undefined): string {

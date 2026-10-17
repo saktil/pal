@@ -6,6 +6,7 @@
   import ChatView from "./ChatView.svelte";
   import CreateProject from "./CreateProject.svelte";
   import Onboarding from "./Onboarding.svelte";
+  import ProjectMcpSettings from "./ProjectMcpSettings.svelte";
   import Settings from "./Settings.svelte";
   import Sidebar from "./Sidebar.svelte";
 
@@ -57,7 +58,8 @@
 
 <svelte:window
   onkeydown={(event) => {
-    if (event.key === "Escape" && panelView !== "Terminal") panelRoute = undefined;
+    if (event.key === "Escape" && panelView !== "Terminal" && document.querySelector("dialog[open]") === null)
+      panelRoute = undefined;
   }}
 />
 
@@ -108,6 +110,7 @@
           <Settings tab={app.route.tab} {onSignOut} />
         {:else if located !== undefined}
           <div class="workspace-tools">
+            {#key located.project.id}<ProjectMcpSettings project={located.project} />{/key}
             {#if size === "tablet"}<button
                 class="b i q"
                 aria-label="Projects and chats"

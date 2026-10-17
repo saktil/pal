@@ -180,6 +180,20 @@ export const MIGRATIONS: readonly Migration[] = [
       ) STRICT`);
     },
   },
+  {
+    version: 11,
+    name: "project_mcp_grants",
+    up: async (transaction) => {
+      await transaction.exec("ALTER TABLE pal_mcp_servers ADD COLUMN authority INTEGER NOT NULL DEFAULT 0");
+      await transaction.exec(`CREATE TABLE pal_mcp_project_grants (
+        project_id TEXT NOT NULL,
+        server_id TEXT NOT NULL,
+        version INTEGER NOT NULL,
+        policy TEXT,
+        PRIMARY KEY (project_id, server_id)
+      ) STRICT`);
+    },
+  },
 ];
 
 /**

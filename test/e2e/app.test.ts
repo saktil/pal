@@ -185,6 +185,72 @@ describe("Pal in a browser", () => {
     fixture.behavior.responses = "ok";
   });
 
+  it("narrows project internet tools, rejects stale settings and fits every viewport", async () => {
+    const project = (await pal.projects.list())[0];
+    const server = (await pal.mcp.list()).find((candidate) => candidate.name === "Fixture");
+    if (project === undefined || server === undefined) throw new Error("missing project or server");
+    const errors: string[] = [];
+    const onError = (error: Error) => errors.push(error.message);
+    page.on("pageerror", onError);
+    const button = page.getByRole("button", { name: "Project internet tools" });
+    const dialog = page.getByRole("dialog", { name: "Internet tools", exact: true });
+    const card = dialog.getByRole("region", { name: "Fixture project permissions" });
+    await button.click();
+    await card.getByLabel("Permissions for Fixture").selectOption("subset");
+    await card.getByRole("checkbox", { name: /^fetch/ }).uncheck();
+    await card.getByRole("button", { name: "Save Fixture project permissions" }).click();
+    await expect.poll(async () => (await pal.mcp.grants.decision(project.id, server.id, "fetch")).allowed).toBe(false);
+    await dialog.getByRole("button", { name: "Close project internet tools" }).click();
+    await page.reload();
+    await button.click();
+    await expect.poll(() => card.getByLabel("Permissions for Fixture").inputValue()).toBe("subset");
+    expect(await card.getByRole("checkbox", { name: /^search/ }).isChecked()).toBe(true);
+    expect(await card.getByRole("checkbox", { name: /^fetch/ }).isChecked()).toBe(false);
+    expect(await dialog.getByRole("region", { name: "Context7 project permissions" }).innerText()).toContain(
+      "Owner disabled",
+    );
+
+    // A second owner tab changes the saved selection while this dialog keeps its reviewed snapshot.
+    const current = (await pal.mcp.grants.view(project.id)).servers.find((candidate) => candidate.id === server.id);
+    if (current === undefined) throw new Error("missing grant");
+    await pal.mcp.grants.set(project.id, server.id, { revision: current.revision, mode: "subset", tools: [] });
+    await card.getByRole("button", { name: "Save Fixture project permissions" }).click();
+    await dialog.getByRole("alert").filter({ hasText: "Refresh before saving" }).waitFor();
+    await dialog.getByRole("button", { name: "Refresh permissions" }).click();
+    await expect.poll(() => card.getByRole("checkbox", { name: /^search/ }).isChecked()).toBe(false);
+    await card.getByRole("checkbox", { name: /^search/ }).check();
+    await card.getByRole("button", { name: "Save Fixture project permissions" }).click();
+    await expect.poll(async () => (await pal.mcp.grants.decision(project.id, server.id, "search")).allowed).toBe(true);
+    for (const width of [1440, 768, 390]) {
+      await page.setViewportSize({ width, height: 900 });
+      await card.scrollIntoViewIfNeeded();
+      expect(await page.evaluate("document.documentElement.scrollWidth <= innerWidth")).toBe(true);
+      expect(await dialog.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
+      expect(await card.locator("label.fl").evaluate((element) => element.getBoundingClientRect().height)).toBeLessThan(
+        100,
+      );
+      await shoot(`project-mcp-${width}`);
+    }
+    await page.keyboard.press("Escape");
+    await dialog.waitFor({ state: "detached" });
+    expect(await button.evaluate((element) => element.matches(":focus"))).toBe(true);
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.getByRole("button", { name: "Changes", exact: true }).click();
+    await button.click();
+    await card.getByLabel("Permissions for Fixture").selectOption("inherit");
+    await card.getByRole("button", { name: "Save Fixture project permissions" }).click();
+    await expect.poll(async () => (await pal.mcp.grants.decision(project.id, server.id, "fetch")).allowed).toBe(true);
+    await expect
+      .poll(() => dialog.getByRole("button", { name: "Close project internet tools" }).isEnabled())
+      .toBe(true);
+    await page.keyboard.press("Escape");
+    await dialog.waitFor({ state: "detached" });
+    await page.getByRole("complementary", { name: "Workspace panel" }).waitFor();
+    await page.getByRole("button", { name: "Close panel", exact: true }).click();
+    expect(errors).toEqual([]);
+    page.off("pageerror", onError);
+  });
+
   it("uploads from this device and lets a script read the project folder", async () => {
     await page.locator('input[type="file"]').setInputFiles({
       name: "plan.txt",

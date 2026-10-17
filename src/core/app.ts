@@ -89,17 +89,18 @@ export async function openPal(options: PalOptions, context: Context): Promise<Pa
     models.setProvider(chatGPTProvider(endpoints));
 
     // Host writes/commands are the owner's explicit high-trust mode; every nested call rechecks the live project grant.
-    const projectRoot = async (conversation: ConversationId) =>
-      (
-        await database.get<{ root: string }>(
-          "SELECT p.root FROM pal_chats c JOIN pal_projects p ON p.id = c.project_id WHERE c.conversation_id = ? AND c.deleted_at IS NULL AND p.removed_at IS NULL AND p.state = 'ready'",
-          conversation,
-        )
-      )?.root;
+    const projectFor = async (conversation: ConversationId) =>
+      await database.get<{ id: string; root: string }>(
+        "SELECT p.id, p.root FROM pal_chats c JOIN pal_projects p ON p.id = c.project_id WHERE c.conversation_id = ? AND c.deleted_at IS NULL AND p.removed_at IS NULL AND p.state = 'ready'",
+        conversation,
+      );
+    const projectRoot = async (conversation: ConversationId) => (await projectFor(conversation))?.root;
     const codemode = createPalCodemode({
       allows: async (conversation, name) =>
         (await projectRoot(conversation)) !== undefined &&
-        (name.startsWith(FILES_NAMESPACE.prefix) || name === "shell_run" || mcp?.allows(name) === true),
+        (name.startsWith(FILES_NAMESPACE.prefix) ||
+          name === "shell_run" ||
+          (await mcp?.allowsInConversation(conversation, name)) === true),
       namespaces: [FILES_NAMESPACE, SHELL_NAMESPACE],
     });
     sandbox = codemode.sandbox;
@@ -111,6 +112,7 @@ export async function openPal(options: PalOptions, context: Context): Promise<Pa
       database: store.database,
       credentials,
       registry,
+      projectId: async (conversation) => (await projectFor(conversation))?.id,
       codemode: (namespaces) => codemode.withNamespaces([FILES_NAMESPACE, SHELL_NAMESPACE, ...namespaces]),
     });
     mcp = connections;

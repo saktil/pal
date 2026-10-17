@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import { afterEach, describe, expect, it } from "vitest";
+import { startMcpFixture } from "./fixtures/mcp-server.ts";
 import { createApi } from "../src/core/api.ts";
 import { openPal } from "../src/core/app.ts";
 import { startServer } from "../src/core/server.ts";
@@ -100,6 +101,37 @@ async function putBytes(base: string, cookie: string, id: string, bytes: Uint8Ar
 }
 
 describe("API", () => {
+  it("persists per-project MCP narrowing and rejects stale or widening permission changes", async () => {
+    const { api } = await signedIn();
+    const a = (await api("POST", "projects", { requestId: "grant-project-a", name: "A" })).body.project;
+    const b = (await api("POST", "projects", { requestId: "grant-project-b", name: "B" })).body.project;
+    const first = await api("GET", `projects/${a.id}/mcp`);
+    expect(first.status).toBe(200);
+    const exa = first.body.servers.find((server: { id: string }) => server.id === "exa");
+    expect(exa.mode).toBe("inherit");
+    expect(
+      (await api("PUT", `projects/${a.id}/mcp/exa`, { revision: exa.revision, mode: "subset", tools: [] })).status,
+    ).toBe(200);
+    expect(
+      (await api("PUT", `projects/${a.id}/mcp/exa`, { revision: exa.revision, mode: "inherit", tools: [] })).status,
+    ).toBe(409);
+    expect(
+      (await api("GET", `projects/${a.id}/mcp`)).body.servers.find((server: { id: string }) => server.id === "exa")
+        .mode,
+    ).toBe("subset");
+    const other = (await api("GET", `projects/${b.id}/mcp`)).body.servers.find(
+      (server: { id: string }) => server.id === "exa",
+    );
+    expect(other.mode).toBe("inherit");
+    expect(
+      (await api("PUT", `projects/${b.id}/mcp/exa`, { revision: other.revision, mode: "subset", tools: ["agent_run"] }))
+        .status,
+    ).toBe(400);
+    await api("DELETE", `projects/${a.id}`);
+    expect((await api("GET", `projects/${a.id}/mcp`)).status).toBe(404);
+    await api("POST", "sign-out");
+    expect((await api("GET", `projects/${b.id}/mcp`)).status).toBe(401);
+  });
   it("answers only its own host and accepts writes only from its own origin", async () => {
     const { base, api } = await start();
     const port = new URL(base).port;
@@ -112,6 +144,56 @@ describe("API", () => {
     });
     expect(response.status).toBe(403);
     expect((await api("GET", "projects")).status).toBe(401);
+  });
+
+  it("keeps MCP discovery and execution scoped to actual durable conversations", async () => {
+    const { pal, api, fixture: openai } = await signedIn();
+    const started = await api("POST", "chatgpt/sign-in");
+    await browse(started.body.attempt.authUrl);
+    await eventually(
+      () => api("GET", "chatgpt"),
+      (state) => state.body.model !== null,
+    );
+    const fixture = await startMcpFixture();
+    cleanups.push(fixture.close);
+    const server = await pal.mcp.add({ name: "Scoped", url: fixture.url, auth: { kind: "none" }, private: true });
+    await pal.mcp.test(server.id);
+    await pal.mcp.approve(server.id, ["search", "fetch"]);
+    await pal.mcp.setEnabled(server.id, true);
+    const a = (await api("POST", "projects", { requestId: "scoped-project-a", name: "A" })).body.project;
+    const b = (await api("POST", "projects", { requestId: "scoped-project-b", name: "B" })).body.project;
+    const grant = (await pal.mcp.grants.view(a.id)).servers.find((candidate) => candidate.id === server.id);
+    if (grant === undefined) throw new Error("missing grant");
+    await pal.mcp.grants.set(a.id, server.id, { revision: grant.revision, mode: "subset", tools: ["search"] });
+    async function conversation(projectId: string, key: string) {
+      const chat = await pal.chats.createChat(key, { projectId }, context);
+      const handle = await pal.harness.conversation(chat.conversationId, context);
+      if (handle === undefined) throw new Error("missing conversation");
+      return handle;
+    }
+    async function run(handle: Awaited<ReturnType<typeof conversation>>, code: string) {
+      openai.behavior.responses = "script";
+      openai.behavior.script = code;
+      await (await handle.submit({ type: "input", content: "go" }, context)).wait(context);
+      const result = (await handle.context(context)).messages.findLast((message) => message.role === "toolResult");
+      return result?.content.map((block) => (block.type === "text" ? block.text : "")).join("") ?? "";
+    }
+    const one = await conversation(a.id, "scoped-chat-one"),
+      two = await conversation(b.id, "scoped-chat-two");
+    const catalog = await run(one, "return ALL_TOOLS.map(tool => tool.name);");
+    expect(catalog).toContain(`mcp__${server.id}__search`);
+    expect(catalog).not.toContain(`mcp__${server.id}__fetch`);
+    expect(
+      await run(
+        one,
+        `try { await tools.mcp__${server.id}__fetch({ url: "https://fixture.invalid/durable" }); return "leaked"; } catch { return "blocked"; }`,
+      ),
+    ).toContain("blocked");
+    expect(fixture.calls).toEqual([]);
+    expect(
+      await run(two, `return await tools.mcp__${server.id}__fetch({ url: "https://fixture.invalid/durable" });`),
+    ).toContain("Durable agents");
+    expect(fixture.calls.map((call) => call.name)).toEqual(["fetch"]);
   });
 
   it.each(["https://pal.example", "http://100.64.0.10:7337"])(

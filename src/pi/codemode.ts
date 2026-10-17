@@ -1,6 +1,7 @@
 import { CodemodeSandbox } from "@earendil-works/pi-codemode";
 import { parseCodemodeSource } from "@earendil-works/pi-codemode/source";
 import {
+  type Agent,
   type ConversationId,
   defineExtension,
   type Extension,
@@ -88,8 +89,31 @@ export function createPalCodemode(options: PalCodemodeOptions): {
     ],
   });
 
-  const withNamespaces = (namespaces: readonly CodemodeNamespace[]) =>
-    createCodemodeExtension({ sandbox, models: false, namespaces });
+  async function permitted(agent: Agent, conversation: ConversationId): Promise<Agent> {
+    const allowed = await Promise.all(agent.callable.map((tool) => options.allows(conversation, tool.name)));
+    return { ...agent, callable: agent.callable.filter((_tool, index) => allowed[index]) };
+  }
+  const withNamespaces = (namespaces: readonly CodemodeNamespace[]): Extension => {
+    const extension = createCodemodeExtension({ sandbox, models: false, namespaces });
+    // Native Code Mode snapshots callable metadata; execution checks alone would still expose ungranted tools.
+    return {
+      ...extension,
+      tools: (extension.tools ?? []).map((tool) => ({
+        ...tool,
+        execute: (args, api, context) =>
+          tool.execute(
+            args,
+            { ...api, agent: async (ctx) => permitted(await api.agent(ctx), api.conversationId) },
+            context,
+          ),
+      })),
+      sections: (extension.sections ?? []).map((section) => ({
+        ...section,
+        render: async (input, context) =>
+          section.render({ ...input, agent: await permitted(input.agent, input.conversationId) }, context),
+      })),
+    };
+  };
   return { extensions: [policy, withNamespaces(options.namespaces ?? [])], sandbox, withNamespaces };
 }
 

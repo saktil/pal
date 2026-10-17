@@ -3,6 +3,7 @@
 export type Session = { owner: boolean; signedIn: boolean };
 export type { Change, ChangeSet } from "../../../src/core/changes.ts";
 export type { TerminalInfo } from "../../../src/core/terminals.ts";
+export type { ProjectMcp, ProjectMcpServer } from "../../../src/core/mcp-grants.ts";
 
 export type Effort = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 export type ChatGPTModel = { slug: string; displayName: string; supported: boolean; efforts: Effort[] };
@@ -117,6 +118,13 @@ export const api = {
       requestId: key,
       name,
       ...(folder === undefined ? {} : { folder }),
+    }),
+  projectMcp: (id: string) => call<import("../../../src/core/mcp-grants.ts").ProjectMcp>("GET", `projects/${id}/mcp`),
+  setProjectMcp: (project: string, server: string, revision: string, mode: "inherit" | "subset", tools: string[]) =>
+    call<import("../../../src/core/mcp-grants.ts").ProjectMcp>("PUT", `projects/${project}/mcp/${server}`, {
+      revision,
+      mode,
+      tools,
     }),
   changes: (id: string) => call<import("../../../src/core/changes.ts").ChangeSet>("GET", `projects/${id}/changes`),
   review: (id: string, path: string, revision: string, reviewed: boolean) =>
