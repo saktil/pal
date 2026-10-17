@@ -41,9 +41,27 @@ export function mcpTools(
   connection: McpConnection,
   tools: readonly McpToolDefinition[],
   replay: "safe" | "unsafe",
+  /** Per remote tool, required arguments filled from another argument when omitted; reviewed presets only. */
+  defaults: Readonly<Record<string, Readonly<Record<string, string>>>> = {},
 ): ToolRegistration[] {
   return tools.map((tool) => {
     const structured = tool.outputSchema !== undefined;
+    const filled = defaults[tool.remote] ?? {};
+    const required = Array.isArray(tool.inputSchema.required)
+      ? (tool.inputSchema.required as string[]).filter((name) => filled[name] === undefined)
+      : undefined;
+    const properties = {
+      ...((tool.inputSchema.properties as Record<string, Record<string, unknown>> | undefined) ?? {}),
+    };
+    for (const [name, source] of Object.entries(filled)) {
+      const property = properties[name];
+      if (property !== undefined) {
+        properties[name] = {
+          ...property,
+          description: `${String(property.description ?? "")} Defaults to \`${source}\` when omitted.`.trim(),
+        };
+      }
+    }
     return defineTool({
       name: mcpToolName(server, tool.remote),
       description: tool.description,
@@ -51,14 +69,19 @@ export function mcpTools(
       parameters: Type.Unsafe<Record<string, unknown>>({
         ...tool.inputSchema,
         type: "object",
-        properties: tool.inputSchema.properties ?? {},
+        properties,
+        ...(required === undefined ? {} : { required }),
       }),
       ...(structured ? { structuredOutputSchema: Type.Unsafe(tool.outputSchema) } : {}),
       callers: ["tools"],
       replay,
       outputLimits: { maxBytes: 64 * 1024, maxLines: 2000 },
       execute: async (args, api, context) => {
-        const result = safeMcpResult(await connection.call(tool.remote, args, api, context));
+        const sent = { ...args };
+        for (const [name, source] of Object.entries(filled)) {
+          if (sent[name] === undefined && typeof sent[source] === "string") sent[name] = sent[source];
+        }
+        const result = safeMcpResult(await connection.call(tool.remote, sent, api, context));
         return {
           output: toLlmContent(result),
           isError: result.isError === true,
