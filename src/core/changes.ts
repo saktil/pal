@@ -26,9 +26,9 @@ const SAFE_GIT = [
 ];
 
 /** No worktree diff/status: those can execute repository clean filters even with --no-textconv. */
-function git(cwd: string, args: string[], signal: AbortSignal, diff = false): Promise<Buffer> {
+function git(cwd: string, args: string[], signal: AbortSignal, diff = false, input?: Buffer): Promise<Buffer> {
   return new Promise((resolve, reject) => {
-    execFile(
+    const child = execFile(
       "git",
       [...SAFE_GIT, ...args],
       {
@@ -57,11 +57,16 @@ function git(cwd: string, args: string[], signal: AbortSignal, diff = false): Pr
         else resolve(stdout);
       },
     );
+    child.stdin?.on("error", reject);
+    child.stdin?.end(input);
   });
 }
 
+export type ReviewScope = "normal" | "include-ignored";
+
 export type Change = {
   path: string;
+  ignored?: boolean;
   status: "A" | "M" | "D";
   patch: string;
   revision: string;
@@ -138,7 +143,7 @@ export class Changes {
       id,
     );
   }
-  async list(projectId: string): Promise<ChangeSet> {
+  async list(projectId: string, scope: ReviewScope = "normal"): Promise<ChangeSet> {
     if (this.#active >= 2)
       throw new HttpError(409, "changes_busy", "another change scan is in progress; retry shortly");
     this.#active++;
@@ -170,7 +175,16 @@ export class Changes {
         .toString()
         .split("\0")
         .filter(Boolean);
-      const names = [...new Set([...tracked, ...current])].filter((path) => this.#allowed(root, path)).sort();
+      const ignored =
+        scope === "include-ignored"
+          ? (await git(root, ["ls-files", "-z", "--others", "--ignored", "--exclude-standard"], signal))
+              .toString()
+              .split("\0")
+              .filter(Boolean)
+          : [];
+      const names = [...new Set([...tracked, ...current, ...ignored])]
+        .filter((path) => this.#allowed(root, path))
+        .sort();
       const reviews = await this.#database.all<{ path: string; revision: string }>(
         "SELECT path, revision FROM pal_change_reviews WHERE project_id = ?",
         projectId,
@@ -184,7 +198,10 @@ export class Changes {
       const files: Change[] = [];
       let budget = 2 * 1024 * 1024;
       let truncated = names.length > MAX_FILES;
-      for (const path of names.slice(0, MAX_FILES)) {
+      const selected = names.slice(0, MAX_FILES);
+      const initiallyHidden = scope === "normal" ? await this.#ignored(root, selected, signal) : new Set<string>();
+      for (const path of selected) {
+        if (initiallyHidden.has(path)) continue;
         if (signal.aborted) {
           truncated = true;
           break;
@@ -219,16 +236,28 @@ export class Changes {
           reviewed: reviews.some((row) => row.path === path && row.revision === revision),
         });
       }
+      const hidden = await this.#ignored(
+        root,
+        [...files.map((file) => file.path), ...comments.map((comment) => comment.path)],
+        signal,
+      );
+      const visible = (path: string) => this.#allowed(root, path) && (scope === "include-ignored" || !hidden.has(path));
       return {
         state: "ready",
         base: baseline.head,
-        files,
-        comments: comments.map((row) => {
+        files: files.flatMap((file) => {
+          if (!visible(file.path)) return [];
+          return [hidden.has(file.path) ? { ...file, ignored: true } : file];
+        }),
+        comments: comments.flatMap((row) => {
+          if (!visible(row.path)) return [];
           const line = lines.get(row.path)?.[row.line - 1];
-          return {
-            ...toComment(row),
-            outdated: line === undefined || createHash("sha256").update(line).digest("hex") !== row.line_hash,
-          };
+          return [
+            {
+              ...toComment(row),
+              outdated: line === undefined || createHash("sha256").update(line).digest("hex") !== row.line_hash,
+            },
+          ];
         }),
         truncated,
         note,
@@ -301,12 +330,45 @@ export class Changes {
     return { before, after, status, patch, revision };
   }
   #allowed(root: string, path: string): boolean {
-    if (isAbsolute(path) || path.split(/[\\/]/).some((part) => part === ".." || part === ".git")) return false;
+    if (isAbsolute(path) || path.includes("\0") || path.split(/[\\/]/).some((part) => part === ".." || part === ".git"))
+      return false;
     const target = join(root, path);
     return within(root, target) && !(within(this.#deny, target) && !within(this.#deny, root));
   }
-  async review(projectId: string, path: string, revision: string, reviewed: boolean): Promise<void> {
-    const latest = (await this.list(projectId)).files.find((file) => file.path === path);
+  async #ignored(root: string, paths: readonly string[], signal: AbortSignal): Promise<Set<string>> {
+    const names = [...new Set(paths)].filter((path) => this.#allowed(root, path));
+    if (names.length === 0) return new Set();
+    const found = await git(
+      root,
+      ["check-ignore", "-z", "--stdin"],
+      signal,
+      true,
+      Buffer.from(`${names.join("\0")}\0`),
+    );
+    return new Set(found.toString().split("\0").filter(Boolean));
+  }
+
+  async #permission(root: string, path: string, scope: ReviewScope, signal: AbortSignal): Promise<void> {
+    if (scope === "normal" && (await this.#ignored(root, [path], signal)).has(path))
+      throw new HttpError(
+        403,
+        "ignored_permission",
+        "include ignored files explicitly before reviewing or discarding this file",
+      );
+  }
+
+  async review(
+    projectId: string,
+    path: string,
+    revision: string,
+    reviewed: boolean,
+    scope: ReviewScope = "normal",
+  ): Promise<void> {
+    const project = await this.#projects.get(projectId);
+    if (project?.state !== "ready") throw new HttpError(404, "not_found", "no such ready project");
+    const listing = await this.list(projectId, scope);
+    if (listing.state === "ready") await this.#permission(project.root, path, scope, AbortSignal.timeout(10_000));
+    const latest = listing.files.find((file) => file.path === path);
     if (latest === undefined || latest.problem !== undefined || latest.revision !== revision)
       throw new HttpError(409, "changes_stale", "the file changed; refresh and review its latest revision");
     if (reviewed)
@@ -324,7 +386,7 @@ export class Changes {
    * owner looked fails without touching anything. Held under the workspace lock so Pal's own writes and commands cannot
    * interleave; external editors are rechecked just before the final rename.
    */
-  async discard(projectId: string, path: string, revision: string): Promise<void> {
+  async discard(projectId: string, path: string, revision: string, scope: ReviewScope = "normal"): Promise<void> {
     const project = await this.#projects.get(projectId);
     if (project?.state !== "ready") throw new HttpError(404, "not_found", "no such ready project");
     const root = await realpath(project.root);
@@ -335,6 +397,7 @@ export class Changes {
       if (!this.#allowed(root, path)) throw new FileAccessError(`${path} is outside the project folder or protected`);
       if (baseline === undefined) throw stale();
       const signal = AbortSignal.timeout(10_000);
+      await this.#permission(root, path, scope, signal);
       const entry = await this.#entry(root, baseline.head, path, signal);
       if (entry !== undefined && (entry.type !== "blob" || !/^100(?:644|755)$/.test(entry.mode)))
         throw new HttpError(409, "changes_unsupported", "only regular baseline files can be restored here");
@@ -344,6 +407,7 @@ export class Changes {
       if (change?.revision !== revision) throw stale();
       // Rechecked right before the change; a link, oversized or unreadable file counts as changed.
       const unchanged = async (target: string) => {
+        await this.#permission(root, path, scope, signal);
         const now = await readFileSnapshot(target).then(
           (snapshot) => (snapshot.truncated ? undefined : snapshot.bytes),
           (error: NodeJS.ErrnoException) => (error.code === "ENOENT" ? null : undefined),
@@ -397,13 +461,21 @@ export class Changes {
   }
 
   /** Comment on a line of the file as currently shown; its text is read here, not taken from the browser. */
-  async comment(projectId: string, path: string, revision: string, line: number, body: string): Promise<ChangeComment> {
+  async comment(
+    projectId: string,
+    path: string,
+    revision: string,
+    line: number,
+    body: string,
+    scope: ReviewScope = "normal",
+  ): Promise<ChangeComment> {
     const project = await this.#projects.get(projectId);
     if (project?.state !== "ready") throw new HttpError(404, "not_found", "no such ready project");
     const root = await realpath(project.root);
     if (!this.#allowed(root, path)) throw new FileAccessError(`${path} is outside the project folder or protected`);
     const baseline = await this.#baseline(projectId, root);
     const signal = AbortSignal.timeout(10_000);
+    if (baseline !== undefined) await this.#permission(root, path, scope, signal);
     const change =
       baseline === undefined
         ? undefined
@@ -429,6 +501,7 @@ export class Changes {
       created_at: Date.now(),
       sent_at: null,
     };
+    await this.#permission(root, path, scope, signal);
     await this.#database.transaction(async (transaction) => {
       await this.#ready(projectId, transaction);
       const count = await transaction.get<{ count: number }>(
@@ -470,7 +543,20 @@ export class Changes {
     });
   }
 
-  async markSent(projectId: string, ids: readonly string[]): Promise<void> {
+  async markSent(projectId: string, ids: readonly string[], scope: ReviewScope = "normal"): Promise<void> {
+    const project = await this.#projects.get(projectId);
+    if (project?.state !== "ready") throw new HttpError(404, "not_found", "no such ready project");
+    const comments = await this.#database.all<{ id: string; path: string }>(
+      "SELECT id, path FROM pal_change_comments WHERE project_id = ?",
+      projectId,
+    );
+    const hidden = await this.#ignored(
+      project.root,
+      comments.flatMap((comment) => (ids.includes(comment.id) ? [comment.path] : [])),
+      AbortSignal.timeout(10_000),
+    );
+    if (scope === "normal" && hidden.size > 0)
+      throw new HttpError(403, "ignored_permission", "include ignored files explicitly before sharing their comments");
     const now = Date.now();
     await this.#database.transaction(async (transaction) => {
       await this.#ready(projectId, transaction);

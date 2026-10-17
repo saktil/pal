@@ -1,4 +1,5 @@
 // Typed calls to Pal's API. Shapes mirror src/core/api.ts responses.
+import type { ReviewScope } from "../../../src/core/changes.ts";
 
 export type Session = { owner: boolean; signedIn: boolean };
 export type { Change, ChangeComment, ChangeSet } from "../../../src/core/changes.ts";
@@ -136,7 +137,8 @@ export const api = {
       mode,
       tools,
     }),
-  changes: (id: string) => call<import("../../../src/core/changes.ts").ChangeSet>("GET", `projects/${id}/changes`),
+  changes: (id: string, scope: ReviewScope = "normal") =>
+    call<import("../../../src/core/changes.ts").ChangeSet>("GET", `projects/${id}/changes?scope=${scope}`),
   projectFolders: (id: string) =>
     call<{ folders: import("../../../src/core/folders.ts").GrantedFolder[] }>("GET", `projects/${id}/folders`),
   addFolder: (id: string, key: string, folder: string, indexed: boolean) =>
@@ -161,19 +163,21 @@ export const api = {
       "GET",
       `projects/${id}/file?path=${encodeURIComponent(path)}&folder=${encodeURIComponent(folder)}`,
     ),
-  discard: (id: string, path: string, revision: string) =>
-    call<{ discarded: true }>("POST", `projects/${id}/discard`, { path, revision }),
-  comment: (id: string, path: string, revision: string, line: number, body: string) =>
+  discard: (id: string, path: string, revision: string, scope: ReviewScope = "normal") =>
+    call<{ discarded: true }>("POST", `projects/${id}/discard`, { path, revision, scope }),
+  comment: (id: string, path: string, revision: string, line: number, body: string, scope: ReviewScope = "normal") =>
     call<{ comment: import("../../../src/core/changes.ts").ChangeComment }>("POST", `projects/${id}/comments`, {
       path,
       revision,
       line,
       body,
+      scope,
     }),
   uncomment: (id: string, comment: string) => call<{ deleted: true }>("DELETE", `projects/${id}/comments/${comment}`),
-  commentsSent: (id: string, ids: string[]) => call<{ sent: true }>("POST", `projects/${id}/comments/sent`, { ids }),
-  review: (id: string, path: string, revision: string, reviewed: boolean) =>
-    call<{ reviewed: boolean }>("PUT", `projects/${id}/review`, { path, revision, reviewed }),
+  commentsSent: (id: string, ids: string[], scope: ReviewScope = "normal") =>
+    call<{ sent: true }>("POST", `projects/${id}/comments/sent`, { ids, scope }),
+  review: (id: string, path: string, revision: string, reviewed: boolean, scope: ReviewScope = "normal") =>
+    call<{ reviewed: boolean }>("PUT", `projects/${id}/review`, { path, revision, reviewed, scope }),
   terminals: (id: string) =>
     call<{ terminals: import("../../../src/core/terminals.ts").TerminalInfo[] }>("GET", `projects/${id}/terminals`),
   newTerminal: (id: string) =>

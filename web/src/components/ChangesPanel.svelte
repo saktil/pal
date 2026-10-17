@@ -17,6 +17,9 @@
   let error: string | undefined = $state();
   let done: string | undefined = $state();
   let discarding: Change | undefined = $state.raw();
+  let includeIgnored = $state(false);
+  const scope = $derived(includeIgnored ? "include-ignored" : "normal");
+  let scan = 0;
   const file = $derived(changes?.files.find((candidate) => candidate.path === selected) ?? changes?.files[0]);
   type Row = { kind: "meta" | "hunk" | "add" | "del" | "same"; text: string; old?: number; line?: number };
   // Numbers each line from its hunk header; `line` is the line in the current file, which comments refer to.
@@ -61,23 +64,34 @@
   const pending = $derived(changes?.comments.filter((comment) => !comment.sent) ?? []);
 
   async function refresh() {
+    const request = ++scan;
     busy = true;
     error = undefined;
     done = undefined;
     try {
-      changes = await api.changes(project.id);
+      const loaded = await api.changes(project.id, scope);
+      if (request === scan) changes = loaded;
     } catch (failure) {
-      error = failure instanceof Error ? failure.message : String(failure);
+      if (request === scan) error = failure instanceof Error ? failure.message : String(failure);
     } finally {
-      busy = false;
+      if (request === scan) busy = false;
     }
+  }
+  function changeScope(checked: boolean) {
+    includeIgnored = checked;
+    changes = undefined;
+    composing = undefined;
+    discarding = undefined;
+    chosen = undefined;
+    draft = "";
+    void refresh();
   }
   async function review() {
     if (file === undefined) return;
     busy = true;
     error = undefined;
     try {
-      await api.review(project.id, file.path, file.revision, !file.reviewed);
+      await api.review(project.id, file.path, file.revision, !file.reviewed, scope);
       await refresh();
     } catch (failure) {
       error = failure instanceof Error ? failure.message : String(failure);
@@ -88,7 +102,7 @@
     const target = discarding;
     if (target === undefined) return;
     try {
-      await api.discard(project.id, target.path, target.revision);
+      await api.discard(project.id, target.path, target.revision, scope);
     } catch (failure) {
       if (!(failure instanceof ApiError && failure.code === "changes_stale")) throw failure;
       discarding = undefined;
@@ -118,7 +132,7 @@
   }
   const add = (target: Change, line: number) =>
     act(async () => {
-      await api.comment(project.id, target.path, target.revision, line, draft);
+      await api.comment(project.id, target.path, target.revision, line, draft, scope);
       composing = undefined;
       draft = "";
     });
@@ -137,6 +151,7 @@
       api.commentsSent(
         project.id,
         sending.map((comment) => comment.id),
+        scope,
       ),
     );
     if (error === undefined) done = "Feedback is in the composer. Edit it if needed, then send.";
@@ -159,6 +174,19 @@
         onclick={feedback}
         ><Icon name="comment" />Send feedback to chat{pending.length > 0 ? ` (${pending.length})` : ""}</button
       >{/if}
+  </div>
+  <div class="review-scope">
+    <label
+      ><input
+        type="checkbox"
+        checked={includeIgnored}
+        onchange={(event) => changeScope(event.currentTarget.checked)}
+      />Include ignored files for review</label
+    >
+    <p>
+      Ignored files may contain secrets. This local review choice does not change agent folder or shell access. Excerpts
+      reach chat only when you choose Send feedback.
+    </p>
   </div>
   {#if error}<div class="callout er" role="alert">{error}</div>{/if}
   {#if done}<p class="notice" role="status">{done}</p>{/if}
@@ -209,6 +237,7 @@
                 >{candidate.status}</span
               >
               <span class="mono path">{candidate.path}</span>
+              {#if candidate.ignored}<span class="pill wa">Ignored</span>{/if}
               {#if candidate.reviewed}<span class="pill ok">Reviewed</span>{/if}
               {#if candidate.problem}<Icon name="warn" />{/if}
             </button>
@@ -332,6 +361,22 @@
 {/if}
 
 <style>
+  .review-scope {
+    padding: 6px 12px;
+    border-bottom: 1px solid var(--line);
+    font-size: 12px;
+  }
+  .review-scope label {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    min-height: 44px;
+  }
+  .review-scope p {
+    margin: 0 0 4px;
+    color: var(--tx3);
+    line-height: 1.5;
+  }
   .changes {
     display: flex;
     flex: 1;

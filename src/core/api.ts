@@ -67,8 +67,13 @@ const ToolChoice = Type.Object(
   { additionalProperties: false },
 );
 const Review = Type.Object({ enable: Type.Boolean() }, { additionalProperties: false });
+const ReviewScope = Type.Enum(["normal", "include-ignored"]);
 const FileDiscard = Type.Object(
-  { path: Type.String({ maxLength: 4096 }), revision: Type.String({ pattern: "^[a-f0-9]{64}$" }) },
+  {
+    path: Type.String({ maxLength: 4096 }),
+    revision: Type.String({ pattern: "^[a-f0-9]{64}$" }),
+    scope: Type.Optional(ReviewScope),
+  },
   { additionalProperties: false },
 );
 const FileComment = Type.Object(
@@ -77,11 +82,12 @@ const FileComment = Type.Object(
     revision: Type.String({ pattern: "^[a-f0-9]{64}$" }),
     line: Type.Integer({ minimum: 1, maximum: 10_000_000 }),
     body: Type.String({ minLength: 1, maxLength: 4000 }),
+    scope: Type.Optional(ReviewScope),
   },
   { additionalProperties: false },
 );
 const CommentsSent = Type.Object(
-  { ids: Type.Array(Type.String({ maxLength: 64 }), { maxItems: 200 }) },
+  { ids: Type.Array(Type.String({ maxLength: 64 }), { maxItems: 200 }), scope: Type.Optional(ReviewScope) },
   { additionalProperties: false },
 );
 const FileReview = Type.Object(
@@ -89,6 +95,7 @@ const FileReview = Type.Object(
     path: Type.String({ maxLength: 4096 }),
     revision: Type.String({ pattern: "^[a-f0-9]{64}$" }),
     reviewed: Type.Boolean(),
+    scope: Type.Optional(ReviewScope),
   },
   { additionalProperties: false },
 );
@@ -371,25 +378,28 @@ export function createApi(pal: Pal, publicOrigin?: string) {
       }
     }
     if (resource === "projects" && id !== undefined && action === "changes" && path.length === 3 && method === "GET") {
-      return send(200, await pal.changes.list(id));
+      return send(200, await pal.changes.list(id, validate(ReviewScope, url.searchParams.get("scope") ?? "normal")));
     }
     if (resource === "projects" && id !== undefined && action === "review" && path.length === 3 && method === "PUT") {
       const body = validate(FileReview, await readJson(request));
-      await pal.changes.review(id, body.path, body.revision, body.reviewed);
+      await pal.changes.review(id, body.path, body.revision, body.reviewed, body.scope);
       return send(200, { reviewed: body.reviewed });
     }
     if (resource === "projects" && id !== undefined && action === "discard" && path.length === 3 && method === "POST") {
       const body = validate(FileDiscard, await readJson(request));
-      await pal.changes.discard(id, body.path, body.revision);
+      await pal.changes.discard(id, body.path, body.revision, body.scope);
       return send(200, { discarded: true });
     }
     if (resource === "projects" && id !== undefined && action === "comments") {
       if (path.length === 3 && method === "POST") {
         const body = validate(FileComment, await readJson(request));
-        return send(200, { comment: await pal.changes.comment(id, body.path, body.revision, body.line, body.body) });
+        return send(200, {
+          comment: await pal.changes.comment(id, body.path, body.revision, body.line, body.body, body.scope),
+        });
       }
       if (path.length === 4 && path[3] === "sent" && method === "POST") {
-        await pal.changes.markSent(id, validate(CommentsSent, await readJson(request)).ids);
+        const body = validate(CommentsSent, await readJson(request));
+        await pal.changes.markSent(id, body.ids, body.scope);
         return send(200, { sent: true });
       }
       if (path.length === 4 && path[3] !== undefined && method === "DELETE") {

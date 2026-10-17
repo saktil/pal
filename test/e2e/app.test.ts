@@ -569,6 +569,86 @@ describe("Pal in a browser", () => {
     await panel.waitFor({ state: "detached" });
   });
 
+  it("requires local opt-in for ignored review, drops late private responses and resets permission on reload", async () => {
+    const project = (await pal.projects.list())[0];
+    if (project === undefined) throw new Error("missing project");
+    await writeFile(join(project.root, ".gitignore"), "*.secret\n");
+    await writeFile(join(project.root, "local.secret"), "private review fixture\n");
+    const modelRequests = fixture.apiRequests.length;
+    await page.getByRole("button", { name: "Changes", exact: true }).click();
+    const panel = page.getByRole("complementary", { name: "Workspace panel" });
+    const include = panel.getByRole("checkbox", { name: "Include ignored files for review" });
+    await include.waitFor();
+    expect(await include.isChecked()).toBe(false);
+    expect(await panel.getByRole("button", { name: /local.secret/ }).count()).toBe(0);
+    await include.check();
+    await panel.getByRole("button", { name: /local.secret/ }).click();
+    await panel.getByRole("region", { name: "File diff" }).filter({ hasText: "+private review fixture" }).waitFor();
+    await panel.getByRole("button", { name: "Mark reviewed", exact: true }).click();
+    await panel.getByRole("button", { name: "Comment on line 1", exact: true }).click();
+    await panel.getByRole("textbox", { name: "Comment on line 1" }).fill("Review ignored fixture");
+    await panel.getByRole("button", { name: "Add comment", exact: true }).click();
+    await panel.getByText("Review ignored fixture", { exact: true }).waitFor();
+    for (const width of [1440, 768, 390]) {
+      await page.setViewportSize({ width, height: 900 });
+      expect(await page.evaluate("document.documentElement.scrollWidth <= innerWidth")).toBe(true);
+      await shoot(`ignored-review-${width}`);
+    }
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await include.uncheck();
+    await expect.poll(() => panel.getByText("Review ignored fixture", { exact: true }).count()).toBe(0);
+    const entered = Promise.withResolvers<undefined>();
+    const release = Promise.withResolvers<undefined>();
+    const completed = Promise.withResolvers<undefined>();
+    const routePattern = `**/api/projects/${project.id}/changes?scope=include-ignored`;
+    await page.route(routePattern, async (route) => {
+      const response = await route.fetch();
+      entered.resolve(undefined);
+      await release.promise;
+      await route.fulfill({ response });
+      completed.resolve(undefined);
+    });
+    try {
+      await include.check();
+      await entered.promise;
+      await include.uncheck();
+      await expect.poll(() => panel.getByRole("button", { name: "Refresh", exact: true }).isEnabled()).toBe(true);
+      const delivered = page.waitForResponse((response) => response.url().endsWith("/changes?scope=include-ignored"));
+      release.resolve(undefined);
+      await (await delivered).finished();
+      await completed.promise;
+      await page.evaluate(() => new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve))));
+      expect(await panel.getByRole("button", { name: /local.secret/ }).count()).toBe(0);
+      expect(await panel.getByText("Review ignored fixture", { exact: true }).count()).toBe(0);
+    } finally {
+      release.resolve(undefined);
+      await page.unrouteAll({ behavior: "wait" });
+    }
+    await include.check();
+    await panel.getByRole("button", { name: /local.secret/ }).click();
+    await panel.getByRole("button", { name: "Send feedback to chat (1)" }).click();
+    await expect.poll(() => page.getByLabel("Message").inputValue()).toContain("private review fixture");
+    await page.getByLabel("Message").fill("");
+    expect(fixture.apiRequests.length).toBe(modelRequests);
+    await page.reload();
+    await page.getByRole("button", { name: "Changes", exact: true }).click();
+    expect(await include.isChecked()).toBe(false);
+    expect(await panel.getByRole("button", { name: /local.secret/ }).count()).toBe(0);
+    expect(await panel.getByText("Review ignored fixture", { exact: true }).count()).toBe(0);
+    await include.check();
+    await panel.getByRole("button", { name: /local.secret/ }).click();
+    await panel.getByRole("button", { name: "Discard…", exact: true }).click();
+    const dialog = page.getByRole("alertdialog", { name: "Discard changes to this file?" });
+    await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+    expect(await readFile(join(project.root, "local.secret"), "utf8")).toBe("private review fixture\n");
+    await panel.getByRole("button", { name: "Discard…", exact: true }).click();
+    await dialog.getByRole("button", { name: "Discard changes", exact: true }).click();
+    await panel.getByRole("status").filter({ hasText: "Restored local.secret to the baseline." }).waitFor();
+    await expect(stat(join(project.root, "local.secret"))).rejects.toThrow();
+    await page.keyboard.press("Escape");
+    await panel.waitFor({ state: "detached" });
+  });
+
   it("discards a file only at the revision shown, never over newer work", async () => {
     const project = (await pal.projects.list())[0];
     if (project === undefined) throw new Error("missing project");

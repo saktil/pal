@@ -57,6 +57,67 @@ async function setup(committed = true) {
 }
 
 describe("revision-bound Git changes", () => {
+  it("reviews ignored files only with explicit scope, including unusual names, without broadening protected paths", async () => {
+    const { root, dataRoot, project, changes, store } = await setup();
+    const path = "-local\n雪.secret";
+    await writeFile(join(root, ".gitignore"), "*.secret\n");
+    await writeFile(join(root, path), "ignored fixture\n");
+    await writeFile(join(dataRoot, "private.secret"), "never reveal fixture");
+    await symlink(join(dataRoot, "private.secret"), join(root, "escape.secret"));
+    expect(JSON.stringify(await changes.list(project.id))).not.toContain("ignored fixture");
+    const visible = await changes.list(project.id, "include-ignored");
+    const file = visible.files.find((file) => file.path === path);
+    expect(file).toMatchObject({ ignored: true, status: "A", patch: expect.stringContaining("ignored fixture") });
+    expect(visible.files.find((file) => file.path === "escape.secret")).toMatchObject({
+      ignored: true,
+      patch: "",
+      problem: expect.any(String),
+    });
+    expect(JSON.stringify(visible)).not.toContain("never reveal fixture");
+    const revision = file?.revision ?? "";
+    await expect(changes.review(project.id, path, revision, true)).rejects.toMatchObject({
+      code: "ignored_permission",
+    });
+    await expect(changes.comment(project.id, path, revision, 1, "Review")).rejects.toMatchObject({
+      code: "ignored_permission",
+    });
+    await changes.review(project.id, path, revision, true, "include-ignored");
+    const comment = await changes.comment(project.id, path, revision, 1, "Review", "include-ignored");
+    expect((await changes.list(project.id)).comments).toEqual([]);
+    expect((await changes.list(project.id, "include-ignored")).comments).toMatchObject([
+      { id: comment.id, lineText: "ignored fixture" },
+    ]);
+    await expect(changes.markSent(project.id, [comment.id])).rejects.toMatchObject({ code: "ignored_permission" });
+    await expect(changes.discard(project.id, path, revision)).rejects.toMatchObject({ code: "ignored_permission" });
+    await changes.discard(project.id, path, revision, "include-ignored");
+    await expect(access(join(root, path))).rejects.toThrow();
+    expect((await changes.list(project.id, "include-ignored")).comments).toEqual([]);
+    expect(await store.database.all("SELECT * FROM pal_change_reviews WHERE path = ?", path)).toEqual([]);
+    expect(await readFile(join(dataRoot, "private.secret"), "utf8")).toBe("never reveal fixture");
+  });
+
+  it("does not remember ignored-review permission across store reopen or retain newly ignored excerpts in normal results", async () => {
+    const { root, dataRoot, project, changes, store } = await setup();
+    await writeFile(join(root, "note.local"), "local fixture line\n");
+    const file = (await changes.list(project.id)).files.find((file) => file.path === "note.local");
+    const comment = await changes.comment(project.id, "note.local", file?.revision ?? "", 1, "Local decision");
+    await writeFile(join(root, ".gitignore"), "*.local\n");
+    const normal = await changes.list(project.id);
+    expect(normal.files.some((file) => file.path === "note.local")).toBe(false);
+    expect(normal.comments).toEqual([]);
+    await store.close();
+    const reopened = await openStore(dataRoot);
+    cleanups.push(() => reopened.close());
+    const projects = await Projects.open({
+      database: reopened.database,
+      dataRoot,
+      installRoot: "/nonexistent-install",
+    });
+    const next = new Changes(reopened.database, projects, dataRoot);
+    expect((await next.list(project.id)).comments).toEqual([]);
+    expect((await next.list(project.id, "include-ignored")).comments).toMatchObject([{ id: comment.id }]);
+  });
+
   it("captures before file tools mutate, includes manual dirt and never moves the recorded baseline", async () => {
     const { root, dataRoot, store, projects, project, changes } = await setup();
     const head = (await git(root, "rev-parse", "HEAD")).stdout.trim();
@@ -237,10 +298,13 @@ describe("revision-bound Git changes", () => {
     const marker = join(root, "executed");
     for (const key of ["filter.evil.clean", "diff.evil.textconv", "diff.external", "core.fsmonitor"])
       await git(root, "config", key, `touch ${marker}`);
-    await writeFile(join(root, ".gitattributes"), "*.txt filter=evil diff=evil\n");
+    await writeFile(join(root, ".gitattributes"), "*.txt filter=evil diff=evil\n*.secret filter=evil diff=evil\n");
+    await writeFile(join(root, ".gitignore"), "*.secret\n");
+    await writeFile(join(root, "local.secret"), "ignored fixture\n");
     await writeFile(join(root, "file.txt"), "after\n");
-    const result = await changes.list(project.id);
+    const result = await changes.list(project.id, "include-ignored");
     expect(result.files.find((file) => file.path === "file.txt")?.patch).toContain("+after");
+    expect(result.files.find((file) => file.path === "local.secret")?.patch).toContain("+ignored fixture");
     await expect(access(marker)).rejects.toThrow();
   });
 
@@ -266,5 +330,9 @@ describe("revision-bound Git changes", () => {
     await mkdir(folder);
     const nested = await projects.create("nested-project", { name: "Nested", folder });
     expect(await changes.list(nested.id)).toMatchObject({ state: "unavailable", files: [] });
+    await expect(changes.review(nested.id, "file.txt", "0".repeat(64), true)).rejects.toMatchObject({ status: 409 });
+    await expect(changes.comment(nested.id, "file.txt", "0".repeat(64), 1, "Unavailable")).rejects.toMatchObject({
+      status: 409,
+    });
   });
 });

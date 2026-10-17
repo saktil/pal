@@ -104,6 +104,53 @@ async function putBytes(base: string, cookie: string, id: string, bytes: Uint8Ar
 }
 
 describe("API", () => {
+  it("requires explicit owner opt-in to review ignored files and hides their retained comment excerpts by default", async () => {
+    const { api, pal, base, cookie } = await signedIn();
+    const project = (await api("POST", "projects", { requestId: "ignored-project", name: "Ignored review" })).body
+      .project;
+    await promisify(execFile)("git", ["init", "-q"], { cwd: project.root });
+    await writeFile(join(project.root, ".gitignore"), "*.secret\n");
+    await writeFile(join(project.root, "local.secret"), "private fixture line\n");
+    const path = `projects/${project.id}`;
+    expect(JSON.stringify((await api("GET", `${path}/changes`)).body)).not.toContain("private fixture line");
+    const included = await api("GET", `${path}/changes?scope=include-ignored`);
+    const file = included.body.files.find((file: { path: string }) => file.path === "local.secret");
+    expect(file).toMatchObject({ ignored: true, patch: expect.stringContaining("private fixture line") });
+    expect((await api("GET", `${path}/changes?scope=all`)).status).toBe(400);
+    const review = { path: file.path, revision: file.revision, reviewed: true };
+    expect((await api("PUT", `${path}/review`, review)).status).toBe(403);
+    expect((await api("POST", `${path}/discard`, { path: file.path, revision: file.revision })).status).toBe(403);
+    const comment = { path: file.path, revision: file.revision, line: 1, body: "Check fixture" };
+    expect((await api("POST", `${path}/comments`, comment)).status).toBe(403);
+    expect((await api("PUT", `${path}/review`, { ...review, scope: "include-ignored" })).status).toBe(200);
+    const added = await api("POST", `${path}/comments`, { ...comment, scope: "include-ignored" });
+    expect(added.status).toBe(200);
+    expect((await api("GET", `${path}/changes`)).body.comments).toEqual([]);
+    expect((await api("GET", `${path}/changes?scope=include-ignored`)).body.comments).toHaveLength(1);
+    expect((await api("POST", `${path}/comments/sent`, { ids: [added.body.comment.id] })).status).toBe(403);
+    expect(
+      (await api("POST", `${path}/comments/sent`, { ids: [added.body.comment.id], scope: "include-ignored" })).status,
+    ).toBe(200);
+    expect((await fetch(`${base}/api/${path}/changes?scope=include-ignored`)).status).toBe(401);
+    expect(
+      (
+        await raw(
+          base,
+          `/api/${path}/comments`,
+          { cookie: cookie(), origin: "https://attacker.example" },
+          { ...comment, scope: "include-ignored" },
+        )
+      ).status,
+    ).toBe(403);
+    await writeFile(join(project.root, "local.secret"), "newer private fixture\n");
+    expect(
+      (await api("POST", `${path}/discard`, { path: file.path, revision: file.revision, scope: "include-ignored" }))
+        .status,
+    ).toBe(409);
+    expect(await readFile(join(project.root, "local.secret"), "utf8")).toBe("newer private fixture\n");
+    expect(pal.chats.stopped).toBe(false);
+  });
+
   it("requires owner/origin authority for reference grants and keeps access/indexing/project scopes separate", async () => {
     const { api, pal, base, cookie, dataRoot } = await signedIn();
     const external = await realpath(await mkdtemp(join(tmpdir(), "pal-reference-api-")));
