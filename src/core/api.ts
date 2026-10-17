@@ -15,6 +15,7 @@ import type { Pal } from "./app.ts";
 import { AdmissionStopped, ChatNotFound, ProjectUnavailable } from "./chats.ts";
 import { cookie, HttpError, isOwnOrigin, readJson, sendJson } from "./http.ts";
 import { OwnerError, SESSION_COOKIE, SESSION_MAX_AGE_SECONDS } from "./owner.ts";
+import { FileAccessError } from "./files.ts";
 import { FolderError } from "./projects.ts";
 import { InvalidRequest, RequestConflict, validate } from "./requests.ts";
 import { UploadBody, UploadError } from "./uploads.ts";
@@ -320,6 +321,22 @@ export function createApi(pal: Pal, publicOrigin?: string) {
         return send(200, { closed: true });
       }
     }
+    if (resource === "projects" && id !== undefined && (action === "files" || action === "file") && path.length === 3) {
+      if (method !== "GET") throw new HttpError(405, "method_not_allowed", "the Files panel is read-only");
+      const relative = url.searchParams.get("path") ?? "";
+      if (relative.length > 4096) throw new HttpError(400, "invalid_request", "path is too long");
+      try {
+        return send(
+          200,
+          action === "files" ? await pal.files.list(id, relative) : await pal.files.preview(id, relative),
+        );
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code;
+        if (code === "EACCES" || code === "EPERM")
+          throw new FileAccessError(`Pal cannot read ${relative || "this folder"}`);
+        throw error;
+      }
+    }
     if (resource === "projects" && id !== undefined && action === "changes" && path.length === 3 && method === "GET") {
       return send(200, await pal.changes.list(id));
     }
@@ -454,6 +471,7 @@ function classify(error: unknown): [number, string] {
   if (error instanceof FolderError) return [422, `folder_${error.code}`];
   if (error instanceof AdmissionStopped) return [503, "admission_stopped"];
   if (error instanceof McpConfigError) return [400, "mcp_config"];
+  if (error instanceof FileAccessError) return [403, "file_access"];
   if (error instanceof UploadError) {
     const status = { not_found: 404, too_large: 413, size_mismatch: 400, not_receiving: 409, not_ready: 409 };
     return [status[error.code], `upload_${error.code}`];

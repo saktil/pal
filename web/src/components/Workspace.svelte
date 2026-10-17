@@ -21,10 +21,11 @@
   let panelRoute: Route | undefined = $state();
   const panel = $derived(panelRoute === app.route);
   const changesPanel = () => import("./ChangesPanel.svelte");
+  const filesPanel = () => import("./FilesPanel.svelte");
   const terminalPanel = () => import("./TerminalPanel.svelte");
-  let panelView = $state<"Changes" | "Terminal">("Changes");
+  let panelView = $state<"Changes" | "Files" | "Terminal">("Changes");
   let chatView: { insertText(text: string): void } | undefined = $state();
-  function togglePanel(view: "Changes" | "Terminal") {
+  function togglePanel(view: "Changes" | "Files" | "Terminal") {
     panelRoute = panel && panelView === view ? undefined : app.route;
     panelView = view;
   }
@@ -121,6 +122,9 @@
               aria-expanded={panel && panelView === "Changes"}
               onclick={() => togglePanel("Changes")}><Icon name="edit" />Changes</button
             >
+            <button class="b sm q" aria-expanded={panel && panelView === "Files"} onclick={() => togglePanel("Files")}
+              ><Icon name="folder" />Files</button
+            >
             <button
               class="b sm q"
               aria-expanded={panel && panelView === "Terminal"}
@@ -164,6 +168,11 @@
                         }}
                       />
                     {:catch failure}<p role="alert">Couldn’t load terminal: {String(failure)}</p>{/await}
+                  {:else if panelView === "Files"}
+                    {#await filesPanel()}<p role="status">Loading files…</p>
+                    {:then { default: FilesPanel }}
+                      <FilesPanel project={located.project} />
+                    {:catch failure}<p role="alert">Couldn't load files: {String(failure)}</p>{/await}
                   {:else}
                     {#await changesPanel()}
                       <p role="status">Loading changes…</p>

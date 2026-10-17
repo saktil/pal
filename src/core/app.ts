@@ -15,7 +15,7 @@ import { loadMasterKey, SqliteCredentialStore } from "../storage/credentials.ts"
 import { openStore, type Store } from "../storage/store.ts";
 import { ChatService } from "./chats.ts";
 import { Changes } from "./changes.ts";
-import { FILES_NAMESPACE, fileTools } from "./files.ts";
+import { FILES_NAMESPACE, fileTools, projectFiles } from "./files.ts";
 import { HostCommands, SHELL_NAMESPACE, shellTools, WorkspaceLocks } from "./execution.ts";
 import { Owner } from "./owner.ts";
 import { type Project, Projects } from "./projects.ts";
@@ -42,6 +42,8 @@ export type Pal = {
   readonly mcp: McpManager;
   readonly uploads: Uploads;
   readonly changes: Changes;
+  /** The owner's read-only view of project folders for the Files panel. */
+  readonly files: ReturnType<typeof projectFiles>;
   readonly terminals: Terminals;
   close(): Promise<void>;
 };
@@ -170,6 +172,13 @@ export async function openPal(options: PalOptions, context: Context): Promise<Pa
       mcp: connections,
       uploads,
       changes,
+      files: projectFiles({
+        root: async (id) => {
+          const project = await openedProjects.get(id);
+          return project?.state === "ready" ? project.root : undefined;
+        },
+        deny: [options.dataRoot],
+      }),
       terminals,
       close,
     };

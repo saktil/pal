@@ -65,6 +65,14 @@ export type McpServer = {
 export type McpServerInput = { name: string; url: string; auth: McpAuth; private: boolean };
 export type McpListing = { review: boolean; servers: McpServer[] };
 
+/** One folder of a project, as the Files panel shows it. */
+export type ProjectFolder = {
+  path: string;
+  parent?: string;
+  entries: import("../../../src/core/files.ts").FolderEntry[];
+  omitted: number;
+};
+
 export class ApiError extends Error {
   readonly status: number;
   readonly code: string;
@@ -127,6 +135,13 @@ export const api = {
       tools,
     }),
   changes: (id: string) => call<import("../../../src/core/changes.ts").ChangeSet>("GET", `projects/${id}/changes`),
+  files: (id: string, path: string) =>
+    call<ProjectFolder>("GET", `projects/${id}/files?path=${encodeURIComponent(path)}`),
+  file: (id: string, path: string) =>
+    call<import("../../../src/core/files.ts").FilePreview>(
+      "GET",
+      `projects/${id}/file?path=${encodeURIComponent(path)}`,
+    ),
   review: (id: string, path: string, revision: string, reviewed: boolean) =>
     call<{ reviewed: boolean }>("PUT", `projects/${id}/review`, { path, revision, reviewed }),
   terminals: (id: string) =>

@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { request as httpRequest } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
@@ -266,6 +266,66 @@ describe("API", () => {
     expect((await api("POST", "sign-in", { passphrase: "wrong passphrase!" })).status).toBe(401);
     expect((await api("POST", "sign-in", { passphrase: "correct horse battery" })).status).toBe(200);
     expect((await api("GET", "projects")).status).toBe(200);
+  });
+
+  it("browses and previews a project's folder read-only, within the shared path policy", async () => {
+    const { base, api, cookie } = await signedIn();
+    const folder = await realpath(await mkdtemp(join(tmpdir(), "pal-api-files-")));
+    cleanups.push(() => rm(folder, { recursive: true, force: true }));
+    const outside = await realpath(await mkdtemp(join(tmpdir(), "pal-api-outside-")));
+    cleanups.push(() => rm(outside, { recursive: true, force: true }));
+    await mkdir(join(folder, "src"));
+    await writeFile(join(folder, "src", "main.ts"), "export const answer = 42;\n");
+    await writeFile(join(folder, "big.log"), "é".repeat(200_000));
+    await writeFile(join(folder, "image.bin"), Buffer.from([0x89, 0x50, 0x00, 0x01]));
+    await writeFile(join(outside, "secret.txt"), "not for the panel");
+    await symlink(join(outside, "secret.txt"), join(folder, "escape.txt"));
+    const project = (await api("POST", "projects", { requestId: "files-project-1", name: "Repo", folder })).body
+      .project;
+    const files = (path: string) => api("GET", `projects/${project.id}/files?path=${encodeURIComponent(path)}`);
+    const file = (path: string) => api("GET", `projects/${project.id}/file?path=${encodeURIComponent(path)}`);
+
+    const root = (await files("")).body;
+    expect(root.path).toBe("");
+    expect(root.entries.map((entry: { name: string; kind: string }) => [entry.name, entry.kind])).toEqual([
+      ["src", "folder"],
+      ["big.log", "file"],
+      ["escape.txt", "link"],
+      ["image.bin", "file"],
+    ]);
+    expect((await files("src")).body).toMatchObject({
+      path: "src",
+      parent: "",
+      entries: [{ name: "main.ts", path: "src/main.ts", size: 26 }],
+    });
+    expect((await file("src/main.ts")).body).toMatchObject({
+      kind: "text",
+      text: "export const answer = 42;\n",
+      truncated: false,
+      sha256: expect.stringMatching(/^[0-9a-f]{64}$/),
+    });
+    const big = (await file("big.log")).body;
+    expect(big).toMatchObject({ kind: "text", size: 400_000, truncated: true, sha256: null });
+    expect(Buffer.byteLength(big.text)).toBeLessThanOrEqual(256 * 1024);
+    expect((await file("image.bin")).body).toEqual({ path: "image.bin", kind: "binary", size: 4 });
+    for (const path of ["escape.txt", "../", "/etc/hosts", "src/../../"]) {
+      expect((await file(path)).body.error, path).toBe("file_access");
+    }
+    expect((await files("src/main.ts")).body.error).toBe("file_access");
+
+    // Read-only and owner-only.
+    const write = await fetch(`${base}/api/projects/${project.id}/file?path=src/main.ts`, {
+      method: "POST",
+      headers: { origin: base, cookie: cookie(), "content-type": "application/json" },
+      body: "{}",
+    });
+    expect(write.status).toBe(405);
+    expect((await fetch(`${base}/api/projects/${project.id}/files?path=`)).status).toBe(401);
+
+    // Removing the project revokes the view at once; the folder itself stays.
+    await api("DELETE", `projects/${project.id}`);
+    expect((await files("")).body.error).toBe("file_access");
+    expect((await stat(join(folder, "src", "main.ts"))).isFile()).toBe(true);
   });
 
   it("creates managed and existing-folder projects, refusing unusable folders", async () => {

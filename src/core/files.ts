@@ -45,26 +45,8 @@ export function fileTools(options: {
   ): Promise<{ root: string; target: string }> {
     const configured = await options.root(conversationId);
     if (configured === undefined) throw new FileAccessError("this conversation has no project folder");
-    const root = await realpath(configured);
-    if (isAbsolute(path)) throw new FileAccessError("use a path relative to the project folder");
-    let target;
-    try {
-      target = await realpath(join(root, path));
-    } catch {
-      if (!missing) throw new FileAccessError(`${path} does not exist in the project folder`);
-      target = join(await realpath(dirname(join(root, path))), basename(path));
-    }
-    if (!inside(root, target)) throw new FileAccessError(`${path} is outside the project folder`);
-    if (blocked(root, target)) throw new FileAccessError(`${path} holds Pal's own files`);
-    return { root, target };
+    return await resolveProjectPath(configured, path, options.deny, missing);
   }
-
-  /**
-   * Inside a protected directory that is not an ancestor of the project folder. A managed workspace lives under Pal's
-   * data, so that directory protects only what is outside the workspace; a home-folder project cannot see Pal's data.
-   */
-  const blocked = (root: string, path: string) =>
-    options.deny.some((denied) => inside(denied, path) && !inside(denied, root));
 
   const text = (value: string) => ({ output: [{ type: "text" as const, text: value }] });
   const revision = Type.Union([Type.String({ pattern: "^[a-f0-9]{64}$" }), Type.Null()]);
@@ -139,26 +121,13 @@ export function fileTools(options: {
         replay: "safe",
         execute: async (args, api) => {
           const { root, target } = await resolve(api.conversationId, args.path ?? ".");
-          const entries = await readdir(target, { withFileTypes: true });
-          const listed = await Promise.all(
-            entries
-              .filter((entry) => !blocked(root, join(target, entry.name)))
-              .slice(0, MAX_ENTRIES)
-              .map(async (entry) => {
-                const kind = entry.isDirectory() ? "folder" : entry.isSymbolicLink() ? "link" : "file";
-                const size =
-                  kind === "file" ? (await stat(join(target, entry.name)).catch(() => undefined))?.size : undefined;
-                return {
-                  kind,
-                  line: `${kind === "folder" ? `${entry.name}/` : entry.name}${size === undefined ? "" : `  ${size} bytes`}`,
-                };
-              }),
+          const { entries, omitted } = await listProjectFolder(root, target, options.deny);
+          const lines = entries.map(
+            (entry) =>
+              `${entry.kind === "folder" ? `${entry.name}/` : entry.name}${entry.size === undefined ? "" : `  ${entry.size} bytes`}`,
           );
-          listed.sort(
-            (a, b) => Number(b.kind === "folder") - Number(a.kind === "folder") || a.line.localeCompare(b.line),
-          );
-          const more = entries.length > MAX_ENTRIES ? `\n[${entries.length - MAX_ENTRIES} more entries not shown]` : "";
-          return text(`${listed.map((entry) => entry.line).join("\n") || "(empty folder)"}${more}`);
+          const more = omitted > 0 ? `\n[${omitted} more entries not shown]` : "";
+          return text(`${lines.join("\n") || "(empty folder)"}${more}`);
         },
       }),
       defineTool({
@@ -269,7 +238,7 @@ export function fileTools(options: {
             for (const entry of entries) {
               visited += 1;
               const path = join(folder, entry.name);
-              if (blocked(root, path)) continue;
+              if (isProtected(options.deny, root, path)) continue;
               const shown = relative(root, path) + (entry.isDirectory() ? sep : "");
               if (shown.toLowerCase().includes(needle)) found.push(shown);
               if (entry.isDirectory() && !SKIPPED_DIRECTORIES.has(entry.name)) queue.push(path);
@@ -284,6 +253,128 @@ export function fileTools(options: {
 }
 
 const hash = (bytes: Buffer) => createHash("sha256").update(bytes).digest("hex");
+
+/**
+ * Inside a protected directory that is not an ancestor of the project folder. A managed workspace lives under Pal's
+ * data, so that directory protects only what is outside the workspace; a home-folder project cannot see Pal's data.
+ */
+export const isProtected = (deny: readonly string[], root: string, path: string) =>
+  deny.some((denied) => inside(denied, path) && !inside(denied, root));
+
+/**
+ * The one path policy for project folders, shared by Code Mode tools and the Files panel: relative paths only, resolved
+ * after following symlinks, inside the folder and outside Pal's protected data. `missing` allows a new final name.
+ */
+export async function resolveProjectPath(
+  configured: string,
+  path: string,
+  deny: readonly string[],
+  missing = false,
+): Promise<{ root: string; target: string }> {
+  const root = await realpath(configured);
+  if (isAbsolute(path)) throw new FileAccessError("use a path relative to the project folder");
+  let target;
+  try {
+    target = await realpath(join(root, path));
+  } catch {
+    if (!missing) throw new FileAccessError(`${path} does not exist in the project folder`);
+    target = join(await realpath(dirname(join(root, path))), basename(path));
+  }
+  if (!inside(root, target)) throw new FileAccessError(`${path} is outside the project folder`);
+  if (isProtected(deny, root, target)) throw new FileAccessError(`${path} holds Pal's own files`);
+  return { root, target };
+}
+
+export type FolderEntry = {
+  readonly name: string;
+  /** Relative to the project folder. */
+  readonly path: string;
+  readonly kind: "folder" | "file" | "link";
+  readonly size?: number;
+};
+
+/** One folder's entries, folders first, protected ones hidden, at most 500. */
+export async function listProjectFolder(
+  root: string,
+  target: string,
+  deny: readonly string[],
+): Promise<{ entries: FolderEntry[]; omitted: number }> {
+  const all = (await readdir(target, { withFileTypes: true })).filter(
+    (entry) => !isProtected(deny, root, join(target, entry.name)),
+  );
+  const entries = await Promise.all(
+    all.slice(0, MAX_ENTRIES).map(async (entry): Promise<FolderEntry> => {
+      const kind = entry.isDirectory() ? "folder" : entry.isSymbolicLink() ? "link" : "file";
+      const size = kind === "file" ? (await stat(join(target, entry.name)).catch(() => undefined))?.size : undefined;
+      return {
+        name: entry.name,
+        path: relative(root, join(target, entry.name)),
+        kind,
+        ...(size === undefined ? {} : { size }),
+      };
+    }),
+  );
+  entries.sort((a, b) => Number(b.kind === "folder") - Number(a.kind === "folder") || a.name.localeCompare(b.name));
+  return { entries, omitted: Math.max(0, all.length - MAX_ENTRIES) };
+}
+
+export type FilePreview =
+  | {
+      readonly path: string;
+      readonly kind: "text";
+      readonly size: number;
+      readonly text: string;
+      readonly truncated: boolean;
+      readonly sha256: string | null;
+    }
+  | { readonly path: string; readonly kind: "binary"; readonly size: number };
+
+/**
+ * The owner's read-only view of one project's folder for the Files panel. Viewing never reaches the model. Removed or
+ * unready projects are refused, so a removed project's folder is unreadable at once.
+ */
+export function projectFiles(options: {
+  readonly root: (projectId: string) => Promise<string | undefined>;
+  readonly deny: readonly string[];
+}) {
+  const open = async (projectId: string, path: string) => {
+    const root = await options.root(projectId);
+    if (root === undefined) throw new FileAccessError("no such ready project");
+    return await resolveProjectPath(root, path, options.deny);
+  };
+  return {
+    async list(projectId: string, path: string) {
+      const { root, target } = await open(projectId, path);
+      if (!(await stat(target)).isDirectory()) throw new FileAccessError(`${path} is not a folder`);
+      const listed = await listProjectFolder(root, target, options.deny);
+      const at = relative(root, target);
+      return { path: at, ...(at === "" ? {} : { parent: dirname(at) === "." ? "" : dirname(at) }), ...listed };
+    },
+    async preview(projectId: string, path: string): Promise<FilePreview> {
+      const { root, target } = await open(projectId, path);
+      const at = relative(root, target);
+      const { bytes, size, truncated } = await readFileSnapshot(target);
+      // A cut may split one UTF-8 character; drop at most its three continuation bytes before judging the text.
+      const shown = truncated ? trimPartialCharacter(bytes) : bytes;
+      if (shown.includes(0) || !isUtf8(shown)) return { path: at, kind: "binary", size };
+      return {
+        path: at,
+        kind: "text",
+        size,
+        text: shown.toString("utf8"),
+        truncated,
+        sha256: truncated ? null : hash(bytes),
+      };
+    },
+  };
+}
+
+function trimPartialCharacter(bytes: Buffer): Buffer {
+  for (let cut = 0; cut <= 3 && cut < bytes.length; cut++) {
+    if (isUtf8(bytes.subarray(0, bytes.length - cut))) return bytes.subarray(0, bytes.length - cut);
+  }
+  return bytes;
+}
 
 export async function readFileSnapshot(path: string) {
   const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);

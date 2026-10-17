@@ -1,7 +1,7 @@
 // The built UI in Chromium against the real server, with ChatGPT replaced by the loopback OpenAI fixture.
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -406,6 +406,51 @@ describe("Pal in a browser", () => {
     await page.keyboard.press("Escape");
     await panel.waitFor({ state: "detached" });
     await page.getByLabel("Message").waitFor();
+    await page.setViewportSize({ width: 1440, height: 900 });
+  });
+
+  it("browses the project folder read-only by keyboard without sending files to the model", async () => {
+    const project = (await pal.projects.list())[0];
+    if (project === undefined) throw new Error("missing project");
+    await mkdir(join(project.root, "docs"), { recursive: true });
+    await writeFile(join(project.root, "docs", "guide.md"), "# Guide\nfirst version\n");
+    await symlink("/etc/hosts", join(project.root, "outside-link")).catch(() => {});
+    const modelRequests = fixture.apiRequests.length;
+    await page.getByRole("button", { name: "Files", exact: true }).click();
+    const panel = page.getByRole("complementary", { name: "Workspace panel" });
+    await panel.getByRole("button", { name: /^docs/ }).click();
+    await panel.getByRole("button", { name: /^guide\.md/ }).click();
+    await panel.getByText("first version").waitFor();
+    await panel.getByText("Read-only").waitFor();
+    // Back returns focus to the row that opened the file, by keyboard.
+    await expect
+      .poll(() => page.evaluate(() => document.activeElement?.getAttribute("aria-label")))
+      .toBe("Back to files");
+    await page.keyboard.press("Enter");
+    await expect
+      .poll(() => page.evaluate(() => document.activeElement?.getAttribute("data-file-row")))
+      .toBe("docs/guide.md");
+    await page.keyboard.press("Enter");
+    await writeFile(join(project.root, "docs", "guide.md"), "# Guide\nsecond version\n");
+    await panel.getByRole("button", { name: "Refresh", exact: true }).click();
+    await panel.getByText("second version").waitFor();
+    await panel.getByRole("button", { name: "Back to files" }).click();
+    await panel.getByRole("button", { name: /^outside-link/ }).click();
+    await panel
+      .getByRole("alert")
+      .filter({ hasText: /outside the project folder/ })
+      .waitFor();
+    expect(fixture.apiRequests.length).toBe(modelRequests);
+    for (const width of [1440, 768, 390]) {
+      await page.setViewportSize({ width, height: 900 });
+      expect(await page.evaluate("document.documentElement.scrollWidth <= innerWidth")).toBe(true);
+      await shoot(`files-${width}`);
+    }
+    await panel.getByRole("button", { name: /^guide\.md/ }).click();
+    await panel.getByText("second version").waitFor();
+    await shoot("files-preview-390");
+    await page.keyboard.press("Escape");
+    await panel.waitFor({ state: "detached" });
     await page.setViewportSize({ width: 1440, height: 900 });
   });
 
