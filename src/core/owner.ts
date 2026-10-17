@@ -2,6 +2,7 @@ import { createHash, randomBytes, scrypt, timingSafeEqual } from "node:crypto";
 import type { SqliteDatabase } from "@earendil-works/pi-durable/storage/sqlite";
 
 export const MIN_PASSPHRASE_CHARS = 12;
+export const SESSION_COOKIE = "pal_session";
 const SESSION_MS = 30 * 24 * 60 * 60_000;
 // scrypt N=2^15, r=8: about 32 MiB and tens of milliseconds per attempt.
 const SCRYPT = { N: 1 << 15, r: 8, p: 1, maxmem: 64 * 1024 * 1024 };
@@ -67,12 +68,17 @@ export class Owner {
 
   /** Whether a cookie's token is a live session. */
   async authenticate(token: string | undefined): Promise<boolean> {
-    if (token === undefined || token === "") return false;
+    return (await this.sessionExpiry(token)) !== undefined;
+  }
+
+  /** Live observers expire with their cookie, even when no input arrives. */
+  async sessionExpiry(token: string | undefined): Promise<number | undefined> {
+    if (token === undefined || token === "") return undefined;
     const row = await this.#database.get<{ expires_at: number }>(
       "SELECT expires_at FROM pal_sessions WHERE token_hash = ?",
       tokenHash(token),
     );
-    return row !== undefined && row.expires_at > this.#now();
+    return row !== undefined && row.expires_at > this.#now() ? row.expires_at : undefined;
   }
 
   async signOut(token: string | undefined): Promise<void> {

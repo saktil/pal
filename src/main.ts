@@ -57,6 +57,7 @@ async function main(argv: readonly string[]): Promise<number> {
           publicOrigin,
           webRoot: existsSync(join(webRoot, "index.html")) ? webRoot : undefined,
           api: createApi(pal, publicOrigin),
+          upgrade: (request, socket, head) => pal.terminals.upgrade(request, socket, head, publicOrigin),
         });
       } catch (error) {
         await pal.close();
@@ -72,6 +73,7 @@ async function main(argv: readonly string[]): Promise<number> {
       }
 
       const stop = () => {
+        void pal.terminals.close();
         server.close();
         server.closeIdleConnections();
         setTimeout(() => server.closeAllConnections(), 5_000).unref();

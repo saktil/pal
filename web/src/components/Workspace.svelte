@@ -20,6 +20,13 @@
   let panelRoute: Route | undefined = $state();
   const panel = $derived(panelRoute === app.route);
   const changesPanel = () => import("./ChangesPanel.svelte");
+  const terminalPanel = () => import("./TerminalPanel.svelte");
+  let panelView = $state<"Changes" | "Terminal">("Changes");
+  let chatView: { insertText(text: string): void } | undefined = $state();
+  function togglePanel(view: "Changes" | "Terminal") {
+    panelRoute = panel && panelView === view ? undefined : app.route;
+    panelView = view;
+  }
   const size = $derived(viewport());
   const chatId = $derived(app.route.view === "chat" ? app.route.chatId : undefined);
   const located = $derived.by(() => {
@@ -50,7 +57,7 @@
 
 <svelte:window
   onkeydown={(event) => {
-    if (event.key === "Escape") panelRoute = undefined;
+    if (event.key === "Escape" && panelView !== "Terminal") panelRoute = undefined;
   }}
 />
 
@@ -106,13 +113,24 @@
                 aria-label="Projects and chats"
                 onclick={() => (drawerRoute = app.route)}><Icon name="menu" /></button
               >{/if}
-            <button class="b sm q" aria-expanded={panel} onclick={() => (panelRoute = panel ? undefined : app.route)}
-              ><Icon name="edit" />Changes</button
+            <button
+              class="b sm q"
+              aria-expanded={panel && panelView === "Changes"}
+              onclick={() => togglePanel("Changes")}><Icon name="edit" />Changes</button
+            >
+            <button
+              class="b sm q"
+              aria-expanded={panel && panelView === "Terminal"}
+              onclick={() => togglePanel("Terminal")}><Icon name="term" />Terminal</button
             >
           </div>
-          <div class="workarea">
+          <div class="workarea" class:terminal-open={panel && panelView === "Terminal"}>
             <div class="chat-area">
-              {#key located.chat.id}<ChatView chat={located.chat} project={located.project} />{/key}
+              {#key located.chat.id}<ChatView
+                  bind:this={chatView}
+                  chat={located.chat}
+                  project={located.project}
+                />{/key}
             </div>
             {#if panel}
               {#if size === "tablet"}<button
@@ -120,19 +138,36 @@
                   aria-label="Close workspace panel"
                   onclick={() => (panelRoute = undefined)}
                 ></button>{/if}
-              <aside class="workspace-panel" aria-label="Workspace panel">
+              <aside
+                class="workspace-panel"
+                class:terminal-panel={panelView === "Terminal"}
+                aria-label="Workspace panel"
+              >
                 <div class="panelhead">
-                  <h2>Changes</h2>
+                  <h2>{panelView}</h2>
                   <button class="b i q" aria-label="Close panel" onclick={() => (panelRoute = undefined)}
                     ><Icon name="x" /></button
                   >
                 </div>
                 {#key located.project.id}
-                  {#await changesPanel()}
-                    <p role="status">Loading changes…</p>
-                  {:then { default: ChangesPanel }}
-                    <ChangesPanel project={located.project} />
-                  {:catch failure}<p role="alert">Couldn't load changes: {String(failure)}</p>{/await}
+                  {#if panelView === "Terminal"}
+                    {#await terminalPanel()}<p role="status">Loading terminal…</p>
+                    {:then { default: TerminalPanel }}
+                      <TerminalPanel
+                        project={located.project}
+                        onSelection={(text) => {
+                          chatView?.insertText(text);
+                          panelRoute = undefined;
+                        }}
+                      />
+                    {:catch failure}<p role="alert">Couldn’t load terminal: {String(failure)}</p>{/await}
+                  {:else}
+                    {#await changesPanel()}
+                      <p role="status">Loading changes…</p>
+                    {:then { default: ChangesPanel }}
+                      <ChangesPanel project={located.project} />
+                    {:catch failure}<p role="alert">Couldn't load changes: {String(failure)}</p>{/await}
+                  {/if}
                 {/key}
               </aside>
             {/if}
@@ -247,6 +282,15 @@
     display: flex;
     position: relative;
   }
+  .workarea.terminal-open {
+    flex-direction: column;
+  }
+  .workspace-panel.terminal-panel {
+    width: 100%;
+    height: 50%;
+    border-left: 0;
+    border-top: 1px solid var(--line);
+  }
   .chat-area {
     display: flex;
     flex-direction: column;
@@ -285,6 +329,9 @@
     background: rgba(0, 0, 0, 0.5);
   }
   @media (max-width: 1099px) {
+    .workspace-panel.terminal-panel {
+      height: 100%;
+    }
     .workspace-panel {
       position: absolute;
       inset: 0 0 0 auto;

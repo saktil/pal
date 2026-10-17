@@ -38,7 +38,14 @@ beforeAll(async () => {
   cleanups.push(() => rm(dataRoot, { recursive: true, force: true }));
   pal = await openPal({ dataRoot, installRoot: "/nonexistent-install", endpoints: fixture.endpoints }, context);
   cleanups.push(() => pal.close());
-  const server = await startServer({ host: "127.0.0.1", port: 0, version: "e2e", webRoot, api: createApi(pal) });
+  const server = await startServer({
+    host: "127.0.0.1",
+    port: 0,
+    version: "e2e",
+    webRoot,
+    api: createApi(pal),
+    upgrade: (request, socket, head) => pal.terminals.upgrade(request, socket, head),
+  });
   cleanups.push(() => {
     server.closeAllConnections();
     return new Promise((resolve) => server.close(resolve));
@@ -281,6 +288,87 @@ describe("Pal in a browser", () => {
     await page.keyboard.press("Escape");
     await panel.waitFor({ state: "detached" });
     await page.getByLabel("Message").waitFor();
+    await page.setViewportSize({ width: 1440, height: 900 });
+  });
+
+  it("reattaches a real human shell on a phone, transfers control and shares only selected output", async () => {
+    const project = (await pal.projects.list())[0];
+    if (project === undefined) throw new Error("missing project");
+    const errors: string[] = [];
+    const onError = (error: Error) => errors.push(error.message);
+    page.on("pageerror", onError);
+    const modelRequests = fixture.apiRequests.length;
+    expect(await pal.terminals.list(project.id)).toEqual([]);
+    await page.getByRole("button", { name: "Terminal", exact: true }).click();
+    const panel = page.getByRole("complementary", { name: "Workspace panel" });
+    await panel.getByText(/No terminal sessions/).waitFor();
+    expect(await pal.terminals.list(project.id)).toEqual([]);
+    await panel.getByRole("checkbox", { name: /I understand/ }).check();
+    await panel.getByRole("button", { name: "New host terminal" }).click();
+    await panel.getByRole("status").filter({ hasText: "You control this shell" }).waitFor();
+    await panel.getByLabel("Terminal input").focus();
+    await page.keyboard.insertText("printf '\\033[2J\\033[Hterminal-live\\r\\n'; printf once >> terminal-count.txt");
+    await page.keyboard.press("Enter");
+    await expect.poll(() => panel.locator(".xterm-rows").innerText()).toContain("terminal-live");
+    await expect.poll(() => readFile(join(project.root, "terminal-count.txt"), "utf8")).toBe("once");
+    const id = (await pal.terminals.list(project.id))[0]?.id;
+    await panel.getByRole("checkbox", { name: "Screen reader mode" }).check();
+    await panel.getByLabel("Terminal input").pressSequentially("printf reader-ok", { delay: 15 });
+    await page.keyboard.press("Enter");
+    await expect.poll(() => panel.locator(".xterm-accessibility-tree").innerText()).toContain("reader-ok");
+    await panel.getByRole("checkbox", { name: "Screen reader mode" }).uncheck();
+    await shoot("terminal-1440");
+    await panel.getByRole("button", { name: "Close panel", exact: true }).click();
+    await page.reload();
+    await page.getByRole("button", { name: "Terminal", exact: true }).click();
+    await panel.getByRole("status").filter({ hasText: "You control this shell" }).waitFor();
+    await expect.poll(() => panel.locator(".xterm-rows").innerText()).toContain("terminal-live");
+    expect((await pal.terminals.list(project.id))[0]?.id).toBe(id);
+    expect(await page.getByLabel("Message").inputValue()).toBe("");
+
+    const phoneContext = await browser.newContext({ storageState: await page.context().storageState() });
+    const phone = await phoneContext.newPage();
+    try {
+      phone.on("pageerror", onError);
+      await phone.setViewportSize({ width: 390, height: 844 });
+      await phone.goto(chatUrl);
+      await phone.getByRole("button", { name: "Terminal", exact: true }).click();
+      const mobile = phone.getByRole("complementary", { name: "Workspace panel" });
+      await mobile.getByRole("button", { name: "Take control" }).click();
+      await mobile.getByRole("status").filter({ hasText: "You control this shell" }).waitFor();
+      await panel.getByRole("button", { name: "Take control" }).waitFor();
+      await expect.poll(async () => (await pal.terminals.list(project.id))[0]?.cols).toBeLessThan(60);
+      await mobile
+        .getByRole("toolbar", { name: "Terminal keys" })
+        .getByRole("button", { name: "Esc", exact: true })
+        .click();
+      await mobile
+        .getByRole("toolbar", { name: "Terminal keys" })
+        .getByRole("button", { name: "Ctrl+C", exact: true })
+        .click();
+      await mobile.getByLabel("Terminal input").focus();
+      await phone.keyboard.insertText("printf phone > phone.txt");
+      await phone.keyboard.press("Enter");
+      await expect.poll(() => readFile(join(project.root, "phone.txt"), "utf8")).toBe("phone");
+      expect(await phone.evaluate("document.documentElement.scrollWidth <= innerWidth")).toBe(true);
+      if (shots !== undefined) await phone.screenshot({ path: join(shots, "terminal-390.png") });
+      await mobile.getByRole("button", { name: "Select output", exact: true }).click();
+      await mobile.getByRole("button", { name: "Send selection to composer" }).click();
+      await expect.poll(() => phone.getByLabel("Message").inputValue()).toContain("terminal-live");
+      expect(fixture.apiRequests.length).toBe(modelRequests);
+      expect(await readFile(join(project.root, "terminal-count.txt"), "utf8")).toBe("once");
+    } finally {
+      await phoneContext.close();
+    }
+    await panel.getByRole("button", { name: "Take control" }).click();
+    await page.setViewportSize({ width: 768, height: 1024 });
+    await shoot("terminal-768");
+    await panel.getByRole("button", { name: "Close terminal 1" }).click();
+    await panel.getByText(/No terminal sessions/).waitFor();
+    expect(await pal.terminals.list(project.id)).toEqual([]);
+    expect(errors).toEqual([]);
+    page.off("pageerror", onError);
+    await panel.getByRole("button", { name: "Close panel", exact: true }).click();
     await page.setViewportSize({ width: 1440, height: 900 });
   });
 

@@ -45,6 +45,11 @@
   let choosing = $state(false);
   const efforts = ["off", "low", "medium", "high"] as const;
   let draft = $state("");
+  let composer: HTMLTextAreaElement | undefined = $state();
+  export function insertText(text: string) {
+    draft += `${draft ? "\n\n" : ""}Terminal selection (human shell):\n\n${text}`;
+    composer?.focus();
+  }
   let pending: { key: string; text: string; files: string } | undefined;
   let attachments: Upload[] = $state([]);
   let uploading = $state(0);
@@ -466,6 +471,7 @@
         <label for="composer" class="sr">Message</label>
         <textarea
           id="composer"
+          bind:this={composer}
           class="cta"
           rows="3"
           placeholder={stream?.running ? "Steer the run or queue a follow-up" : "Message Pal"}

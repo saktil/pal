@@ -94,7 +94,7 @@ async function putBytes(base: string, cookie: string, id: string, bytes: Uint8Ar
   const response = await fetch(`${base}/api/uploads/${id}`, {
     method: "PUT",
     headers: { origin: base, cookie, "content-type": "application/octet-stream" },
-    body: bytes,
+    body: new Uint8Array(bytes),
   });
   return { status: response.status, body: (await response.json()) as Record<string, unknown> };
 }

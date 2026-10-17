@@ -1,6 +1,7 @@
 // Host capability checks for `pal probe`. Loaded only by that command, never by server startup.
 import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
+import { createRequire } from "node:module";
 import { join } from "node:path";
 import { CodemodeSandbox } from "@earendil-works/pi-codemode";
 import { FileFinder } from "@ff-labs/fff-node";
@@ -17,6 +18,7 @@ export async function runProbes(): Promise<ProbeResult[]> {
       await probe("fff", () => probeFff(dir)),
       await probe("codemode", probeCodemode),
       await probe("pty", probePty),
+      await probe("terminal-screen", probeScreen),
     ];
   } finally {
     await rm(dir, { recursive: true, force: true });
@@ -94,6 +96,28 @@ async function probeCodemode(): Promise<string> {
     return "QuickJS WASM worker ran a script that called a host tool";
   } finally {
     await sandbox.close();
+  }
+}
+
+async function probeScreen(): Promise<string> {
+  const require = createRequire(import.meta.url);
+  const { Terminal } = require("@xterm/headless") as typeof import("@xterm/headless");
+  const { SerializeAddon } = require("@xterm/addon-serialize") as typeof import("@xterm/addon-serialize");
+  const { WebSocketServer } = require("ws") as typeof import("ws");
+  if (typeof WebSocketServer !== "function") throw new Error("WebSocket server unavailable");
+  const screen = new Terminal({ cols: 80, rows: 24, allowProposedApi: true });
+  const restored = new Terminal({ cols: 80, rows: 24, allowProposedApi: true });
+  try {
+    const serializer = new SerializeAddon();
+    screen.loadAddon(serializer);
+    await new Promise<void>((done) => screen.write("\x1b[2J\x1b[HOLD\rNEW", done));
+    await new Promise<void>((done) => restored.write(serializer.serialize(), done));
+    if (restored.buffer.active.getLine(0)?.translateToString(true) !== "NEW")
+      throw new Error("live screen did not round-trip");
+    return "headless screen serialized/restored; WebSocket server available";
+  } finally {
+    screen.dispose();
+    restored.dispose();
   }
 }
 

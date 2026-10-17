@@ -2,6 +2,7 @@
 
 export type Session = { owner: boolean; signedIn: boolean };
 export type { Change, ChangeSet } from "../../../src/core/changes.ts";
+export type { TerminalInfo } from "../../../src/core/terminals.ts";
 
 export type Effort = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 export type ChatGPTModel = { slug: string; displayName: string; supported: boolean; efforts: Effort[] };
@@ -120,6 +121,16 @@ export const api = {
   changes: (id: string) => call<import("../../../src/core/changes.ts").ChangeSet>("GET", `projects/${id}/changes`),
   review: (id: string, path: string, revision: string, reviewed: boolean) =>
     call<{ reviewed: boolean }>("PUT", `projects/${id}/review`, { path, revision, reviewed }),
+  terminals: (id: string) =>
+    call<{ terminals: import("../../../src/core/terminals.ts").TerminalInfo[] }>("GET", `projects/${id}/terminals`),
+  newTerminal: (id: string) =>
+    call<{ terminal: import("../../../src/core/terminals.ts").TerminalInfo }>("POST", `projects/${id}/terminals`, {
+      cols: 80,
+      rows: 24,
+      trust: true,
+    }),
+  closeTerminal: (project: string, id: string) =>
+    call<{ closed: true }>("DELETE", `projects/${project}/terminals/${id}`),
   removeProject: (id: string) => call<{ removed: true }>("DELETE", `projects/${id}`),
   folders: (path?: string) =>
     call<FolderListing>("GET", `folders${path === undefined ? "" : `?path=${encodeURIComponent(path)}`}`),

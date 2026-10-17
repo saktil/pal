@@ -20,6 +20,7 @@ import { HostCommands, SHELL_NAMESPACE, shellTools, WorkspaceLocks } from "./exe
 import { Owner } from "./owner.ts";
 import { type Project, Projects } from "./projects.ts";
 import { Uploads } from "./uploads.ts";
+import { Terminals } from "./terminals.ts";
 
 export type PalOptions = {
   readonly dataRoot: string;
@@ -41,6 +42,7 @@ export type Pal = {
   readonly mcp: McpManager;
   readonly uploads: Uploads;
   readonly changes: Changes;
+  readonly terminals: Terminals;
   close(): Promise<void>;
 };
 
@@ -63,6 +65,7 @@ export async function openPal(options: PalOptions, context: Context): Promise<Pa
   let harness: Harness | undefined;
   let sandbox: { close(): Promise<void> } | undefined;
   let mcp: McpManager | undefined;
+  let terminals: Terminals | undefined;
   // The Harness, once open, owns the storage and closes it; scripts stop before their sandbox and connections do.
   let closing: Promise<void> | undefined;
   const close = () =>
@@ -70,7 +73,7 @@ export async function openPal(options: PalOptions, context: Context): Promise<Pa
       try {
         await (harness === undefined ? store.close() : harness.close(context));
       } finally {
-        await commands.close();
+        await Promise.all([commands.close(), terminals?.close()]);
         await Promise.all([sandbox?.close(), mcp?.close()]);
       }
     })());
@@ -130,6 +133,9 @@ export async function openPal(options: PalOptions, context: Context): Promise<Pa
       installRoot: options.installRoot,
     });
     changes = new Changes(database, openedProjects, options.dataRoot);
+    const owner = new Owner(database);
+    const reviews = changes;
+    terminals = new Terminals(openedProjects, owner, (root) => reviews.capture(root));
     const uploads = await Uploads.open(database, options.dataRoot);
     const openedChats = await ChatService.open(
       {
@@ -148,7 +154,7 @@ export async function openPal(options: PalOptions, context: Context): Promise<Pa
     running.resume();
     return {
       store,
-      owner: new Owner(database),
+      owner,
       projects: openedProjects,
       chats: openedChats,
       chatgpt: new ChatGPTConnection(credentials, {
@@ -162,6 +168,7 @@ export async function openPal(options: PalOptions, context: Context): Promise<Pa
       mcp: connections,
       uploads,
       changes,
+      terminals,
       close,
     };
   } catch (error) {

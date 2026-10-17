@@ -1,0 +1,270 @@
+import { createHash } from "node:crypto";
+import { once } from "node:events";
+import { access, mkdtemp, readFile, realpath, rm } from "node:fs/promises";
+import type { AddressInfo } from "node:net";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
+import { afterEach, describe, expect, it } from "vitest";
+import { WebSocket } from "ws";
+import { createApi } from "../src/core/api.ts";
+import { openPal } from "../src/core/app.ts";
+import { startServer } from "../src/core/server.ts";
+
+const cleanups: (() => Promise<unknown>)[] = [];
+afterEach(async () => {
+  for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
+});
+async function setup(publicOrigin?: string) {
+  const dataRoot = await realpath(await mkdtemp(join(tmpdir(), "pal-terminal-test-")));
+  cleanups.push(() => rm(dataRoot, { recursive: true, force: true }));
+  const pal = await openPal({ dataRoot, installRoot: "/nonexistent" }, context);
+  cleanups.push(() => pal.close());
+  const project = await pal.projects.create("terminal-project", { name: "Terminal" });
+  const token = await pal.owner.setup(pal.owner.setupToken, "correct horse battery");
+  const server = await startServer({
+    host: "127.0.0.1",
+    port: 0,
+    version: "test",
+    publicOrigin,
+    api: createApi(pal, publicOrigin),
+    upgrade: (req, socket, head) => pal.terminals.upgrade(req, socket, head, publicOrigin),
+  });
+  cleanups.push(() => {
+    server.closeAllConnections();
+    return new Promise((resolve) => server.close(resolve));
+  });
+  const base = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+  const request = (path: string, method = "GET", body?: unknown) =>
+    fetch(`${base}/api/${path}`, {
+      method,
+      headers: { cookie: `pal_session=${token}`, origin: base, "content-type": "application/json" },
+      ...(body === undefined ? {} : { body: JSON.stringify(body) }),
+    });
+  const create = () => pal.terminals.create(project.id, { cols: 80, rows: 24 });
+  function socket(id: string, headers: Record<string, string> = {}) {
+    const ws = new WebSocket(`${base.replace("http:", "ws:")}/api/terminals/${id}/socket`, {
+      headers: { origin: base, cookie: `pal_session=${token}`, ...headers },
+    });
+    const messages: Record<string, unknown>[] = [];
+    ws.on("message", (raw) => {
+      messages.push(JSON.parse(raw.toString()) as Record<string, unknown>);
+      if (messages.length > 512) messages.shift();
+    });
+    ws.on("error", () => {});
+    cleanups.push(async () => {
+      if (ws.readyState !== WebSocket.CLOSED) {
+        const closed = once(ws, "close");
+        ws.terminate();
+        await closed;
+      }
+    });
+    return {
+      ws,
+      messages,
+      send: (message: unknown) => ws.send(JSON.stringify(message)),
+      last: (type: string) => messages.findLast((message) => message.type === type),
+      output: () =>
+        messages
+          .filter((message) => message.type === "output")
+          .map((message) => message.data)
+          .join(""),
+    };
+  }
+  async function connect(id: string, headers: Record<string, string> = {}) {
+    const client = socket(id, headers);
+    await once(client.ws, "open");
+    await expect.poll(() => client.last("state")).toBeDefined();
+    return client;
+  }
+  return { pal, project, token, dataRoot, request, create, socket, connect };
+}
+
+describe("human host terminals", () => {
+  it("is lazy, requires explicit trust, runs a clean real PTY, and restores the actual screen", async () => {
+    const { pal, project, request, create, connect } = await setup();
+    expect(await pal.terminals.list(project.id)).toEqual([]);
+    expect((await request(`projects/${project.id}/terminals`, "POST", { cols: 80, rows: 24 })).status).toBe(400);
+    const previous = process.env.OPENAI_API_KEY;
+    process.env.OPENAI_API_KEY = "ambient-key-must-not-leak";
+    let terminal;
+    try {
+      terminal = await create();
+    } finally {
+      if (previous === undefined) delete process.env.OPENAI_API_KEY;
+      else process.env.OPENAI_API_KEY = previous;
+    }
+    const client = await connect(terminal.id);
+    const epoch = client.last("state")?.epoch;
+    client.send({
+      type: "input",
+      epoch,
+      data: "env > environment.txt; pwd > cwd.txt; test -t 0 && printf 'PTY-OK\\n'\r",
+    });
+    await expect.poll(client.output).toContain("\r\nPTY-OK\r\n");
+    const environment = await readFile(join(project.root, "environment.txt"), "utf8");
+    expect(environment).not.toMatch(/OPENAI|CHATGPT|MCP|BASH_ENV|ambient-key/);
+    expect(environment).toContain("HISTFILE=/dev/null");
+    expect((await readFile(join(project.root, "cwd.txt"), "utf8")).trim()).toBe(project.root);
+    client.send({ type: "input", epoch, data: "printf '\\033[2J\\033[HOLD\\rNEW\\r\\n'\r" });
+    await expect.poll(client.output).toContain("\x1b[2J\x1b[HOLD\rNEW");
+    client.ws.close();
+    await once(client.ws, "close");
+    const next = await connect(terminal.id);
+    expect(next.last("snapshot")?.data).toContain("NEW");
+    expect(next.last("snapshot")?.data).not.toContain("OLD");
+    expect((await pal.terminals.list(project.id))[0]?.id).toBe(terminal.id);
+  });
+
+  it("rejects unauthenticated, wrong Host/Origin and missing-Origin upgrades", async () => {
+    const { create, socket } = await setup();
+    const terminal = await create();
+    for (const headers of [
+      { cookie: "" },
+      { origin: "https://evil.example" },
+      { host: "evil.example" },
+      { origin: "" },
+    ]) {
+      const client = socket(terminal.id, headers);
+      await expect(once(client.ws, "open")).rejects.toThrow();
+      expect(client.messages).toEqual([]);
+    }
+  });
+
+  it.each(["http://100.64.0.10:7337", "https://pal.example"])(
+    "accepts only the exact configured external WS origin %s",
+    async (publicOrigin) => {
+      const { project, create, socket } = await setup(publicOrigin);
+      const terminal = await create();
+      const host = new URL(publicOrigin).host;
+      const client = socket(terminal.id, { host, origin: publicOrigin });
+      await once(client.ws, "open");
+      await expect.poll(() => client.last("state")?.control).toBe(true);
+      client.send({ type: "input", epoch: client.last("state")?.epoch, data: "printf external > external.txt\r" });
+      await expect.poll(() => readFile(join(project.root, "external.txt"), "utf8")).toBe("external");
+      const wrong = socket(terminal.id, { host, origin: publicOrigin + "/" });
+      await expect(once(wrong.ws, "open")).rejects.toThrow();
+    },
+  );
+
+  it("has one controller and rejects stale input/resize epochs after takeover", async () => {
+    const { pal, project, create, connect } = await setup();
+    const terminal = await create();
+    const one = await connect(terminal.id),
+      two = await connect(terminal.id);
+    expect(one.last("state")?.control).toBe(true);
+    expect(two.last("state")?.control).toBe(false);
+    const old = one.last("state")?.epoch;
+    two.send({ type: "take" });
+    await expect.poll(() => two.last("state")?.control).toBe(true);
+    const epoch = two.last("state")?.epoch;
+    one.send({ type: "input", epoch: old, data: "echo stale > stale.txt\r" });
+    await expect.poll(() => one.last("error")?.message).toMatch(/Control changed/);
+    await expect(access(join(project.root, "stale.txt"))).rejects.toThrow();
+    two.send({ type: "resize", epoch, cols: 60, rows: 10 });
+    await expect.poll(() => one.last("resize")?.cols).toBe(60);
+    one.send({ type: "resize", epoch: old, cols: 100, rows: 40 });
+    await expect.poll(async () => (await pal.terminals.list(project.id))[0]?.cols).toBe(60);
+    two.ws.close();
+    await once(two.ws, "close");
+    await expect.poll(() => one.last("state")?.control).toBe(false);
+    one.send({ type: "take" });
+    await expect.poll(() => one.last("state")?.control).toBe(true);
+  });
+
+  it("revokes signed-out sockets immediately and expires idle observers", async () => {
+    const { pal, token, request, create, connect } = await setup();
+    const terminal = await create();
+    const client = await connect(terminal.id);
+    const closed = once(client.ws, "close");
+    expect((await request("sign-out", "POST")).status).toBe(200);
+    await closed;
+    expect(client.ws.readyState).toBe(WebSocket.CLOSED);
+    const nextToken = await pal.owner.signIn("correct horse battery");
+    // Expiry is read at upgrade; even a silent observer must be disconnected on time.
+    await pal.store.database.run(
+      "UPDATE pal_sessions SET expires_at = ? WHERE token_hash = ?",
+      Date.now() + 800,
+      createHash("sha256").update(nextToken).digest("hex"),
+    );
+    const expiring = await connect(terminal.id, { cookie: `pal_session=${nextToken}` });
+    await once(expiring.ws, "close");
+    const serverToken = await pal.owner.authenticate(token);
+    expect(serverToken).toBe(false);
+  });
+
+  it("bounds sessions, message sizes and floods, and closes shells on project removal", async () => {
+    const { pal, project, request, create, connect } = await setup();
+    const terminals = await Promise.all([create(), create(), create(), create()]);
+    await expect(create()).rejects.toMatchObject({ status: 409 });
+    await expect(pal.terminals.create(project.id, { cols: 10000, rows: 10 })).rejects.toThrow();
+    const terminal = terminals[0];
+    if (terminal === undefined) throw new Error("missing terminal");
+    const client = await connect(terminal.id);
+    client.send({
+      type: "input",
+      epoch: client.last("state")?.epoch,
+      data: "head -c 4194304 /dev/zero | tr '\\0' x\r",
+    });
+    await expect
+      .poll(async () => (await pal.terminals.list(project.id)).find((value) => value.id === terminal.id)?.reason, {
+        timeout: 10_000,
+      })
+      .toMatch(/flood/);
+    const second = terminals[1];
+    if (second === undefined) throw new Error("missing terminal");
+    const bad = await connect(second.id);
+    const closed = once(bad.ws, "close");
+    bad.send({ type: "input", epoch: bad.last("state")?.epoch, data: "x".repeat(33 * 1024) });
+    await closed;
+    expect((await request(`projects/${project.id}`, "DELETE")).status).toBe(200);
+    expect(
+      await pal.store.database.get("SELECT root FROM pal_projects WHERE id = ? AND removed_at IS NULL", project.id),
+    ).toBeUndefined();
+    await expect(pal.terminals.list(project.id)).rejects.toMatchObject({ status: 404 });
+  });
+
+  it("caps concurrent observers and shares one shutdown for an active shell", async () => {
+    const { pal, project, create, socket, connect } = await setup();
+    const terminal = await create();
+    const attempts = Array.from({ length: 8 }, () => socket(terminal.id));
+    const results = await Promise.allSettled(attempts.map((client) => once(client.ws, "open")));
+    expect(results.filter((result) => result.status === "fulfilled")).toHaveLength(3);
+    for (const client of attempts)
+      if (client.ws.readyState === WebSocket.OPEN) {
+        client.ws.close();
+        await once(client.ws, "close");
+      }
+    const client = await connect(terminal.id);
+    client.send({ type: "input", epoch: client.last("state")?.epoch, data: "sleep 30 & echo $! > background.pid\r" });
+    await expect.poll(() => readFile(join(project.root, "background.pid"), "utf8")).toMatch(/^\d+/);
+    const pid = Number(await readFile(join(project.root, "background.pid"), "utf8"));
+    const closing = pal.terminals.close();
+    expect(pal.terminals.close()).toBe(closing);
+    await closing;
+    await expect
+      .poll(async () => {
+        try {
+          process.kill(pid, 0);
+          return process.platform !== "linux" || !/^\d+ \(.*\) [ZX]/.test(await readFile(`/proc/${pid}/stat`, "utf8"));
+        } catch (error) {
+          if (["ENOENT", "ESRCH"].includes((error as NodeJS.ErrnoException).code ?? "")) return false;
+          throw error;
+        }
+      })
+      .toBe(false);
+  });
+
+  it("does not resurrect ended shells, saved PIDs or keystrokes on restart", async () => {
+    const { pal, project, dataRoot, create, connect } = await setup();
+    const terminal = await create();
+    const client = await connect(terminal.id);
+    client.send({ type: "input", epoch: client.last("state")?.epoch, data: "printf once > marker; exit\r" });
+    await expect.poll(async () => (await pal.terminals.list(project.id))[0]?.ended).toBe(true);
+    await pal.close();
+    const next = await openPal({ dataRoot, installRoot: "/nonexistent" }, context);
+    cleanups.push(() => next.close());
+    expect(await next.terminals.list(project.id)).toEqual([]);
+    expect(await readFile(join(project.root, "marker"), "utf8")).toBe("once");
+  });
+});

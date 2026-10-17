@@ -14,12 +14,16 @@ import { McpConfigError } from "../pi/mcp.ts";
 import type { Pal } from "./app.ts";
 import { AdmissionStopped, ChatNotFound, ProjectUnavailable } from "./chats.ts";
 import { cookie, HttpError, isOwnOrigin, readJson, sendJson } from "./http.ts";
-import { OwnerError, SESSION_MAX_AGE_SECONDS } from "./owner.ts";
+import { OwnerError, SESSION_COOKIE, SESSION_MAX_AGE_SECONDS } from "./owner.ts";
 import { FolderError } from "./projects.ts";
 import { InvalidRequest, RequestConflict, validate } from "./requests.ts";
 import { UploadBody, UploadError } from "./uploads.ts";
+import { TerminalSize } from "./terminals.ts";
 
-const SESSION_COOKIE = "pal_session";
+const NewTerminal = Type.Object(
+  { ...TerminalSize.properties, trust: Type.Literal(true) },
+  { additionalProperties: false },
+);
 const HEARTBEAT_MS = 25_000;
 
 const Passphrase = Type.Object({ passphrase: Type.String({ maxLength: 1024 }) }, { additionalProperties: false });
@@ -199,6 +203,7 @@ export function createApi(pal: Pal, publicOrigin?: string) {
     if (!(await signedIn(request))) throw new HttpError(401, "signed_out", "sign in to Pal first");
 
     if (resource === "sign-out" && path.length === 1 && method === "POST") {
+      pal.terminals.revoke(cookie(request, SESSION_COOKIE));
       await pal.owner.signOut(cookie(request, SESSION_COOKIE));
       response.setHeader("set-cookie", `${SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0`);
       return send(200, { signedIn: false });
@@ -299,6 +304,17 @@ export function createApi(pal: Pal, publicOrigin?: string) {
         return send(200, { project: await pal.projects.create(requestId, body) });
       }
     }
+    if (resource === "projects" && id !== undefined && action === "terminals") {
+      if (path.length === 3 && method === "GET") return send(200, { terminals: await pal.terminals.list(id) });
+      if (path.length === 3 && method === "POST") {
+        const { cols, rows } = validate(NewTerminal, await readJson(request));
+        return send(200, { terminal: await pal.terminals.create(id, { cols, rows }) });
+      }
+      if (path.length === 4 && path[3] !== undefined && method === "DELETE") {
+        await pal.terminals.remove(id, path[3]);
+        return send(200, { closed: true });
+      }
+    }
     if (resource === "projects" && id !== undefined && action === "changes" && path.length === 3 && method === "GET") {
       return send(200, await pal.changes.list(id));
     }
@@ -309,7 +325,7 @@ export function createApi(pal: Pal, publicOrigin?: string) {
     }
     if (resource === "projects" && id !== undefined && action === undefined && method === "DELETE") {
       await pal.projects.remove(id);
-      await pal.chats.abortDeleted(context);
+      await Promise.all([pal.terminals.removeProject(id), pal.chats.abortDeleted(context)]);
       return send(200, { removed: true });
     }
     if (resource === "projects" && id !== undefined && action === "uploads" && method === "POST") {

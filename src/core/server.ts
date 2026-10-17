@@ -1,10 +1,12 @@
 import { once } from "node:events";
 import { createServer, type IncomingMessage, type RequestListener, type Server, type ServerResponse } from "node:http";
+import type { Duplex } from "node:stream";
 import sirv from "sirv";
 import { isOwnHost, sendJson } from "./http.ts";
 
 export type ServerOptions = {
   version: string;
+  upgrade?: ((request: IncomingMessage, socket: Duplex, head: Buffer) => Promise<void>) | undefined;
   publicOrigin?: string | undefined;
   /** Built frontend directory; absent in development, where Vite serves the UI. */
   webRoot?: string | undefined;
@@ -31,6 +33,11 @@ export function createRequestListener({ version, webRoot, api, publicOrigin }: S
     const url = URL.parse(request.url ?? "/", "http://pal.invalid");
     if (url === null) return sendJson(request, response, 400, { error: "bad_request" });
     if (!isOwnHost(request, external)) return sendJson(request, response, 421, { error: "wrong_host" });
+    const ws = `${external?.protocol === "https:" && request.headers.host === external.host ? "wss" : "ws"}://${request.headers.host}`;
+    response.setHeader(
+      "content-security-policy",
+      BASE_HEADERS["content-security-policy"] + "; connect-src 'self' " + ws,
+    );
     const { pathname } = url;
     const readOnly = request.method === "GET" || request.method === "HEAD";
 
@@ -53,6 +60,23 @@ export function createRequestListener({ version, webRoot, api, publicOrigin }: S
 /** Listen on one port; resolves once bound so callers can read the actual address. */
 export async function startServer(options: ServerOptions & { host: string; port: number }): Promise<Server> {
   const server = createServer(createRequestListener(options));
+  server.on("upgrade", (request, socket, head) => {
+    socket.on("error", () => socket.destroy());
+    if (options.upgrade === undefined) {
+      socket.destroy();
+      return;
+    }
+    socket.pause();
+    const deadline = setTimeout(() => socket.destroy(), 5000);
+    deadline.unref();
+    void options
+      .upgrade(request, socket, head)
+      .catch(() => socket.destroy())
+      .finally(() => {
+        clearTimeout(deadline);
+        socket.resume();
+      });
+  });
   server.listen(options.port, options.host);
   await once(server, "listening");
   return server;

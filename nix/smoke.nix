@@ -16,7 +16,7 @@ runCommand "pal-smoke-${pal.version}"
     pal --version | grep -Fx 'pal ${pal.version}'
     pal --help | grep -F 'Usage: pal'
     pal probe | tee probe.jsonl
-    test "$(grep -c '"ok":true' probe.jsonl)" -eq 4
+    test "$(grep -c '"ok":true' probe.jsonl)" -eq 5
 
     pal --port 0 --data-dir "$TMPDIR/data" > server.log 2>&1 &
     server=$!
