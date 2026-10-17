@@ -70,13 +70,13 @@ export class SqliteCredentialStore implements CredentialStore {
     providerId: string,
     change: (current: Credential | undefined) => Promise<Credential | undefined>,
   ): Promise<Credential | undefined> {
-    return await this.#serial(providerId, async () => {
+    return this.#serial(providerId, async () => {
       const current = await this.read(providerId);
       const next = await change(current);
       if (next === undefined) return current;
       const fields: Partial<Record<string, unknown>> = { ...next };
       const retained = Object.fromEntries(
-        RETAINED_FIELDS.filter((field) => typeof fields[field] === "string").map((field) => [field, fields[field]]),
+        RETAINED_FIELDS.flatMap((field) => (typeof fields[field] === "string" ? [[field, fields[field]]] : [])),
       );
       await this.#database.run(
         `INSERT INTO pal_credentials (provider_id, type, sealed, retained, updated_at) VALUES (?, ?, ?, ?, ?)
@@ -148,7 +148,9 @@ export class SqliteCredentialStore implements CredentialStore {
 
   #seal(providerId: string, credential: Credential): Uint8Array {
     const iv = randomBytes(IV_BYTES);
-    const cipher = createCipheriv("aes-256-gcm", this.#key, iv).setAAD(this.#aad(providerId));
+    const cipher = createCipheriv("aes-256-gcm", this.#key, iv, { authTagLength: TAG_BYTES }).setAAD(
+      this.#aad(providerId),
+    );
     const data = Buffer.concat([cipher.update(JSON.stringify(credential)), cipher.final()]);
     return Buffer.concat([Buffer.of(SEALED_VERSION), iv, cipher.getAuthTag(), data]);
   }
@@ -156,7 +158,11 @@ export class SqliteCredentialStore implements CredentialStore {
   #unseal(providerId: string, sealed: Uint8Array): Credential {
     const bytes = Buffer.from(sealed);
     if (bytes[0] !== SEALED_VERSION) throw new Error(`credential for ${providerId} has an unknown format`);
-    const decipher = createDecipheriv("aes-256-gcm", this.#key, bytes.subarray(1, 1 + IV_BYTES))
+    if (bytes.length <= 1 + IV_BYTES + TAG_BYTES)
+      throw new Error(`credential for ${providerId} has a truncated envelope`);
+    const decipher = createDecipheriv("aes-256-gcm", this.#key, bytes.subarray(1, 1 + IV_BYTES), {
+      authTagLength: TAG_BYTES,
+    })
       .setAAD(this.#aad(providerId))
       .setAuthTag(bytes.subarray(1 + IV_BYTES, 1 + IV_BYTES + TAG_BYTES));
     const data = Buffer.concat([decipher.update(bytes.subarray(1 + IV_BYTES + TAG_BYTES)), decipher.final()]);

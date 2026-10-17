@@ -44,11 +44,11 @@ export function fileTools(options: {
   async function resolve(
     conversationId: ConversationId,
     path: string,
-    missing = false,
+    missing: "reject" | "allow" = "reject",
   ): Promise<{ root: string; target: string }> {
     const configured = await options.root(conversationId);
     if (configured === undefined) throw new FileAccessError("this conversation has no project folder");
-    return await resolveProjectPath(configured, path, options.deny, missing);
+    return resolveProjectPath(configured, path, options.deny, missing);
   }
 
   const text = (value: string) => ({ output: [{ type: "text" as const, text: value }] });
@@ -60,9 +60,9 @@ export function fileTools(options: {
     change: (before: string) => string,
     signal?: AbortSignal,
   ) => {
-    const initial = await resolve(id, path, true);
-    return await locks.run(initial.root, async () => {
-      const { root, target } = await resolve(id, path, true);
+    const initial = await resolve(id, path, "allow");
+    return locks.run(initial.root, async () => {
+      const { root, target } = await resolve(id, path, "allow");
       if (root !== initial.root || relative(root, target).split(sep).includes(".git"))
         throw new FileAccessError("workspace changed or protected Git metadata");
       signal?.throwIfAborted();
@@ -216,7 +216,7 @@ export function fileTools(options: {
                   throw new FileAccessError("edits must not overlap");
               }
               let result = before;
-              for (const edit of edits.reverse())
+              for (const edit of edits.toReversed())
                 result = result.slice(0, edit.at) + edit.newText + result.slice(edit.at + edit.oldText.length);
               return result;
             },
@@ -298,13 +298,13 @@ export const isProtected = (deny: readonly string[], root: string, path: string)
 
 /**
  * The one path policy for project folders, shared by Code Mode tools and the Files panel: relative paths only, resolved
- * after following symlinks, inside the folder and outside Pal's protected data. `missing` allows a new final name.
+ * after following symlinks, inside the folder and outside Pal's protected data. `missing: "allow"` permits a new final name.
  */
 export async function resolveProjectPath(
   configured: string,
   path: string,
   deny: readonly string[],
-  missing = false,
+  missing: "reject" | "allow" = "reject",
 ): Promise<{ root: string; target: string }> {
   const root = await realpath(configured);
   if (isAbsolute(path)) throw new FileAccessError("use a path relative to the project folder");
@@ -312,7 +312,7 @@ export async function resolveProjectPath(
   try {
     target = await realpath(join(root, path));
   } catch {
-    if (!missing) throw new FileAccessError(`${path} does not exist in the project folder`);
+    if (missing !== "allow") throw new FileAccessError(`${path} does not exist in the project folder`);
     target = join(await realpath(dirname(join(root, path))), basename(path));
   }
   if (!inside(root, target)) throw new FileAccessError(`${path} is outside the project folder`);
@@ -339,7 +339,9 @@ export async function listProjectFolder(
   );
   const entries = await Promise.all(
     all.slice(0, MAX_ENTRIES).map(async (entry): Promise<FolderEntry> => {
-      const kind = entry.isDirectory() ? "folder" : entry.isSymbolicLink() ? "link" : "file";
+      let kind: FolderEntry["kind"] = "file";
+      if (entry.isDirectory()) kind = "folder";
+      else if (entry.isSymbolicLink()) kind = "link";
       const size = kind === "file" ? (await stat(join(target, entry.name)).catch(() => undefined))?.size : undefined;
       return {
         name: entry.name,
@@ -375,7 +377,7 @@ export function projectFiles(options: {
   const open = async (projectId: string, path: string) => {
     const root = await options.root(projectId);
     if (root === undefined) throw new FileAccessError("no such ready project");
-    return await resolveProjectPath(root, path, options.deny);
+    return resolveProjectPath(root, path, options.deny);
   };
   return {
     async list(projectId: string, path: string) {
@@ -383,7 +385,8 @@ export function projectFiles(options: {
       if (!(await stat(target)).isDirectory()) throw new FileAccessError(`${path} is not a folder`);
       const listed = await listProjectFolder(root, target, options.deny);
       const at = relative(root, target);
-      return { path: at, ...(at === "" ? {} : { parent: dirname(at) === "." ? "" : dirname(at) }), ...listed };
+      const parent = dirname(at) === "." ? "" : dirname(at);
+      return { path: at, ...(at === "" ? {} : { parent }), ...listed };
     },
     async preview(projectId: string, path: string): Promise<FilePreview> {
       const { root, target } = await open(projectId, path);

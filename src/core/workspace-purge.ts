@@ -169,7 +169,8 @@ export class WorkspacePurge {
     const destination = join(this.#dataRoot, "workspace-trash", intent.directory);
     const [original, moved] = await Promise.all([this.#exists(source), this.#exists(destination)]);
     if (original && moved) throw new RequestConflict("Both workspace locations exist. Inspect them before retrying.");
-    return original ? source : moved ? destination : undefined;
+    if (original) return source;
+    return moved ? destination : undefined;
   }
 
   async #identity(directory: string, intent?: Intent): Promise<string> {

@@ -93,9 +93,9 @@ export class Terminals {
   }
   async list(projectId: string): Promise<TerminalInfo[]> {
     await this.#project(projectId);
-    return [...this.#sessions.values()]
-      .filter((session) => session.info.projectId === projectId)
-      .map((session) => ({ ...session.info }));
+    return [...this.#sessions.values()].flatMap((session) =>
+      session.info.projectId === projectId ? [{ ...session.info }] : [],
+    );
   }
   async create(projectId: string, size: { cols: number; rows: number }): Promise<TerminalInfo> {
     validate(TerminalSize, size);
@@ -249,7 +249,7 @@ export class Terminals {
   async remove(projectId: string, id: string): Promise<void> {
     const session = this.#sessions.get(id);
     if (session?.info.projectId !== projectId) throw new HttpError(404, "not_found", "no such terminal");
-    return await (session.removing ??= (async () => {
+    return (session.removing ??= (async () => {
       session.disposed = true;
       for (const client of session.clients) client.ws.terminate();
       this.#end(session, "Closed");
@@ -261,9 +261,9 @@ export class Terminals {
   }
   async removeProject(id: string): Promise<void> {
     await Promise.all(
-      [...this.#sessions.values()]
-        .filter((session) => session.info.projectId === id)
-        .map((session) => this.remove(id, session.info.id)),
+      [...this.#sessions.values()].flatMap((session) =>
+        session.info.projectId === id ? [this.remove(id, session.info.id)] : [],
+      ),
     );
   }
   close(): Promise<void> {

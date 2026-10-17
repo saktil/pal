@@ -321,14 +321,14 @@ export class ChatGPTConnection {
     this.#signingIn = true;
     try {
       const retained = await this.#store.retained(CHATGPT_PROVIDER);
-      const registration =
-        retained?.clientId === undefined || retained.accountId === undefined
-          ? undefined
-          : {
-              clientId: retained.clientId,
-              accountId: retained.accountId,
-              ...(retained.email === undefined ? {} : { email: retained.email }),
-            };
+      let registration: ChatGPTRegistration | undefined;
+      if (retained?.clientId !== undefined && retained.accountId !== undefined) {
+        registration = {
+          clientId: retained.clientId,
+          accountId: retained.accountId,
+          ...(retained.email === undefined ? {} : { email: retained.email }),
+        };
+      }
       const current = await this.#store.read(CHATGPT_PROVIDER);
       const idTokenHint = current?.type === "oauth" ? (current as ChatGPTCredential).idToken : undefined;
       let signedIn: ChatGPTCredential;

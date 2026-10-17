@@ -51,7 +51,7 @@ export class Owner {
       return true;
     });
     if (!created) throw new OwnerError("exists", "this Pal already has an owner");
-    return await this.#startSession();
+    return this.#startSession();
   }
 
   async signIn(passphrase: string): Promise<string> {
@@ -63,7 +63,7 @@ export class Owner {
       this.#failures.push(now);
       throw new OwnerError("wrong_passphrase", "that passphrase is not correct");
     }
-    return await this.#startSession();
+    return this.#startSession();
   }
 
   /** Whether a cookie's token is a live session. */

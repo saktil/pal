@@ -39,7 +39,7 @@ type Index = {
   scanned: boolean;
   rescan: boolean;
   unwatch?: () => void;
-  pending?: Promise<void>;
+  pending: Promise<void> | undefined;
 };
 
 /**
@@ -69,9 +69,7 @@ export class ProjectSearch {
     if (mode === "files") {
       const found = index.finder.fileSearch(query, { pageSize: PAGE });
       if (!found.ok) throw new SearchError(found.error);
-      const hits = found.value.items
-        .filter((item) => keep(item.relativePath))
-        .map((item) => ({ path: item.relativePath }));
+      const hits = found.value.items.flatMap((item) => (keep(item.relativePath) ? [{ path: item.relativePath }] : []));
       return { mode, hits, truncated: found.value.totalMatched > hits.length, indexing: !index.scanned };
     }
     const found = index.finder.grep(query, {
@@ -85,24 +83,25 @@ export class ProjectSearch {
     // fff falls back to literal matching on a bad pattern; Pal reports the error instead.
     if (found.value.regexFallbackError !== undefined)
       throw new SearchError(`invalid regex: ${found.value.regexFallbackError}`);
-    const hits = found.value.items
+    const hits = found.value.items.flatMap((item) => {
       // fff's per-match `isBinary` mislabels some text files (it can follow file-type tables where `.ts` is video);
       // grep already skips binary content, so only a stray NUL byte disqualifies a matched line.
-      .filter((item) => !item.lineContent.includes("\u0000") && keep(item.relativePath))
-      .map((item) => {
-        const text = item.lineContent.slice(0, LINE_CHARS);
-        // fff reports byte ranges; convert to character offsets for the UTF-16 line text.
-        const toChars = (bytes: number) =>
-          Buffer.from(item.lineContent, "utf8").subarray(0, bytes).toString("utf8").length;
-        return {
+      if (item.lineContent.includes("\u0000") || !keep(item.relativePath)) return [];
+      const text = item.lineContent.slice(0, LINE_CHARS);
+      // fff reports byte ranges; convert to character offsets for the UTF-16 line text.
+      const toChars = (bytes: number) =>
+        Buffer.from(item.lineContent, "utf8").subarray(0, bytes).toString("utf8").length;
+      return [
+        {
           path: item.relativePath,
           line: item.lineNumber,
           text,
           ranges: item.matchRanges
             .map(([start, end]) => [toChars(start), toChars(end)] as const)
             .filter(([start]) => start < text.length),
-        };
-      });
+        },
+      ];
+    });
     return { mode, hits, truncated: found.value.nextCursor !== null, indexing: !index.scanned };
   }
 
@@ -153,7 +152,7 @@ export class ProjectSearch {
       if (oldest === undefined) break;
       this.#drop(oldest[0]);
     }
-    const index: Index = { finder: created.value, used: Date.now(), scanned: false, rescan: false };
+    const index: Index = { finder: created.value, used: Date.now(), scanned: false, rescan: false, pending: undefined };
     this.#indexes.set(root, index);
     await this.#scan(root, index);
     return index;
@@ -164,7 +163,7 @@ export class ProjectSearch {
     try {
       await pending;
     } finally {
-      if (index.pending === pending) delete index.pending;
+      if (index.pending === pending) index.pending = undefined;
     }
   }
 

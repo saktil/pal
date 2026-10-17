@@ -167,14 +167,15 @@ export class Projects {
       names = await readdir(requested, { withFileTypes: true });
     } catch (error) {
       const code = (error as NodeJS.ErrnoException).code;
-      const problem =
-        code === "EACCES" || code === "EPERM" ? "denied" : code === "ENOTDIR" ? "not_directory" : "missing";
+      let problem: NonNullable<FolderListing["problem"]> = "missing";
+      if (code === "EACCES" || code === "EPERM") problem = "denied";
+      else if (code === "ENOTDIR") problem = "not_directory";
       return { path: requested, ...parent, entries: [], truncated: false, problem };
     }
-    const folders = names
-      .filter((entry) => entry.isDirectory() || entry.isSymbolicLink())
-      .map((entry) => join(requested, entry.name))
-      .filter((child) => !this.#isForbidden(child));
+    const folders = names.flatMap((entry) => {
+      const child = join(requested, entry.name);
+      return (entry.isDirectory() || entry.isSymbolicLink()) && !this.#isForbidden(child) ? [child] : [];
+    });
     const entries: FolderEntry[] = [];
     for (const child of folders.sort((a, b) => a.localeCompare(b)).slice(0, MAX_ENTRIES)) {
       if (!(await stat(child).catch(() => undefined))?.isDirectory()) continue;

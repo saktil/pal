@@ -295,7 +295,9 @@ export class Changes {
     const revision = createHash("sha256")
       .update(JSON.stringify([head, path, before?.toString("base64") ?? null, after?.toString("base64") ?? null]))
       .digest("hex");
-    const status: Change["status"] = before === null ? "A" : after === null ? "D" : "M";
+    let status: Change["status"] = "M";
+    if (before === null) status = "A";
+    else if (after === null) status = "D";
     return { before, after, status, patch, revision };
   }
   #allowed(root: string, path: string): boolean {
@@ -349,7 +351,7 @@ export class Changes {
         return now === null ? change.after === null : now !== undefined && change.after?.equals(now) === true;
       };
       if (change.before === null) {
-        const { target } = await resolveProjectPath(root, path, [this.#deny], true);
+        const { target } = await resolveProjectPath(root, path, [this.#deny], "allow");
         if (!(await unchanged(target))) throw stale();
         await unlink(target);
         await syncDirectory(dirname(target));
@@ -366,9 +368,9 @@ export class Changes {
             });
             if (!(await lstat(parent)).isDirectory()) throw new FileAccessError(`${path} is not inside a plain folder`);
           }
-        const { target } = await resolveProjectPath(root, path, [this.#deny], true);
-        const mode =
-          change.after === null ? (entry?.mode === "100755" ? 0o755 : 0o644) : (await stat(target)).mode & 0o777;
+        const { target } = await resolveProjectPath(root, path, [this.#deny], "allow");
+        const baselineMode = entry?.mode === "100755" ? 0o755 : 0o644;
+        const mode = change.after === null ? baselineMode : (await stat(target)).mode & 0o777;
         const temporary = join(dirname(target), `.pal-${randomUUID()}.tmp`);
         const handle = await open(temporary, "wx", mode);
         try {

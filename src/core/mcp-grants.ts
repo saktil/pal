@@ -154,14 +154,13 @@ export class McpGrants {
       );
     });
     this.#changed(project, serverId);
-    return await this.view(project);
+    return this.view(project);
   }
 }
 
 function revision(server: GrantServer, row: GrantRow | undefined): string {
   const tools = server.tools
-    .filter((tool) => tool.approved)
-    .map((tool) => [tool.name, tool.fingerprint, tool.approved, tool.changed])
+    .flatMap((tool) => (tool.approved ? [[tool.name, tool.fingerprint, tool.approved, tool.changed]] : []))
     .sort((a, b) => String(a[0]).localeCompare(String(b[0])));
   return createHash("sha256")
     .update(

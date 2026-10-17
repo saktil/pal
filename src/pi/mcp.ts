@@ -248,11 +248,11 @@ export class McpManager {
   }
 
   async list(): Promise<McpServerView[]> {
-    return await Promise.all([...this.#servers.values()].map((server) => this.#view(server)));
+    return Promise.all([...this.#servers.values()].map((server) => this.#view(server)));
   }
 
   async get(id: string): Promise<McpServerView> {
-    return await this.#view(this.#require(id));
+    return this.#view(this.#require(id));
   }
 
   async add(input: McpServerInput): Promise<McpServerView> {
@@ -274,7 +274,7 @@ export class McpManager {
       Date.now(),
     );
     this.#servers.set(id, server);
-    return await this.#view(server);
+    return this.#view(server);
   }
 
   /** Changing where or how Pal connects needs fresh trust: approvals are cleared and the server is disabled. */
@@ -293,19 +293,19 @@ export class McpManager {
     await this.#save(server);
     if (moved) await this.#drop(id);
     this.#install();
-    return await this.#view(server);
+    return this.#view(server);
   }
 
   /** Explicit per-endpoint exception for a trusted local proxy's fake-IP DNS; never an exception for private ranges. */
   async setFakeIp(id: string, enabled: boolean): Promise<McpServerView> {
     const server = this.#require(id);
     if (server.private && enabled) throw new McpConfigError("private endpoints do not need fake-IP routing");
-    if (server.fakeIp === enabled) return await this.#view(server);
+    if (server.fakeIp === enabled) return this.#view(server);
     Object.assign(server, { fakeIp: enabled, enabled: false, approved: {}, authority: server.authority + 1 });
     await this.#save(server);
     await this.#drop(id);
     this.#install();
-    return await this.#view(server);
+    return this.#view(server);
   }
 
   /** Store or remove the server's API key. Keys are write-only: views report only whether one is configured. */
@@ -325,7 +325,7 @@ export class McpManager {
     } finally {
       live.changing--;
     }
-    return await this.#view(server);
+    return this.#view(server);
   }
 
   async setEnabled(id: string, enabled: boolean): Promise<McpServerView> {
@@ -341,12 +341,12 @@ export class McpManager {
       if (preset !== undefined && listed !== undefined) {
         await this.approve(
           id,
-          listed.filter((tool) => preset.tools.includes(tool.name)).map((tool) => tool.name),
+          listed.flatMap((tool) => (preset.tools.includes(tool.name) ? [tool.name] : [])),
         );
       }
     }
     this.#install();
-    return await this.#view(server);
+    return this.#view(server);
   }
 
   /** Handshake and list tools; never calls one, so testing cannot run an unannounced billable lookup. */
@@ -354,7 +354,7 @@ export class McpManager {
     const server = this.#require(id);
     await this.#drop(id);
     await this.#discover(server).catch(() => undefined);
-    return await this.#view(server);
+    return this.#view(server);
   }
 
   /** Approve exactly these tools as last listed; tools not named lose approval. */
@@ -363,12 +363,12 @@ export class McpManager {
     const listed = this.#live.get(id)?.discovered;
     if (listed === undefined) throw new McpConfigError("test the connection first, so its tools are listed");
     server.approved = Object.fromEntries(
-      listed.filter((tool) => names.includes(tool.name)).map((tool) => [tool.name, approval(tool)]),
+      listed.flatMap((tool) => (names.includes(tool.name) ? [[tool.name, approval(tool)]] : [])),
     );
     await this.#save(server);
     this.#refreshState(server);
     this.#install();
-    return await this.#view(server);
+    return this.#view(server);
   }
 
   async remove(id: string): Promise<void> {
@@ -482,9 +482,9 @@ export class McpManager {
     return credential?.type === "api_key" ? credential.key : undefined;
   }
 
-  #connect(server: Server, signal?: AbortSignal, isolated = false): Promise<McpClient> {
+  #connect(server: Server, signal?: AbortSignal, mode: "pooled" | "isolated" = "pooled"): Promise<McpClient> {
     const live = this.#state(server.id);
-    if (!isolated && live.client !== undefined) return live.client;
+    if (mode === "pooled" && live.client !== undefined) return live.client;
     const spec = { ...server },
       generation = live.generation;
     const pending = (async () => {
@@ -497,12 +497,11 @@ export class McpManager {
       if (this.#closed || generation !== live.generation)
         throw new McpConfigError("MCP connection changed during setup");
       live.state = "connecting";
-      const headers: Record<string, string> =
-        key === undefined || spec.auth.kind === "none"
-          ? {}
-          : spec.auth.kind === "bearer"
-            ? { authorization: `Bearer ${key}` }
-            : { [spec.auth.header]: key };
+      const headers: Record<string, string> = {};
+      if (key !== undefined) {
+        if (spec.auth.kind === "bearer") headers.authorization = `Bearer ${key}`;
+        else if (spec.auth.kind === "header") headers[spec.auth.header] = key;
+      }
       const client = new McpClient({ name: "pal", version: "0.0.0", requestTimeoutMs: CONNECT_TIMEOUT_MS });
       const network = policyFetch({ endpoint: spec.url, allowPrivate: spec.private, allowFakeIp: spec.fakeIp });
       const cancel = () => {
@@ -510,7 +509,7 @@ export class McpManager {
       };
       setup.addEventListener("abort", cancel, { once: true });
       client.onClose(() => {
-        if (!isolated && live.client === pending) live.client = undefined;
+        if (mode === "pooled" && live.client === pending) live.client = undefined;
         void network.close().catch(() => {});
       });
       try {
@@ -539,7 +538,7 @@ export class McpManager {
         setup.removeEventListener("abort", cancel);
       }
     })();
-    if (!isolated) {
+    if (mode === "pooled") {
       live.client = pending;
       void pending.catch(() => {
         if (live.client === pending) live.client = undefined;
@@ -658,7 +657,7 @@ export class McpManager {
       acquired = true;
       await ensure();
       // shortcut: disposable model connections prevent cross-project session reuse; pool by scope if handshake latency warrants it.
-      client = await this.#connect(server, deadline, true);
+      client = await this.#connect(server, deadline, "isolated");
       await ensure();
       const key = await this.#key(server.id);
       await ensure();
@@ -698,7 +697,10 @@ export class McpManager {
   }
 
   async #view(server: Server): Promise<McpServerView> {
+    const keyConfigured = (await this.#key(server.id)) !== undefined;
     const live = this.#live.get(server.id);
+    let state = live?.state ?? "idle";
+    if (state === "idle" && !server.enabled) state = "disabled";
     return {
       id: server.id,
       name: server.name,
@@ -708,9 +710,9 @@ export class McpManager {
       private: server.private,
       fakeIp: server.fakeIp,
       enabled: server.enabled,
-      keyConfigured: (await this.#key(server.id)) !== undefined,
+      keyConfigured,
       // The latest connection outcome, even for a disabled server the owner is testing; otherwise idle or disabled.
-      state: live === undefined || live.state === "idle" ? (server.enabled ? "idle" : "disabled") : live.state,
+      state,
       detail: live?.detail ?? null,
       tools: this.#toolViews(server),
     };

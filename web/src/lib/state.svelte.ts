@@ -26,13 +26,17 @@ addEventListener("hashchange", () => {
 addEventListener("resize", () => (app.width = window.innerWidth));
 
 export function navigate(route: Route): void {
-  location.hash =
-    route.view === "chat" ? `#/chat/${route.chatId}` : route.view === "settings" ? `#/settings/${route.tab}` : "#/";
+  let hash = "#/";
+  if (route.view === "chat") hash = `#/chat/${route.chatId}`;
+  else if (route.view === "settings") hash = `#/settings/${route.tab}`;
+  location.hash = hash;
 }
 
 /** The design's breakpoints: phone below 700px, tablet below 1100px. */
 export function viewport(): "phone" | "tablet" | "desktop" {
-  return app.width < 700 ? "phone" : app.width < 1100 ? "tablet" : "desktop";
+  if (app.width < 700) return "phone";
+  if (app.width < 1100) return "tablet";
+  return "desktop";
 }
 
 export async function refreshProjects(): Promise<void> {

@@ -194,7 +194,7 @@ export function shellTools(options: {
           const configured = await options.root(api.conversationId);
           if (configured === undefined) throw new Error("this conversation has no active project");
           const cwd = await realpath(configured);
-          return await options.locks.run(cwd, async () => {
+          return options.locks.run(cwd, async () => {
             const shell = { callId: String(api.taskId), command: args.command, cwd, status: "started" };
             await api.commit(
               (tx) => tx.appendEntry(api.conversationId, { kind: "pal.shell", data: { shell } }),

@@ -180,14 +180,14 @@ export function createApi(pal: Pal, publicOrigin?: string) {
         attempt === undefined
           ? null
           : { state: attempt.state, authUrl: attempt.authUrl ?? null, error: attempt.error ?? null },
-      models: account === undefined ? [] : listing !== undefined && "models" in listing ? listing.models : [],
+      models: account !== undefined && listing !== undefined && "models" in listing ? listing.models : [],
       modelsError: account !== undefined && listing !== undefined && "error" in listing ? listing.error : null,
       model: (await pal.settings.model()) ?? null,
     };
   }
 
   async function signedIn(request: IncomingMessage): Promise<boolean> {
-    return await pal.owner.authenticate(cookie(request, SESSION_COOKIE));
+    return pal.owner.authenticate(cookie(request, SESSION_COOKIE));
   }
 
   function setSession(response: ServerResponse, token: string, request: IncomingMessage): void {
@@ -468,7 +468,7 @@ export function createApi(pal: Pal, publicOrigin?: string) {
         );
         return send(200, { chat, model, effort });
       }
-      if (action === "events" && method === "GET") return await observe(request, response, chat.conversationId);
+      if (action === "events" && method === "GET") return observe(request, response, chat.conversationId);
     }
     throw new HttpError(404, "not_found", "no such API route");
   }

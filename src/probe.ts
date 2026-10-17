@@ -129,7 +129,7 @@ async function probePty(): Promise<string> {
     rows: 24,
     env: { PATH: "/usr/bin:/bin" },
   });
-  return await new Promise((resolve, reject) => {
+  return new Promise((resolve, reject) => {
     let output = "";
     let exitCode: number | undefined;
     const timer = setTimeout(() => {

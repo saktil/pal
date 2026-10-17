@@ -240,7 +240,7 @@ export class ChatService {
     if (row.deleted_at !== null) throw new ChatNotFound("this chat was deleted");
     if (row.conversation_id !== null) return { id: row.id, conversationId: row.conversation_id };
     await this.#options.barrier?.("chat-recorded");
-    return await this.#provision(row.id, context);
+    return this.#provision(row.id, context);
   }
 
   /** Admit one input; repeating a request ID with the same body returns the same submission. */
@@ -288,7 +288,7 @@ export class ChatService {
     if (row.digest !== digest) throw new RequestConflict(`request ${key} was admitted with a different body`);
     if (row.submission_id !== null) return { chatId, requestId: key, submissionId: row.submission_id };
     await this.#options.barrier?.("input-recorded");
-    return await this.#admit(chatId, key, JSON.parse(row.intent), context);
+    return this.#admit(chatId, key, JSON.parse(row.intent), context);
   }
 
   /** Create the chat's conversation unless an earlier attempt did, then record the mapping. */
