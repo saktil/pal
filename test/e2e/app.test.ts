@@ -23,6 +23,7 @@ let dataRoot: string;
 let base: string;
 let browser: Browser;
 let page: Page;
+let chatUrl: string;
 const cleanups: (() => Promise<unknown>)[] = [];
 
 beforeAll(async () => {
@@ -69,6 +70,17 @@ describe("Pal in a browser", () => {
     await shoot("empty-1440");
   });
 
+  it("creates a managed project and chat before ChatGPT sign-in", async () => {
+    await page.getByRole("button", { name: "Project", exact: true }).click();
+    await page.getByLabel("Project name").fill("Notes");
+    await shoot("create-project-1440");
+    await page.getByRole("dialog", { name: "Create project" }).getByRole("button", { name: "Create project" }).click();
+    await page.getByRole("heading", { name: "Start the conversation" }).waitFor();
+    chatUrl = page.url();
+    await page.getByLabel("Message").fill("hi");
+    expect(await page.getByRole("button", { name: "Send" }).isDisabled()).toBe(true);
+  });
+
   it("connects ChatGPT from Settings", async () => {
     await page.getByRole("button", { name: "Settings" }).click();
     await page.getByRole("button", { name: "Models" }).click();
@@ -84,15 +96,11 @@ describe("Pal in a browser", () => {
     await shoot("settings-models-1440");
   });
 
-  it("creates a managed project and chats with a streamed answer", async () => {
-    await page.goBack();
-    await page.getByRole("button", { name: "Project", exact: true }).click();
-    await page.getByLabel("Project name").fill("Notes");
-    await shoot("create-project-1440");
-    await page.getByRole("button", { name: "Create project" }).click();
+  it("clicks Send in the chat created before sign-in and gets a streamed answer", async () => {
+    await page.goto(chatUrl);
     await page.getByRole("heading", { name: "Start the conversation" }).waitFor();
     await page.getByLabel("Message").fill("hi");
-    await page.getByRole("button", { name: "Send" }).click();
+    await page.getByRole("button", { name: "Send" }).click({ timeout: 3000 });
     await page.getByText("Hello").waitFor();
     await page.getByRole("heading", { name: "hi" }).waitFor();
     await shoot("chat-1440");
@@ -127,9 +135,7 @@ describe("Pal in a browser", () => {
     const server = (await pal.mcp.list()).find((candidate) => candidate.name === "Fixture");
     fixture.behavior.responses = "script";
     fixture.behavior.script = `return (await tools.mcp__${server?.id}__search({ query: "durable" })).results[0].title;`;
-    await page.goBack();
-    await page.goBack();
-    await page.getByRole("navigation", { name: "Projects" }).getByText("hi").click();
+    await page.goto(chatUrl);
     await page.getByLabel("Message").fill("research durable agents");
     await page.getByRole("button", { name: "Send" }).click();
     await page.getByRole("button", { name: /Ran a script/ }).click();

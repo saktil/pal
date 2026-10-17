@@ -63,7 +63,11 @@
   const items = $derived.by(() => build(stream?.entries ?? [], stream?.partial));
   const connected = $derived(app.chatgpt?.account != null);
   const choices = $derived((app.chatgpt?.models ?? []).filter((choice) => choice.supported));
-  const modelName = $derived(choices.find((choice) => choice.slug === model)?.displayName ?? model ?? "Choose model");
+  const effectiveModel = $derived(model ?? app.chatgpt?.model ?? null);
+  const modelName = $derived(
+    choices.find((choice) => choice.slug === effectiveModel)?.displayName ?? effectiveModel ?? "Choose model",
+  );
+  const canSend = $derived(!sending && uploading === 0 && draft.trim() !== "" && connected && effectiveModel !== null);
 
   function build(entries: Entry[], partial: Message | undefined): Item[] {
     // A result belongs to the call of that ID in the latest assistant message before it; IDs may repeat across turns.
@@ -136,13 +140,14 @@
 
   async function send() {
     const text = draft.trim();
-    if (text === "" || sending) return;
+    if (!canSend) return;
     const ids = attachments.map((attachment) => attachment.id);
     // A retry after a lost response reuses the key, so the server admits the message once.
     if (pending?.text !== text || pending.files !== ids.join()) pending = { key: requestId(), text, files: ids.join() };
     sending = true;
     error = undefined;
     try {
+      if (model === null && effectiveModel !== null) model = (await api.setChatModel(chat.id, effectiveModel)).model;
       const { admission } = await api.send(chat.id, pending.key, text, stream?.running ? whenBusy : "followUp", ids);
       if (stream?.running) queuedTexts[admission.submissionId] = text;
       pending = undefined;
@@ -429,11 +434,7 @@
               >
             </div>
           {/if}
-          <button
-            class="b p send"
-            onclick={send}
-            disabled={sending || uploading > 0 || draft.trim() === "" || !connected || model === null}
-          >
+          <button class="b p send" onclick={send} disabled={!canSend}>
             <Icon name="send" />{stream?.running ? (whenBusy === "steer" ? "Steer" : "Queue") : "Send"}
           </button>
         </div>
