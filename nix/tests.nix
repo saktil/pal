@@ -6,6 +6,8 @@
   pnpm_11,
   pnpmConfigHook,
   autoPatchelfHook,
+  node-gyp,
+  python3,
   git,
   pal,
 }:
@@ -25,6 +27,7 @@ stdenv.mkDerivation {
       (root + "/tsconfig.json")
       (root + "/vite.config.ts")
       (root + "/vitest.config.ts")
+      (root + "/vitest.feasibility.config.ts")
       (root + "/eslint.config.js")
       (root + "/.prettierrc.json")
       (root + "/.prettierignore")
@@ -39,15 +42,18 @@ stdenv.mkDerivation {
     nodejs_24
     pnpm_11
     pnpmConfigHook
+    node-gyp
+    python3
     git
   ]
   ++ lib.optional stdenv.hostPlatform.isLinux autoPatchelfHook;
   buildInputs = lib.optional stdenv.hostPlatform.isLinux stdenv.cc.cc.lib;
   __darwinAllowLocalNetworking = true;
 
-  # Patch the prebuilt native libraries the tests load (the package does this at fixup); scripts need real shebangs.
+  # Build node-pty and patch the prebuilt native libraries the tests load, as the package does; scripts need real shebangs.
   preBuild = ''
     patchShebangs scripts
+    ${pal.buildNodePty}
   ''
   + lib.optionalString stdenv.hostPlatform.isLinux ''
     autoPatchelf node_modules

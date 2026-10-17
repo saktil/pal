@@ -26,7 +26,7 @@ export const USAGE = `Usage: pal [serve] [--host <address>] [--port <number>] [-
 
 Commands:
   serve              Run the Pal server (default)
-  probe              Check SQLite FTS5, fff and Code Mode support on this host, then exit
+  probe              Check SQLite FTS5, fff, Code Mode and PTY support on this host, then exit
 
 Options:
   --host <address>   Loopback address to listen on (default ${DEFAULT_HOST})

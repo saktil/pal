@@ -10,7 +10,14 @@
     };
   };
 
-  packages = [ pkgs.git ];
+  # node-pty is compiled against Nix's Node headers instead of downloaded headers or its prebuilds,
+  # whose 1.1.0 darwin spawn-helper is published without the executable bit.
+  env.npm_config_nodedir = "${pkgs.nodejs_24}";
+  env.npm_config_build_from_source = "true";
+  packages = [
+    pkgs.git
+    pkgs.python3
+  ];
 
   # `devenv up`: API server on 7338 plus Vite on 5173, which forwards /api to it.
   processes.pal.exec = "pnpm dev";

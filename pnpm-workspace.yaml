@@ -1,4 +1,6 @@
 allowBuilds:
   "@google/genai": false
   esbuild: false
+  # Reviewed: uses its bundled prebuild when one matches, otherwise `node-gyp rebuild`.
+  node-pty: true
   protobufjs: false

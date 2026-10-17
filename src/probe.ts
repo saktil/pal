@@ -4,6 +4,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { CodemodeSandbox } from "@earendil-works/pi-codemode";
 import { FileFinder } from "@ff-labs/fff-node";
+import { spawn } from "node-pty";
 import { openDatabase } from "./storage/sqlite.ts";
 
 export type ProbeResult = { check: string; ok: boolean; detail: string };
@@ -15,6 +16,7 @@ export async function runProbes(): Promise<ProbeResult[]> {
       await probe("sqlite", () => probeSqlite(dir)),
       await probe("fff", () => probeFff(dir)),
       await probe("codemode", probeCodemode),
+      await probe("pty", probePty),
     ];
   } finally {
     await rm(dir, { recursive: true, force: true });
@@ -93,4 +95,37 @@ async function probeCodemode(): Promise<string> {
   } finally {
     await sandbox.close();
   }
+}
+
+async function probePty(): Promise<string> {
+  const marker = "pal-pty-ok";
+  // A minimal environment: the probe must not hand the host's variables to the child.
+  const terminal = spawn("/bin/sh", ["-c", `test -t 0 && test -t 1 && printf ${marker}`], {
+    cols: 80,
+    rows: 24,
+    env: { PATH: "/usr/bin:/bin" },
+  });
+  return await new Promise((resolve, reject) => {
+    let output = "";
+    let exitCode: number | undefined;
+    const timer = setTimeout(() => {
+      terminal.kill();
+      reject(new Error(`no result within 5 s (exit ${exitCode}, output ${JSON.stringify(output)})`));
+    }, 5_000);
+    // Exit can be reported before the last output arrives, so settle on whichever completes the picture.
+    const settle = () => {
+      if (exitCode === undefined || (exitCode === 0 && !output.includes(marker))) return;
+      clearTimeout(timer);
+      if (exitCode === 0) resolve("spawned a shell on a pseudo-terminal");
+      else reject(new Error(`child exited ${exitCode}: ${JSON.stringify(output)}`));
+    };
+    terminal.onData((data) => {
+      output += data;
+      settle();
+    });
+    terminal.onExit((event) => {
+      exitCode = event.exitCode;
+      settle();
+    });
+  });
 }

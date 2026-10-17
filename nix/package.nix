@@ -7,6 +7,8 @@
   pnpmConfigHook,
   makeWrapper,
   autoPatchelfHook,
+  node-gyp,
+  python3,
 }:
 let
   root = ../.;
@@ -22,6 +24,15 @@ let
     (root + "/src")
     (root + "/web")
   ];
+  # pnpm installs with --ignore-scripts, so node-pty is compiled here against this Node. Its prebuilds
+  # (darwin/win32 only; 1.1.0's darwin spawn-helper lacks the executable bit) and Windows sources are dropped.
+  buildNodePty = ''
+    pushd node_modules/node-pty
+    node-gyp rebuild --nodedir=${nodejs_24}
+    node scripts/post-install.js
+    rm -rf prebuilds third_party deps
+    popd
+  '';
 in
 stdenv.mkDerivation (finalAttrs: {
   pname = "pal";
@@ -41,7 +52,7 @@ stdenv.mkDerivation (finalAttrs: {
     };
     pnpm = pnpm_11;
     fetcherVersion = 4;
-    hash = "sha256-wPtvGwL40FQTF7P0Ce3eg/pyo+C+Lza1Y8trZi5HwbQ=";
+    hash = "sha256-O9Zhrom5fZ/NcBFWnhdFbaak81bifxUHpYPDc06ybq8=";
   };
 
   nativeBuildInputs = [
@@ -49,6 +60,8 @@ stdenv.mkDerivation (finalAttrs: {
     pnpm_11
     pnpmConfigHook
     makeWrapper
+    node-gyp
+    python3
   ]
   # Prebuilt fff/ffi-rs libraries are generic glibc binaries; point them at Nix's libraries.
   ++ lib.optional stdenv.hostPlatform.isLinux autoPatchelfHook;
@@ -56,6 +69,7 @@ stdenv.mkDerivation (finalAttrs: {
 
   buildPhase = ''
     runHook preBuild
+    ${buildNodePty}
     pnpm build
     runHook postBuild
   '';
@@ -69,7 +83,10 @@ stdenv.mkDerivation (finalAttrs: {
     runHook postInstall
   '';
 
-  passthru = { inherit (finalAttrs) pnpmDeps; };
+  passthru = {
+    inherit (finalAttrs) pnpmDeps;
+    inherit buildNodePty;
+  };
 
   meta = {
     description = "A durable, workspace-first personal AI application";
