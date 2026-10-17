@@ -95,7 +95,9 @@ describe("store", () => {
     const database = await openDatabase(path);
     expect(await database.all("SELECT name FROM sqlite_master WHERE name LIKE 'pal_%'")).toEqual([]);
     await migrate(database);
-    expect(await database.all("SELECT version FROM pal_migrations")).toEqual([{ version: 1 }]);
+    expect(await database.all("SELECT version FROM pal_migrations")).toEqual(
+      MIGRATIONS.map(({ version }) => ({ version })),
+    );
     await database.close();
   });
 
@@ -109,7 +111,7 @@ describe("store", () => {
     await expect(openStore(dataRoot)).rejects.toThrow(/migration 99 'future'.*does not know/);
     const reopened = await openDatabase(join(dataRoot, "pal.sqlite"));
     expect(await reopened.all("SELECT version FROM pal_migrations ORDER BY version")).toEqual([
-      { version: 1 },
+      ...MIGRATIONS.map(({ version }) => ({ version })),
       { version: 99 },
     ]);
     await reopened.close();

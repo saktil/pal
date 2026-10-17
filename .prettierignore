@@ -6,3 +6,4 @@ flake.lock
 .agents/
 .claude/
 skills-lock.json
+.design/

@@ -5,7 +5,7 @@ import globals from "globals";
 import ts from "typescript-eslint";
 
 export default defineConfig(
-  { ignores: ["dist/", "coverage/", ".devenv/", ".direnv/", "result*", ".agents/", ".claude/"] },
+  { ignores: ["dist/", "coverage/", ".devenv/", ".direnv/", "result*", ".agents/", ".claude/", ".design/"] },
   js.configs.recommended,
   ts.configs.strict,
   svelte.configs.recommended,

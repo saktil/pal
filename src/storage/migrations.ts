@@ -26,6 +26,35 @@ export const MIGRATIONS: readonly Migration[] = [
       );
     },
   },
+  {
+    version: 2,
+    name: "chats",
+    // `intent` is the normalized request body, frozen so reconciliation completes exactly what was asked.
+    up: async (transaction) => {
+      await transaction.exec(`CREATE TABLE pal_chats (
+        id TEXT PRIMARY KEY,
+        request_id TEXT NOT NULL UNIQUE,
+        digest TEXT NOT NULL,
+        intent TEXT NOT NULL,
+        state TEXT NOT NULL CHECK (state IN ('provisioning', 'ready')),
+        conversation_id INTEGER UNIQUE,
+        created_at INTEGER NOT NULL,
+        CHECK ((state = 'ready') = (conversation_id IS NOT NULL))
+      ) STRICT`);
+      await transaction.exec(`CREATE TABLE pal_admissions (
+        seq INTEGER PRIMARY KEY,
+        chat_id TEXT NOT NULL,
+        request_id TEXT NOT NULL,
+        digest TEXT NOT NULL,
+        intent TEXT NOT NULL,
+        state TEXT NOT NULL CHECK (state IN ('admitting', 'admitted')),
+        submission_id INTEGER,
+        created_at INTEGER NOT NULL,
+        UNIQUE (chat_id, request_id),
+        CHECK ((state = 'admitted') = (submission_id IS NOT NULL))
+      ) STRICT`);
+    },
+  },
 ];
 
 /**
