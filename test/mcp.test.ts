@@ -17,7 +17,8 @@ import {
   type ConversationId,
   type ToolExecutionApi,
 } from "@earendil-works/pi-durable";
-import { afterEach, describe, expect, it } from "vitest";
+import { McpClient } from "@earendil-works/pi-mcp";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { createPalCodemode } from "../src/pi/codemode.ts";
 import { type McpAuth, McpConfigError, McpManager, PRESETS } from "../src/pi/mcp.ts";
 import { loadMasterKey, SqliteCredentialStore } from "../src/storage/credentials.ts";
@@ -377,6 +378,87 @@ describe("MCP connections", () => {
     } finally {
       release.resolve(undefined);
     }
+  });
+
+  it("drops a completed result revoked while its transport is still closing", async () => {
+    const { manager, add, script, project } = await setup();
+    const server = await add();
+    await manager.test(server.id);
+    await manager.approve(server.id, ["search"]);
+    await manager.setEnabled(server.id, true);
+    const closing = Promise.withResolvers<undefined>(),
+      release = Promise.withResolvers<undefined>();
+    const close = McpClient.prototype.close;
+    const delayed = vi.spyOn(McpClient.prototype, "close").mockImplementationOnce(async function (this: McpClient) {
+      closing.resolve(undefined);
+      await release.promise;
+      await close.call(this);
+    });
+    try {
+      const running = script(
+        `try { await tools.mcp__${server.id}__search({ query: "closing" }); return "leaked"; } catch { return "revoked"; }`,
+      );
+      await closing.promise;
+      const grant = (await manager.grants.view(project.id)).servers.find((candidate) => candidate.id === server.id);
+      if (grant === undefined) throw new Error("missing grant");
+      await manager.grants.set(project.id, server.id, { revision: grant.revision, mode: "subset", tools: [] });
+      release.resolve(undefined);
+      expect(await running).toContain("revoked");
+    } finally {
+      release.resolve(undefined);
+      delayed.mockRestore();
+    }
+  });
+
+  it("redacts a saved key from successful text and structured results before durable delivery", async () => {
+    const { manager, add, script, fixture } = await setup();
+    const server = await add({ kind: "header", header: "x-api-key" });
+    const key = 'fixture-key-"129\\secret';
+    await manager.setKey(server.id, key);
+    await manager.test(server.id);
+    await manager.approve(server.id, ["search", "fetch"]);
+    await manager.setEnabled(server.id, true);
+    fixture.state.result = {
+      content: [{ type: "text", text: key }],
+      structuredContent: { results: [{ title: key, url: "https://fixture.invalid/", score: 129 }] },
+    };
+    const structured = await script(`return await tools.mcp__${server.id}__search({ query: "redaction" });`);
+    expect(structured).toContain("[redacted]");
+    expect(structured).toContain("129");
+    expect(structured).not.toContain("fixture-key-");
+    const text = await script(`return await tools.mcp__${server.id}__fetch({ url: "https://fixture.invalid/" });`);
+    expect(text).toContain("[redacted]");
+    expect(text).not.toContain("fixture-key-");
+  });
+
+  it("refuses discovery metadata that echoes the saved key", async () => {
+    const { manager, add, fixture } = await setup();
+    const server = await add({ kind: "header", header: "x-api-key" });
+    const key = 'catalog-credential-"private';
+    await manager.setKey(server.id, key);
+    const tool = fixture.state.tools[0];
+    if (tool === undefined) throw new Error("missing fixture tool");
+    tool.description = `Server echoed ${key}`;
+    const tested = await manager.test(server.id);
+    expect(tested.state).toBe("error");
+    expect(tested.detail).toContain("catalog contains the saved credential");
+    expect(JSON.stringify(tested)).not.toContain("catalog-credential-");
+    expect(tested.tools).toEqual([]);
+  });
+
+  it("rejects an oversized structured result instead of bypassing output bounds", async () => {
+    const { manager, add, script, fixture } = await setup();
+    const server = await add();
+    await manager.test(server.id);
+    await manager.approve(server.id, ["search"]);
+    await manager.setEnabled(server.id, true);
+    fixture.state.result = {
+      content: [{ type: "text", text: "small text is not a bound on structured data" }],
+      structuredContent: { results: [{ title: "x".repeat(256 * 1024), url: "https://fixture.invalid/", score: 1 }] },
+    };
+    expect(await script(tryCall(`tools.mcp__${server.id}__search({ query: "large" })`))).toContain(
+      "MCP result exceeds",
+    );
   });
 
   it("enforces HTTPS, public addresses and no redirects for public endpoints", async () => {

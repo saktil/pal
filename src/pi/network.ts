@@ -30,6 +30,9 @@ for (const [network, prefix] of [
   NON_PUBLIC.addSubnet(network, prefix, "ipv6");
 }
 
+/** Aggregate decoded HTTP body, including chunked/compressed JSON, SSE notifications and error bodies. */
+export const MAX_MCP_RESPONSE_BYTES = 2 * 1024 * 1024;
+
 const FAKE_IP = new BlockList();
 FAKE_IP.addSubnet("198.18.0.0", 15, "ipv4");
 
@@ -83,8 +86,31 @@ export function policyFetch(options: Routing & { readonly endpoint: string }): M
     if (!options.allowPrivate && isIP(host) !== 0 && !isPublicAddress(host)) {
       throw new NetworkPolicyError(`${url.origin} is not a public address`);
     }
-    // SAFETY: undici and Node expose the same WHATWG Response; only their TypeScript declarations differ.
-    return (await fetch(url, { ...(init as object), redirect: "error", dispatcher: agent })) as unknown as Response;
+    // SAFETY: undici and Node use the same WHATWG streams/Response; their TypeScript declarations differ.
+    const response = (await fetch(url, {
+      ...(init as object),
+      redirect: "error",
+      dispatcher: agent,
+    })) as unknown as Response;
+    if (response.body === null) return response;
+    if (Number(response.headers.get("content-length")) > MAX_MCP_RESPONSE_BYTES) {
+      await response.body.cancel();
+      throw new Error("MCP response exceeds 2 MiB");
+    }
+    let bytes = 0;
+    const limited = response.body.pipeThrough(
+      new TransformStream<Uint8Array, Uint8Array>({
+        transform(chunk, controller) {
+          bytes += chunk.byteLength;
+          if (bytes > MAX_MCP_RESPONSE_BYTES) throw new Error("MCP response exceeds 2 MiB");
+          controller.enqueue(chunk);
+        },
+      }),
+    );
+    const headers = new Headers(response.headers);
+    headers.delete("content-length");
+    headers.delete("content-encoding");
+    return new Response(limited, { status: response.status, statusText: response.statusText, headers });
   };
   return Object.assign(scoped, { close: () => agent.destroy() });
 }

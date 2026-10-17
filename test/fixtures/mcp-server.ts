@@ -4,6 +4,7 @@ import { randomUUID } from "node:crypto";
 import { once } from "node:events";
 import { createServer, type IncomingHttpHeaders } from "node:http";
 import type { AddressInfo } from "node:net";
+import type { CallToolResult } from "@earendil-works/pi-mcp";
 
 type Call = { name: string; arguments: Record<string, unknown> };
 
@@ -69,10 +70,12 @@ export async function startMcpFixture() {
     tools: typeof TOOLS;
     status: number | undefined;
     beforeCall: ((call: Call) => Promise<void>) | undefined;
+    result: CallToolResult | undefined;
   } = {
     tools: structuredClone(TOOLS),
     status: undefined,
     beforeCall: undefined,
+    result: undefined,
   };
   const server = createServer(async (request, response) => {
     requests.push({ path: request.url ?? "", headers: request.headers });
@@ -111,7 +114,7 @@ export async function startMcpFixture() {
       const call = message.params as Call;
       calls.push(call);
       await state.beforeCall?.(call);
-      result = callTool(call);
+      result = state.result ?? callTool(call);
     } else if (message.method === "ping") {
       result = {};
     }

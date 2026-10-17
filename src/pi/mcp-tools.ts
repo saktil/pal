@@ -3,9 +3,7 @@ import type { JsonValue } from "@earendil-works/chord";
 import { defineTool, type ToolExecutionApi, type ToolRegistration } from "@earendil-works/pi-durable";
 import { type CallToolResult, toLlmContent } from "@earendil-works/pi-mcp";
 import { Type } from "typebox";
-
-/** Decoded result bytes one MCP call may return to a script; larger results are cut with a note. */
-export const MAX_RESULT_BYTES = 256 * 1024;
+import { safeMcpResult } from "./mcp-result.ts";
 
 /** The parts of an MCP tool listing an approval covers. */
 export type McpToolDefinition = {
@@ -62,10 +60,11 @@ export function mcpTools(
       ...(structured ? { structuredOutputSchema: Type.Unsafe(tool.outputSchema) } : {}),
       callers: ["tools"],
       replay,
+      outputLimits: { maxBytes: 64 * 1024, maxLines: 2000 },
       execute: async (args, api, context) => {
-        const result = await connection.call(tool.remote, args, context.abortSignal, api);
+        const result = safeMcpResult(await connection.call(tool.remote, args, context.abortSignal, api));
         return {
-          output: bounded(toLlmContent(result)),
+          output: toLlmContent(result),
           isError: result.isError === true,
           ...(structured && result.structuredContent !== undefined
             ? { structuredOutput: result.structuredContent as JsonValue }
@@ -74,27 +73,4 @@ export function mcpTools(
       },
     });
   });
-}
-
-type Content = ReturnType<typeof toLlmContent>;
-
-function bounded(content: Content): Content {
-  let budget = MAX_RESULT_BYTES;
-  const kept: Content = [];
-  for (const block of content) {
-    if (block.type !== "text") {
-      kept.push({ type: "text", text: "[non-text content omitted]" });
-      continue;
-    }
-    const bytes = Buffer.byteLength(block.text);
-    if (bytes <= budget) {
-      kept.push(block);
-      budget -= bytes;
-    } else {
-      const cut = Buffer.from(block.text).subarray(0, Math.max(0, budget)).toString("utf8");
-      kept.push({ type: "text", text: `${cut}\n[truncated: ${bytes - Buffer.byteLength(cut)} more bytes]` });
-      budget = 0;
-    }
-  }
-  return kept;
 }

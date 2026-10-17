@@ -1,4 +1,8 @@
 import type { LookupAddress, LookupOptions, lookup } from "node:dns";
+import { once } from "node:events";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
+import { gzipSync } from "node:zlib";
 import { describe, expect, it } from "vitest";
 import { isPublicAddress, NetworkPolicyError, policyFetch, policyLookup } from "../src/pi/network.ts";
 
@@ -51,6 +55,38 @@ describe("MCP endpoint routing", () => {
       await fetch.close();
     }
   });
+
+  it.each(["json", "chunked", "compressed", "sse", "error"])(
+    "bounds the entire decoded %s response before MCP parsing",
+    async (format) => {
+      const text = "x".repeat(2 * 1024 * 1024 + 1);
+      const server = createServer((_request, response) => {
+        response.setHeader("content-type", format === "sse" ? "text/event-stream" : "application/json");
+        if (format === "compressed") {
+          response.setHeader("content-encoding", "gzip");
+          response.end(gzipSync(text));
+        } else if (format === "chunked" || format === "sse") {
+          for (let i = 0; i < text.length; i += 4096) response.write(text.slice(i, i + 4096));
+          response.end();
+        } else {
+          response.statusCode = format === "error" ? 500 : 200;
+          response.setHeader("content-length", Buffer.byteLength(text));
+          response.end(text);
+        }
+      });
+      server.listen(0, "127.0.0.1");
+      await once(server, "listening");
+      const endpoint = `http://127.0.0.1:${(server.address() as AddressInfo).port}/mcp`;
+      const fetch = policyFetch({ endpoint, allowPrivate: true });
+      try {
+        await expect(fetch(endpoint).then((response) => response.text())).rejects.toThrow("MCP response exceeds");
+      } finally {
+        await fetch.close();
+        server.closeAllConnections();
+        await new Promise<void>((resolve) => server.close(() => resolve()));
+      }
+    },
+  );
 
   it.each(["not-an-ip", "127.0.0.1", "::ffff:7f00:1", "198.18.0.1"])(
     "does not label %s a public address",

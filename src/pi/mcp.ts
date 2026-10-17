@@ -13,6 +13,7 @@ import {
 } from "@earendil-works/pi-mcp";
 import { type McpToolDefinition, mcpToolName, mcpTools } from "./mcp-tools.ts";
 import { NetworkPolicyError, policyFetch } from "./network.ts";
+import { safeMcpResult } from "./mcp-result.ts";
 import { McpGrants } from "../core/mcp-grants.ts";
 
 export type McpAuth =
@@ -511,6 +512,8 @@ export class McpManager {
           throw new McpConfigError("MCP connection changed during setup");
         if (tools.length > MAX_TOOLS)
           throw new McpConfigError(`the server lists ${tools.length} tools; Pal takes at most ${MAX_TOOLS}`);
+        if (key !== undefined && JSON.stringify(tools).includes(JSON.stringify(key).slice(1, -1)))
+          throw new McpConfigError("MCP catalog contains the saved credential; refusing its tool definitions");
         live.discovered = tools;
         this.#refreshState(server);
         return client;
@@ -624,6 +627,7 @@ export class McpManager {
     ]);
     let acquired = false,
       client: McpClient | undefined;
+    let safe: CallToolResult;
     const ensure = async () => {
       deadline.throwIfAborted();
       const currentProject = await this.#projectId(conversation);
@@ -657,7 +661,7 @@ export class McpManager {
         throw redactedCause(error, key);
       }
       await ensure();
-      return result;
+      safe = safeMcpResult(result, key);
     } finally {
       await client?.close().catch(() => {});
       if (acquired) {
@@ -667,6 +671,8 @@ export class McpManager {
       this.#calls.delete(call);
       finished.resolve(undefined);
     }
+    await ensure();
+    return safe;
   }
 
   async #view(server: Server): Promise<McpServerView> {
