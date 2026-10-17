@@ -1,5 +1,7 @@
 // The built UI in Chromium against the real server, with ChatGPT replaced by the loopback OpenAI fixture.
-import { mkdir, mkdtemp, readFile, realpath, rm } from "node:fs/promises";
+import { execFile } from "node:child_process";
+import { promisify } from "node:util";
+import { mkdir, mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -13,6 +15,7 @@ import { startMcpFixture } from "../fixtures/mcp-server.ts";
 import { browse, startOpenAIFixture } from "../fixtures/openai-server.ts";
 
 const webRoot = join(import.meta.dirname, "..", "..", "dist", "public");
+const exec = promisify(execFile);
 /** Where to save screenshots for design review; unset, none are kept. */
 const shots = process.env.PAL_E2E_SCREENSHOTS;
 
@@ -201,6 +204,26 @@ describe("Pal in a browser", () => {
   });
 
   it("writes a project file and shows a real host command receipt through Code Mode", async () => {
+    const projectBefore = (await pal.projects.list())[0];
+    if (projectBefore === undefined) throw new Error("missing project");
+    await exec("git", ["init", "-q"], { cwd: projectBefore.root });
+    await writeFile(join(projectBefore.root, "base.txt"), "original\n");
+    await exec("git", ["add", "base.txt"], { cwd: projectBefore.root });
+    await exec(
+      "git",
+      [
+        "-c",
+        "user.name=Fixture",
+        "-c",
+        "user.email=fixture@example.test",
+        "-c",
+        "commit.gpgsign=false",
+        "commit",
+        "-qm",
+        "base",
+      ],
+      { cwd: projectBefore.root },
+    );
     fixture.behavior.responses = "script";
     fixture.behavior.script =
       'await tools.files_write({ path: "host.txt", content: "before\\n", expectedHash: null }); return await tools.shell_run({ command: "printf after >> host.txt; printf host-output", timeout: 2 });';
@@ -224,6 +247,41 @@ describe("Pal in a browser", () => {
       });
     await shoot("host-command-1440");
     fixture.behavior.responses = "ok";
+  });
+
+  it("reviews actual Git diffs, rejects stale marks and fits desktop, tablet and phone", async () => {
+    const project = (await pal.projects.list())[0];
+    if (project === undefined) throw new Error("missing project");
+    await page.getByRole("button", { name: "Changes", exact: true }).click();
+    const panel = page.getByRole("complementary", { name: "Workspace panel" });
+    await panel.getByRole("button", { name: /host.txt/ }).click();
+    await panel.getByLabel("File diff").filter({ hasText: "+before" }).waitFor();
+    await panel.getByRole("button", { name: "Mark reviewed" }).click();
+    await expect
+      .poll(() => panel.getByRole("button", { name: "Reviewed", exact: true }).getAttribute("aria-pressed"))
+      .toBe("true");
+    await page.reload();
+    await page.getByRole("button", { name: "Changes", exact: true }).click();
+    await panel.getByRole("button", { name: /host.txt/ }).click();
+    await panel.getByRole("button", { name: "Reviewed", exact: true }).waitFor();
+    await writeFile(join(project.root, "host.txt"), "manual edit\n");
+    await panel.getByRole("button", { name: "Reviewed", exact: true }).click();
+    await panel
+      .getByRole("alert")
+      .filter({ hasText: /file changed/ })
+      .waitFor();
+    await panel.getByRole("button", { name: "Refresh", exact: true }).click();
+    await panel.getByLabel("File diff").filter({ hasText: "+manual edit" }).waitFor();
+    await panel.getByRole("button", { name: "Mark reviewed" }).waitFor();
+    for (const width of [1440, 768, 390]) {
+      await page.setViewportSize({ width, height: 900 });
+      expect(await page.evaluate("document.documentElement.scrollWidth <= innerWidth")).toBe(true);
+      await shoot(`changes-${width}`);
+    }
+    await page.keyboard.press("Escape");
+    await panel.waitFor({ state: "detached" });
+    await page.getByLabel("Message").waitFor();
+    await page.setViewportSize({ width: 1440, height: 900 });
   });
 
   it("clicks Send in a legacy chat created before ChatGPT sign-in", async () => {

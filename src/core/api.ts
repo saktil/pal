@@ -60,6 +60,14 @@ const ToolChoice = Type.Object(
   { additionalProperties: false },
 );
 const Review = Type.Object({ enable: Type.Boolean() }, { additionalProperties: false });
+const FileReview = Type.Object(
+  {
+    path: Type.String({ maxLength: 4096 }),
+    revision: Type.String({ pattern: "^[a-f0-9]{64}$" }),
+    reviewed: Type.Boolean(),
+  },
+  { additionalProperties: false },
+);
 
 /** A sign-in in progress, bridging Pi's prompt/notify interaction to HTTP polling and a paste endpoint. */
 class SignInAttempt {
@@ -290,6 +298,14 @@ export function createApi(pal: Pal, publicOrigin?: string) {
         const { requestId, ...body } = validate(Keyed, await readJson(request));
         return send(200, { project: await pal.projects.create(requestId, body) });
       }
+    }
+    if (resource === "projects" && id !== undefined && action === "changes" && path.length === 3 && method === "GET") {
+      return send(200, await pal.changes.list(id));
+    }
+    if (resource === "projects" && id !== undefined && action === "review" && path.length === 3 && method === "PUT") {
+      const body = validate(FileReview, await readJson(request));
+      await pal.changes.review(id, body.path, body.revision, body.reviewed);
+      return send(200, { reviewed: body.reviewed });
     }
     if (resource === "projects" && id !== undefined && action === undefined && method === "DELETE") {
       await pal.projects.remove(id);

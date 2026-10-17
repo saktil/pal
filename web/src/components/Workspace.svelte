@@ -17,6 +17,9 @@
   let creating = $state(false);
   let error: string | undefined = $state();
   let loaded = $state(false);
+  let panelRoute: Route | undefined = $state();
+  const panel = $derived(panelRoute === app.route);
+  const changesPanel = () => import("./ChangesPanel.svelte");
   const size = $derived(viewport());
   const chatId = $derived(app.route.view === "chat" ? app.route.chatId : undefined);
   const located = $derived.by(() => {
@@ -44,6 +47,12 @@
     }
   }
 </script>
+
+<svelte:window
+  onkeydown={(event) => {
+    if (event.key === "Escape") panelRoute = undefined;
+  }}
+/>
 
 {#if !loaded}
   <div class="center" role="status">Loading Pal…</div>
@@ -91,9 +100,43 @@
         {#if app.route.view === "settings"}
           <Settings tab={app.route.tab} {onSignOut} />
         {:else if located !== undefined}
-          {#key located.chat.id}
-            <ChatView chat={located.chat} project={located.project} />
-          {/key}
+          <div class="workspace-tools">
+            {#if size === "tablet"}<button
+                class="b i q"
+                aria-label="Projects and chats"
+                onclick={() => (drawerRoute = app.route)}><Icon name="menu" /></button
+              >{/if}
+            <button class="b sm q" aria-expanded={panel} onclick={() => (panelRoute = panel ? undefined : app.route)}
+              ><Icon name="edit" />Changes</button
+            >
+          </div>
+          <div class="workarea">
+            <div class="chat-area">
+              {#key located.chat.id}<ChatView chat={located.chat} project={located.project} />{/key}
+            </div>
+            {#if panel}
+              {#if size === "tablet"}<button
+                  class="panel-scrim"
+                  aria-label="Close workspace panel"
+                  onclick={() => (panelRoute = undefined)}
+                ></button>{/if}
+              <aside class="workspace-panel" aria-label="Workspace panel">
+                <div class="panelhead">
+                  <h2>Changes</h2>
+                  <button class="b i q" aria-label="Close panel" onclick={() => (panelRoute = undefined)}
+                    ><Icon name="x" /></button
+                  >
+                </div>
+                {#key located.project.id}
+                  {#await changesPanel()}
+                    <p role="status">Loading changes…</p>
+                  {:then { default: ChangesPanel }}
+                    <ChangesPanel project={located.project} />
+                  {:catch failure}<p role="alert">Couldn't load changes: {String(failure)}</p>{/await}
+                {/key}
+              </aside>
+            {/if}
+          </div>
         {:else if loaded}
           {@const ready = app.projects.find((project) => project.state === "ready")}
           <div class="center">
@@ -190,6 +233,71 @@
   }
   .banner {
     margin: 8px 12px 0;
+  }
+  .workspace-tools {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    padding: 4px 8px;
+    border-bottom: 1px solid var(--line);
+  }
+  .workarea {
+    flex: 1;
+    min-height: 0;
+    display: flex;
+    position: relative;
+  }
+  .chat-area {
+    display: flex;
+    flex-direction: column;
+    flex: 1;
+    min-height: 0;
+    min-width: 0;
+  }
+  .workspace-panel {
+    display: flex;
+    flex-direction: column;
+    width: 52%;
+    min-width: 0;
+    border-left: 1px solid var(--line);
+    background: var(--bg1);
+    z-index: 26;
+  }
+  .panelhead {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 4px 6px 4px 12px;
+    border-bottom: 1px solid var(--line);
+    min-height: 44px;
+  }
+  .panelhead h2 {
+    flex: 1;
+    font-size: 13px;
+    font-weight: 600;
+    margin: 0;
+  }
+  .panel-scrim {
+    position: absolute;
+    inset: 0;
+    z-index: 25;
+    border: 0;
+    background: rgba(0, 0, 0, 0.5);
+  }
+  @media (max-width: 1099px) {
+    .workspace-panel {
+      position: absolute;
+      inset: 0 0 0 auto;
+      width: 70%;
+      box-shadow: -16px 0 40px rgba(0, 0, 0, 0.5);
+    }
+  }
+  @media (max-width: 699px) {
+    .workspace-panel {
+      width: 100%;
+      border-left: 0;
+      box-shadow: none;
+    }
   }
   .center {
     flex: 1;

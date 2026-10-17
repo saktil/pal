@@ -14,6 +14,7 @@ import { McpManager } from "../pi/mcp.ts";
 import { loadMasterKey, SqliteCredentialStore } from "../storage/credentials.ts";
 import { openStore, type Store } from "../storage/store.ts";
 import { ChatService } from "./chats.ts";
+import { Changes } from "./changes.ts";
 import { FILES_NAMESPACE, fileTools } from "./files.ts";
 import { HostCommands, SHELL_NAMESPACE, shellTools, WorkspaceLocks } from "./execution.ts";
 import { Owner } from "./owner.ts";
@@ -39,6 +40,7 @@ export type Pal = {
   readonly settings: Settings;
   readonly mcp: McpManager;
   readonly uploads: Uploads;
+  readonly changes: Changes;
   close(): Promise<void>;
 };
 
@@ -54,7 +56,10 @@ const NO_AMBIENT_AUTH = { env: async () => undefined, fileExists: async () => fa
 export async function openPal(options: PalOptions, context: Context): Promise<Pal> {
   const store = await openStore(options.dataRoot);
   const commands = new HostCommands();
-  const locks = new WorkspaceLocks();
+  let changes: Changes | undefined;
+  const locks = new WorkspaceLocks(async (root) => {
+    await changes?.capture(root);
+  });
   let harness: Harness | undefined;
   let sandbox: { close(): Promise<void> } | undefined;
   let mcp: McpManager | undefined;
@@ -124,6 +129,7 @@ export async function openPal(options: PalOptions, context: Context): Promise<Pa
       dataRoot: options.dataRoot,
       installRoot: options.installRoot,
     });
+    changes = new Changes(database, openedProjects, options.dataRoot);
     const uploads = await Uploads.open(database, options.dataRoot);
     const openedChats = await ChatService.open(
       {
@@ -155,6 +161,7 @@ export async function openPal(options: PalOptions, context: Context): Promise<Pa
       settings,
       mcp: connections,
       uploads,
+      changes,
       close,
     };
   } catch (error) {

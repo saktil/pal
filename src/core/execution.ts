@@ -19,6 +19,10 @@ export const SHELL_NAMESPACE: CodemodeNamespace = {
 /** Serializes overlapping writable roots, not external editors or arbitrary host processes. */
 export class WorkspaceLocks {
   readonly #active = new Set<string>();
+  readonly #before: ((root: string) => Promise<void>) | undefined;
+  constructor(before?: (root: string) => Promise<void>) {
+    this.#before = before;
+  }
   async run<T>(root: string, work: () => Promise<T>): Promise<T> {
     const inside = (a: string, b: string) => {
       const path = relative(a, b);
@@ -28,6 +32,7 @@ export class WorkspaceLocks {
       throw new Error("an overlapping workspace is busy; wait for its mutation to finish");
     this.#active.add(root);
     try {
+      await this.#before?.(root);
       return await work();
     } finally {
       this.#active.delete(root);

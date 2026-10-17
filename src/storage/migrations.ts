@@ -164,6 +164,22 @@ export const MIGRATIONS: readonly Migration[] = [
       );
     },
   },
+  {
+    version: 10,
+    name: "change_reviews",
+    up: async (transaction) => {
+      await transaction.exec(`CREATE TABLE pal_change_bases (
+        project_id TEXT PRIMARY KEY,
+        head TEXT
+      ) STRICT`);
+      await transaction.exec(`CREATE TABLE pal_change_reviews (
+        project_id TEXT NOT NULL,
+        path TEXT NOT NULL,
+        revision TEXT NOT NULL,
+        PRIMARY KEY (project_id, path)
+      ) STRICT`);
+    },
+  },
 ];
 
 /**

@@ -1,6 +1,7 @@
 // Typed calls to Pal's API. Shapes mirror src/core/api.ts responses.
 
 export type Session = { owner: boolean; signedIn: boolean };
+export type { Change, ChangeSet } from "../../../src/core/changes.ts";
 
 export type Effort = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 export type ChatGPTModel = { slug: string; displayName: string; supported: boolean; efforts: Effort[] };
@@ -116,6 +117,9 @@ export const api = {
       name,
       ...(folder === undefined ? {} : { folder }),
     }),
+  changes: (id: string) => call<import("../../../src/core/changes.ts").ChangeSet>("GET", `projects/${id}/changes`),
+  review: (id: string, path: string, revision: string, reviewed: boolean) =>
+    call<{ reviewed: boolean }>("PUT", `projects/${id}/review`, { path, revision, reviewed }),
   removeProject: (id: string) => call<{ removed: true }>("DELETE", `projects/${id}`),
   folders: (path?: string) =>
     call<FolderListing>("GET", `folders${path === undefined ? "" : `?path=${encodeURIComponent(path)}`}`),

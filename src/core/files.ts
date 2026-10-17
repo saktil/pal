@@ -81,7 +81,7 @@ export function fileTools(options: {
       if (root !== initial.root || relative(root, target).split(sep).includes(".git"))
         throw new FileAccessError("workspace changed or protected Git metadata");
       signal?.throwIfAborted();
-      const before = await snapshot(target).catch((error: NodeJS.ErrnoException) => {
+      const before = await readFileSnapshot(target).catch((error: NodeJS.ErrnoException) => {
         if (error.code === "ENOENT") return undefined;
         throw error;
       });
@@ -99,7 +99,7 @@ export function fileTools(options: {
         await handle.sync();
         await handle.close();
         signal?.throwIfAborted();
-        const latest = await snapshot(target).catch((error: NodeJS.ErrnoException) => {
+        const latest = await readFileSnapshot(target).catch((error: NodeJS.ErrnoException) => {
           if (error.code === "ENOENT") return undefined;
           throw error;
         });
@@ -175,7 +175,7 @@ export function fileTools(options: {
         replay: "safe",
         execute: async (args, api) => {
           const { target } = await resolve(api.conversationId, args.path);
-          const { bytes, size, truncated } = await snapshot(target);
+          const { bytes, size, truncated } = await readFileSnapshot(target);
           if (bytes.includes(0) || !isUtf8(bytes)) return text(`${args.path} is a binary file of ${size} bytes.`);
           const lines = bytes.toString("utf8").split("\n");
           const first = args.offset ?? 1;
@@ -285,7 +285,7 @@ export function fileTools(options: {
 
 const hash = (bytes: Buffer) => createHash("sha256").update(bytes).digest("hex");
 
-async function snapshot(path: string) {
+export async function readFileSnapshot(path: string) {
   const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   try {
     const info = await handle.stat();
