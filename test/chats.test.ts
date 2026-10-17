@@ -10,10 +10,10 @@ import {
   type Barrier,
   ChatNotFound,
   ChatService,
-  InvalidRequest,
   MAX_INPUT_CHARS,
-  RequestConflict,
+  ProjectUnavailable,
 } from "../src/core/chats.ts";
+import { InvalidRequest, RequestConflict } from "../src/core/requests.ts";
 import { openStore } from "../src/storage/store.ts";
 
 const cleanups: (() => Promise<unknown>)[] = [];
@@ -40,7 +40,8 @@ async function open(dataRoot: string, barrier?: (point: Barrier) => void | Promi
     {
       database: store.database,
       harness,
-      agent: { model: { provider: model.provider, modelId: model.id } },
+      agentFor: async (projectId: string) =>
+        projectId === "project-1" ? { model: { provider: model.provider, modelId: model.id } } : undefined,
       ...(barrier === undefined ? {} : { barrier }),
     },
     context,
@@ -64,20 +65,27 @@ async function fillDisk(database: Awaited<ReturnType<typeof openStore>>["databas
 describe("chats", () => {
   it("creates one chat per request ID and rejects that ID with another body", async () => {
     const { store, chats } = await open(await tempDir());
-    const chat = await chats.createChat("chat-request-1", { title: "A" }, context);
-    expect(await chats.createChat("chat-request-1", { title: "A" }, context)).toEqual(chat);
-    await expect(chats.createChat("chat-request-1", { title: "B" }, context)).rejects.toBeInstanceOf(RequestConflict);
-    expect((await chats.createChat("chat-request-2", {}, context)).id).not.toBe(chat.id);
+    const chat = await chats.createChat("chat-request-1", { projectId: "project-1", title: "A" }, context);
+    expect(await chats.createChat("chat-request-1", { projectId: "project-1", title: "A" }, context)).toEqual(chat);
+    await expect(
+      chats.createChat("chat-request-1", { projectId: "project-1", title: "B" }, context),
+    ).rejects.toBeInstanceOf(RequestConflict);
+    expect((await chats.createChat("chat-request-2", { projectId: "project-1" }, context)).id).not.toBe(chat.id);
 
-    await expect(chats.createChat("short", {}, context)).rejects.toBeInstanceOf(InvalidRequest);
+    await expect(chats.createChat("short", { projectId: "project-1" }, context)).rejects.toBeInstanceOf(InvalidRequest);
     await expect(chats.createChat("chat-request-3", { title: "" }, context)).rejects.toBeInstanceOf(InvalidRequest);
-    await expect(chats.createChat("chat-request-3", { other: 1 }, context)).rejects.toBeInstanceOf(InvalidRequest);
+    await expect(
+      chats.createChat("chat-request-3", { projectId: "project-1", other: 1 }, context),
+    ).rejects.toBeInstanceOf(InvalidRequest);
+    await expect(chats.createChat("chat-request-3", { projectId: "elsewhere" }, context)).rejects.toBeInstanceOf(
+      ProjectUnavailable,
+    );
     expect((await store.storage.scanConversations({}, 100, undefined, context)).items).toHaveLength(2);
   });
 
   it("admits an input once per request ID and body, whatever the key order or defaults", async () => {
     const { harness, chats, userMessages } = await open(await tempDir());
-    const chat = await chats.createChat("chat-request-1", {}, context);
+    const chat = await chats.createChat("chat-request-1", { projectId: "project-1" }, context);
     const admission = await chats.submit(chat.id, "input-request-1", { text: "hi" }, context);
     // Acknowledged only once Pi has admitted it.
     expect(await harness.submission(admission.submissionId, context)).toBeDefined();
@@ -88,6 +96,10 @@ describe("chats", () => {
       await expect(chats.submit(chat.id, "input-request-1", body, context)).rejects.toBeInstanceOf(RequestConflict);
     }
     expect(await userMessages(chat.conversationId)).toBe(1);
+    // The first input names an untitled chat; listing shows it.
+    expect(await chats.list("project-1")).toEqual([
+      expect.objectContaining({ id: chat.id, title: "hi", conversationId: chat.conversationId }),
+    ]);
 
     await expect(chats.submit("no-such-chat", "input-request-2", { text: "hi" }, context)).rejects.toBeInstanceOf(
       ChatNotFound,
@@ -98,7 +110,7 @@ describe("chats", () => {
 
   it("stops admission when Pal's write fails, before anything reaches Pi", async () => {
     const { store, chats, userMessages } = await open(await tempDir());
-    const chat = await chats.createChat("chat-request-1", {}, context);
+    const chat = await chats.createChat("chat-request-1", { projectId: "project-1" }, context);
     await fillDisk(store.database);
     const failed = chats.submit(chat.id, "input-request-1", { text: "x".repeat(50_000) }, context);
     await expect(failed).rejects.toBeInstanceOf(AdmissionStopped);
@@ -121,7 +133,7 @@ describe("chats", () => {
     const first = await open(dataRoot, async (point) => {
       if (failPi && point === "input-recorded") await fillDisk(first.store.database);
     });
-    const chat = await first.chats.createChat("chat-request-1", {}, context);
+    const chat = await first.chats.createChat("chat-request-1", { projectId: "project-1" }, context);
     failPi = true;
     const body = { text: "x".repeat(50_000) };
     await expect(first.chats.submit(chat.id, "input-request-1", body, context)).rejects.toBeInstanceOf(

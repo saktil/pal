@@ -70,6 +70,47 @@ export const MIGRATIONS: readonly Migration[] = [
       ) STRICT`);
     },
   },
+  {
+    version: 4,
+    name: "owner_and_settings",
+    // Sessions are stored by token hash only: a copied database cannot be replayed as a cookie.
+    up: async (transaction) => {
+      await transaction.exec(`CREATE TABLE pal_owner (
+        singleton INTEGER PRIMARY KEY CHECK (singleton = 1),
+        passphrase TEXT NOT NULL,
+        created_at INTEGER NOT NULL
+      ) STRICT`);
+      await transaction.exec(`CREATE TABLE pal_sessions (
+        token_hash TEXT PRIMARY KEY,
+        created_at INTEGER NOT NULL,
+        expires_at INTEGER NOT NULL
+      ) STRICT`);
+      await transaction.exec(`CREATE TABLE pal_settings (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+      ) STRICT`);
+    },
+  },
+  {
+    version: 5,
+    name: "projects",
+    up: async (transaction) => {
+      await transaction.exec(`CREATE TABLE pal_projects (
+        id TEXT PRIMARY KEY,
+        request_id TEXT NOT NULL UNIQUE,
+        digest TEXT NOT NULL,
+        name TEXT NOT NULL,
+        mode TEXT NOT NULL CHECK (mode IN ('managed', 'existing')),
+        state TEXT NOT NULL CHECK (state IN ('provisioning', 'ready', 'failed')),
+        root TEXT NOT NULL,
+        error TEXT,
+        created_at INTEGER NOT NULL
+      ) STRICT`);
+      await transaction.exec("ALTER TABLE pal_chats ADD COLUMN project_id TEXT");
+      // Mutable display label, unlike the frozen intent; the first input names an untitled chat.
+      await transaction.exec("ALTER TABLE pal_chats ADD COLUMN title TEXT");
+    },
+  },
 ];
 
 /**

@@ -1,4 +1,4 @@
-import { createHash, randomUUID } from "node:crypto";
+import { randomUUID } from "node:crypto";
 import type { Context } from "@earendil-works/chord";
 import {
   type AgentChange,
@@ -8,17 +8,17 @@ import {
   type SubmissionId,
 } from "@earendil-works/pi-durable";
 import type { SqliteDatabase } from "@earendil-works/pi-durable/storage/sqlite";
-import { type Static, type TSchema, Type } from "typebox";
-import { Value } from "typebox/value";
+import { type Static, Type } from "typebox";
+import { normalize, RequestConflict } from "./requests.ts";
 
 export const MAX_INPUT_CHARS = 100_000;
 
-const RequestId = Type.String({ pattern: "^[A-Za-z0-9_-]{8,128}$" });
 export const ChatBody = Type.Object(
-  { title: Type.Optional(Type.String({ minLength: 1, maxLength: 200 })) },
   {
-    additionalProperties: false,
+    projectId: Type.String({ minLength: 1, maxLength: 64 }),
+    title: Type.Optional(Type.String({ minLength: 1, maxLength: 200 })),
   },
+  { additionalProperties: false },
 );
 export const InputBody = Type.Object(
   {
@@ -30,11 +30,9 @@ export const InputBody = Type.Object(
 export type ChatBody = Static<typeof ChatBody>;
 export type InputBody = Static<typeof InputBody>;
 
-/** A body that fails its schema, or a malformed request ID. */
-export class InvalidRequest extends Error {}
-/** A request ID already admitted with a different body. */
-export class RequestConflict extends Error {}
 export class ChatNotFound extends Error {}
+/** The chat's project does not exist or is not ready. */
+export class ProjectUnavailable extends Error {}
 /** Admission stopped after a storage failure; the process must restart and reconcile before admitting again. */
 export class AdmissionStopped extends Error {}
 
@@ -42,6 +40,11 @@ export class AdmissionStopped extends Error {}
 export type Barrier = "chat-recorded" | "chat-created" | "input-recorded" | "input-submitted";
 
 export type Chat = { readonly id: string; readonly conversationId: ConversationId };
+export type ChatSummary = Chat & {
+  readonly projectId: string;
+  readonly title: string | null;
+  readonly createdAt: number;
+};
 export type Admission = { readonly chatId: string; readonly requestId: string; readonly submissionId: SubmissionId };
 
 /**
@@ -61,8 +64,8 @@ class AlreadyProvisioned extends Error {}
 export type ChatServiceOptions = {
   readonly database: SqliteDatabase;
   readonly harness: Harness;
-  /** Agent settings for new conversations. */
-  readonly agent: AgentChange;
+  /** Agent settings for a new conversation in a project; undefined while the project is missing or not ready. */
+  readonly agentFor: (projectId: string) => Promise<AgentChange | undefined>;
   readonly barrier?: (point: Barrier) => void | Promise<void>;
 };
 
@@ -99,8 +102,49 @@ export class ChatService {
     return this.#failure !== undefined;
   }
 
+  async list(projectId: string): Promise<ChatSummary[]> {
+    const rows = await this.#guard((db) =>
+      db.all<{ id: string; title: string | null; conversation_id: ConversationId; created_at: number }>(
+        "SELECT id, title, conversation_id, created_at FROM pal_chats WHERE project_id = ? AND state = 'ready' ORDER BY created_at DESC, rowid DESC",
+        projectId,
+      ),
+    );
+    return rows.map((row) => ({
+      id: row.id,
+      projectId,
+      title: row.title,
+      conversationId: row.conversation_id,
+      createdAt: row.created_at,
+    }));
+  }
+
+  async get(chatId: string): Promise<ChatSummary | undefined> {
+    const row = await this.#guard((db) =>
+      db.get<{ project_id: string; title: string | null; conversation_id: ConversationId; created_at: number }>(
+        "SELECT project_id, title, conversation_id, created_at FROM pal_chats WHERE id = ? AND state = 'ready'",
+        chatId,
+      ),
+    );
+    return row === undefined
+      ? undefined
+      : {
+          id: chatId,
+          projectId: row.project_id,
+          title: row.title,
+          conversationId: row.conversation_id,
+          createdAt: row.created_at,
+        };
+  }
+
   async createChat(requestId: unknown, body: unknown, context: Context): Promise<Chat> {
-    const { key, intent, digest } = normalize(requestId, ChatBody, body, (value) => ({ title: value.title ?? null }));
+    const { key, intent, digest } = normalize(requestId, ChatBody, body, (value) => ({
+      projectId: value.projectId,
+      title: value.title ?? null,
+    }));
+    const { projectId, title } = body as ChatBody;
+    if ((await this.#options.agentFor(projectId)) === undefined) {
+      throw new ProjectUnavailable(`project ${projectId} does not exist or is not ready`);
+    }
     const row = await this.#guard((db) =>
       db.transaction(async (tx) => {
         const existing = await tx.get<ChatRow>(
@@ -110,11 +154,13 @@ export class ChatService {
         if (existing !== undefined) return existing;
         const id = randomUUID();
         await tx.run(
-          "INSERT INTO pal_chats (id, request_id, digest, intent, state, created_at) VALUES (?, ?, ?, ?, 'provisioning', ?)",
+          "INSERT INTO pal_chats (id, request_id, digest, intent, state, project_id, title, created_at) VALUES (?, ?, ?, ?, 'provisioning', ?, ?, ?)",
           id,
           key,
           digest,
           intent,
+          projectId,
+          title ?? null,
           Date.now(),
         );
         return { id, digest, conversation_id: null };
@@ -162,12 +208,15 @@ export class ChatService {
 
   /** Create the chat's conversation unless an earlier attempt did, then record the mapping. */
   async #provision(chatId: string, context: Context): Promise<Chat> {
-    const conversationId = await this.#guard(async () => {
+    const conversationId = await this.#guard(async (db) => {
+      const row = await db.get<{ project_id: string }>("SELECT project_id FROM pal_chats WHERE id = ?", chatId);
+      const agent = row === undefined ? undefined : await this.#options.agentFor(row.project_id);
+      if (agent === undefined) throw new Error(`chat ${chatId}'s project is not available`);
       try {
         const conversation = await this.#options.harness.createConversation(
           {
             ownership: { kind: "ownerless" },
-            agent: this.#options.agent,
+            agent,
             init: async (tx, id) => {
               // Pi serializes commits, so this check and the creation it rolls back are atomic.
               if ((await tx.doc(ChatDoc, chatId, id)).conversationId !== id) throw new AlreadyProvisioned();
@@ -208,12 +257,19 @@ export class ChatService {
     });
     await this.#options.barrier?.("input-submitted");
     await this.#guard((db) =>
-      db.run(
-        "UPDATE pal_admissions SET state = 'admitted', submission_id = ? WHERE chat_id = ? AND request_id = ?",
-        submissionId,
-        chatId,
-        requestId,
-      ),
+      db.transaction(async (tx) => {
+        await tx.run(
+          "UPDATE pal_admissions SET state = 'admitted', submission_id = ? WHERE chat_id = ? AND request_id = ?",
+          submissionId,
+          chatId,
+          requestId,
+        );
+        await tx.run(
+          "UPDATE pal_chats SET title = ? WHERE id = ? AND title IS NULL",
+          untitledName(intent.text),
+          chatId,
+        );
+      }),
     );
     return { chatId, requestId, submissionId };
   }
@@ -236,21 +292,10 @@ export class ChatService {
 type ChatRow = { id: string; digest: string; conversation_id: ConversationId | null };
 type AdmissionRow = { digest: string; intent: string; submission_id: SubmissionId | null };
 
-/** Validate, then serialize the fields in a fixed order with defaults applied, so equal requests digest equally. */
-function normalize<S extends TSchema, N>(
-  requestId: unknown,
-  schema: S,
-  body: unknown,
-  fields: (value: Static<S>) => N,
-): { key: string; intent: string; digest: string } {
-  if (!Value.Check(RequestId, requestId)) throw new InvalidRequest("request ID must be 8-128 letters, digits, _ or -");
-  if (!Value.Check(schema, body)) {
-    throw new InvalidRequest(
-      Value.Errors(schema, body)
-        .map((error) => `${error.instancePath} ${error.message}`)
-        .join("; "),
-    );
-  }
-  const intent = JSON.stringify(fields(body));
-  return { key: requestId, intent, digest: createHash("sha256").update(intent).digest("hex") };
+/** A chat's first input names it: its first line, shortened at a word boundary. */
+function untitledName(text: string): string {
+  const line = text.trim().split("\n", 1)[0] ?? "";
+  if (line.length <= 60) return line;
+  const cut = line.slice(0, 60);
+  return `${cut.slice(0, cut.lastIndexOf(" ") > 30 ? cut.lastIndexOf(" ") : 60)}…`;
 }

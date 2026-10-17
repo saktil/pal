@@ -23,7 +23,8 @@ const chats = await ChatService.open(
   {
     database: store.database,
     harness,
-    agent: { model: { provider: model.provider, modelId: model.id } },
+    agentFor: async (projectId: string) =>
+      projectId === "project-1" ? { model: { provider: model.provider, modelId: model.id } } : undefined,
     barrier: (point: Barrier) => {
       if (point === crashAt) process.kill(process.pid, "SIGKILL");
     },
@@ -37,7 +38,7 @@ const rows = async () => ({
 // What reconciliation alone completed, before any retry.
 const reconciled = await rows();
 
-const chat = await chats.createChat("chat-request-1", { title: "Recovery" }, context);
+const chat = await chats.createChat("chat-request-1", { projectId: "project-1", title: "Recovery" }, context);
 const admission = await chats.submit(chat.id, "input-request-1", { text: "hello" }, context);
 await harness.waitForIdle(context);
 

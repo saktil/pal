@@ -20,10 +20,13 @@ runCommand "pal-smoke-${pal.version}"
 
     pal --port 0 --data-dir "$TMPDIR/data" > server.log 2>&1 &
     server=$!
-    for _ in $(seq 100); do grep -q listening server.log && break; sleep 0.1; done
-    port=$(grep -oE 'http://127\.0\.0\.1:[0-9]+' server.log | grep -oE '[0-9]+$')
+    for _ in $(seq 100); do grep -q "#setup=" server.log && break; sleep 0.1; done
+    port=$(grep listening server.log | grep -oE 'http://127\.0\.0\.1:[0-9]+' | grep -oE '[0-9]+$')
     curl -fsS "http://127.0.0.1:$port/api/health" | tee health.json
     grep -F '"status":"ok"' health.json
+    # A fresh installation has no owner and offers the one-time setup link on its terminal only.
+    grep -F "http://127.0.0.1:$port/#setup=" server.log
+    curl -fsS "http://127.0.0.1:$port/api/session" | grep -Fx '{"owner":false,"signedIn":false}'
     curl -fsS "http://127.0.0.1:$port/" | grep -F '<title>Pal</title>'
     if pal --port 0 --data-dir "$TMPDIR/data" > second.log 2>&1; then
       echo "a second Pal started on an owned data directory" >&2
