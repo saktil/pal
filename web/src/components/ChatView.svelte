@@ -6,11 +6,13 @@
     ChatStream,
     type Entry,
     type Message,
+    type McpReceipt,
     type NestedCall,
     type ShellReceipt,
     textOf,
   } from "../lib/chat.svelte.ts";
   import Icon from "../lib/Icon.svelte";
+  import InternetSources from "./InternetSources.svelte";
   import { renderMarkdown } from "../lib/markdown.ts";
   import { app, navigate, refreshProjects, viewport } from "../lib/state.svelte.ts";
 
@@ -35,7 +37,8 @@
         live: boolean;
       }
     | { kind: "note"; id: string; text: string }
-    | { kind: "shell"; id: string; receipt: ShellReceipt };
+    | { kind: "shell"; id: string; receipt: ShellReceipt }
+    | { kind: "mcp"; id: string; receipt: McpReceipt };
 
   const USAGE_URL = "https://chatgpt.com/settings/usage";
 
@@ -131,8 +134,18 @@
         entry.data?.shell?.status === "finished" ? [[entry.data.shell.callId, entry.data.shell] as const] : [],
       ),
     );
+    const internet = new Map(
+      entries.flatMap((entry) =>
+        entry.kind === "pal.mcp" && entry.data?.mcp ? [[entry.data.mcp.callId, entry.id] as const] : [],
+      ),
+    );
     const built: Item[] = [];
     for (const entry of entries) {
+      if (entry.kind === "pal.mcp" && entry.data?.mcp !== undefined) {
+        if (internet.get(entry.data.mcp.callId) === entry.id)
+          built.push({ kind: "mcp", id: String(entry.id), receipt: entry.data.mcp });
+        continue;
+      }
       if (entry.kind === "pal.shell" && entry.data?.shell?.status === "started") {
         built.push({
           kind: "shell",
@@ -278,6 +291,8 @@
           </div>
         {:else if item.kind === "note"}
           <div class="note"><Icon name="info" /><span>{item.text}</span></div>
+        {:else if item.kind === "mcp"}
+          <InternetSources receipt={item.receipt} />
         {:else if item.kind === "shell"}
           <details class="activity">
             <summary class="acth"

@@ -185,6 +185,58 @@ describe("Pal in a browser", () => {
     fixture.behavior.responses = "ok";
   });
 
+  it("persists source receipts, keeps links inert until clicked and labels failed retrieval", async () => {
+    const card = page.getByRole("region", { name: "Fixture search sources" });
+    await card.waitFor();
+    const received = await card.locator("time").getAttribute("datetime");
+    const requests: string[] = [];
+    await page.context().route("https://fixture.invalid/**", async (route) => {
+      requests.push(route.request().url());
+      await route.fulfill({ contentType: "text/html", body: "<h1>Source fixture</h1>" });
+    });
+    try {
+      await page.reload();
+      await card.waitFor();
+      expect(await card.locator("time").getAttribute("datetime")).toBe(received);
+      await card.locator("summary").click();
+      await card.getByRole("link", { name: /^Durable agents/ }).waitFor();
+      expect(await card.innerText()).toContain("Not cached at lookup");
+      expect(await card.getByText("Server-reported link", { exact: true }).count()).toBe(3);
+      expect(mcp.calls.map((call) => call.name)).toEqual(["search"]);
+      for (const width of [1440, 768, 390]) {
+        await page.setViewportSize({ width, height: 900 });
+        await card.scrollIntoViewIfNeeded();
+        expect(await page.evaluate("document.documentElement.scrollWidth <= innerWidth")).toBe(true);
+        await shoot(`internet-sources-${width}`);
+      }
+      expect(requests).toEqual([]);
+      const popupPromise = page.waitForEvent("popup");
+      await card.getByRole("link", { name: /^Durable agents/ }).click();
+      const popup = await popupPromise;
+      try {
+        await popup.getByRole("heading", { name: "Source fixture" }).waitFor();
+        expect(await popup.evaluate(() => window.opener === null && document.referrer === "")).toBe(true);
+        expect(requests).toEqual(["https://fixture.invalid/durable"]);
+      } finally {
+        await popup.close();
+      }
+    } finally {
+      await page.context().unroute("https://fixture.invalid/**");
+      await page.setViewportSize({ width: 1440, height: 900 });
+    }
+    const server = (await pal.mcp.list()).find((candidate) => candidate.name === "Fixture");
+    if (server === undefined) throw new Error("missing server");
+    fixture.behavior.responses = "script";
+    fixture.behavior.script = `return await tools.mcp__${server.id}__fetch({ url: "https://fixture.invalid/missing" });`;
+    await page.getByLabel("Message").fill("fetch the missing page");
+    await page.getByRole("button", { name: "Send" }).click();
+    const failed = page.getByRole("region", { name: "Fixture fetch sources" });
+    await failed.getByText("Server error", { exact: true }).waitFor();
+    expect(await failed.getByRole("link").count()).toBe(0);
+    await page.getByRole("status").filter({ hasText: "Running" }).waitFor({ state: "detached" });
+    fixture.behavior.responses = "ok";
+  });
+
   it("narrows project internet tools, rejects stale settings and fits every viewport", async () => {
     const project = (await pal.projects.list())[0];
     const server = (await pal.mcp.list()).find((candidate) => candidate.name === "Fixture");

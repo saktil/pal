@@ -45,7 +45,10 @@ describe("Code Mode over MCP", () => {
 
     const granted = mcpTools(
       "fixture",
-      { call: (remote, args, signal) => client.callTool(remote, args, signal === undefined ? {} : { signal }) },
+      {
+        call: (remote, args, _api, ctx) =>
+          client.callTool(remote, args, ctx.abortSignal === undefined ? {} : { signal: ctx.abortSignal }),
+      },
       listed
         .filter((tool) => tool.name === "search" || tool.name === "fetch")
         .map((tool) => ({

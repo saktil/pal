@@ -359,9 +359,12 @@ describe("MCP connections", () => {
       await release.promise;
     };
     let rejected = 0;
+    // This fixture isolates queue admission; API integration checks the real durable receipt commits.
+    const executorApi = { conversationId: 2 as ConversationId } as ToolExecutionApi;
+    executorApi.commit = vi.fn();
     try {
       const pending = Array.from({ length: 12 }, (_, n) =>
-        tool.execute({ query: String(n) }, { conversationId: 2 as ConversationId } as ToolExecutionApi, context).then(
+        tool.execute({ query: String(n) }, executorApi, context).then(
           () => true,
           () => {
             rejected++;

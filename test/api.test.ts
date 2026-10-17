@@ -4,6 +4,7 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
+import { watchEvents } from "@earendil-works/pi-durable";
 import { afterEach, describe, expect, it } from "vitest";
 import { startMcpFixture } from "./fixtures/mcp-server.ts";
 import { createApi } from "../src/core/api.ts";
@@ -194,6 +195,27 @@ describe("API", () => {
       await run(two, `return await tools.mcp__${server.id}__fetch({ url: "https://fixture.invalid/durable" });`),
     ).toContain("Durable agents");
     expect(fixture.calls.map((call) => call.name)).toEqual(["fetch"]);
+    const chat = (await pal.chats.list(b.id))[0];
+    if (chat === undefined) throw new Error("missing chat");
+    const events = await watchEvents(pal.harness, chat.conversationId, context);
+    try {
+      const receipts = events.snapshot.entries.filter((entry) => entry.kind === "pal.mcp");
+      expect(receipts).toHaveLength(1);
+      expect(receipts[0]).toMatchObject({
+        data: {
+          mcp: {
+            server: server.id,
+            serverName: "Scoped",
+            tool: "fetch",
+            isError: false,
+            sources: [{ url: "https://fixture.invalid/durable", kind: "requested" }],
+          },
+        },
+      });
+      expect(receipts[0]?.model ?? []).toEqual([]);
+    } finally {
+      await events.stop();
+    }
   });
 
   it.each(["https://pal.example", "http://100.64.0.10:7337"])(

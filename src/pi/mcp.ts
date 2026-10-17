@@ -1,6 +1,13 @@
 import { createHash, randomBytes } from "node:crypto";
+import type { Context } from "@earendil-works/chord/context";
 import type { CredentialStore } from "@earendil-works/pi-ai";
-import { type ConversationId, defineExtension, type Extension, type Registry } from "@earendil-works/pi-durable";
+import {
+  type ConversationId,
+  defineExtension,
+  type Extension,
+  type Registry,
+  type ToolExecutionApi,
+} from "@earendil-works/pi-durable";
 import type { CodemodeNamespace } from "@earendil-works/pi-durable/codemode";
 import type { SqliteDatabase } from "@earendil-works/pi-durable/storage/sqlite";
 import {
@@ -14,6 +21,7 @@ import {
 import { type McpToolDefinition, mcpToolName, mcpTools } from "./mcp-tools.ts";
 import { NetworkPolicyError, policyFetch } from "./network.ts";
 import { safeMcpResult } from "./mcp-result.ts";
+import { mcpEvidence, type McpReceipt } from "./mcp-source.ts";
 import { McpGrants } from "../core/mcp-grants.ts";
 
 export type McpAuth =
@@ -602,13 +610,10 @@ export class McpManager {
     });
   }
 
-  async #call(
-    server: Server,
-    remote: string,
-    args: Record<string, unknown>,
-    signal: AbortSignal | undefined,
-    conversation: ConversationId,
-  ) {
+  async #call(server: Server, remote: string, args: Record<string, unknown>, api: ToolExecutionApi, context: Context) {
+    const conversation = api.conversationId,
+      signal = context.abortSignal,
+      startedAt = Date.now();
     const project = await this.#projectId(conversation);
     const grant = project === undefined ? undefined : await this.grants.decision(project, server.id, remote);
     const name = mcpToolName(server.id, remote);
@@ -628,6 +633,7 @@ export class McpManager {
     let acquired = false,
       client: McpClient | undefined;
     let safe: CallToolResult;
+    let receipt: McpReceipt;
     const ensure = async () => {
       deadline.throwIfAborted();
       const currentProject = await this.#projectId(conversation);
@@ -662,6 +668,16 @@ export class McpManager {
       }
       await ensure();
       safe = safeMcpResult(result, key);
+      const receivedAt = Date.now();
+      receipt = {
+        callId: String(api.taskId),
+        server: server.id,
+        serverName: server.name,
+        tool: remote,
+        receivedAt,
+        elapsedMs: Math.max(0, receivedAt - startedAt),
+        ...mcpEvidence(safe, args, key),
+      };
     } finally {
       await client?.close().catch(() => {});
       if (acquired) {
@@ -671,6 +687,8 @@ export class McpManager {
       this.#calls.delete(call);
       finished.resolve(undefined);
     }
+    await ensure();
+    await api.commit((tx) => tx.appendEntry(conversation, { kind: "pal.mcp", data: { mcp: receipt } }), context);
     await ensure();
     return safe;
   }
@@ -721,12 +739,8 @@ export class McpManager {
       for (const tool of approved)
         installed.set(mcpToolName(server.id, tool.remote), { server: server.id, remote: tool.remote });
       const connection = {
-        call: (
-          remote: string,
-          args: Record<string, unknown>,
-          signal: AbortSignal | undefined,
-          api: { conversationId: ConversationId },
-        ) => this.#call(server, remote, args, signal, api.conversationId),
+        call: (remote: string, args: Record<string, unknown>, api: ToolExecutionApi, context: Context) =>
+          this.#call(server, remote, args, api, context),
       };
       return [
         ...mcpTools(

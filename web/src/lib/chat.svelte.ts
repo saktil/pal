@@ -1,5 +1,7 @@
 // One chat's live state from its server-sent events: a snapshot, then Pi's agent event batches.
 // Every snapshot, including the one after a reconnect, replaces the state; nothing is replayed from an offset.
+import type { McpReceipt } from "../../../src/pi/mcp-source.ts";
+export type { McpReceipt };
 
 export type Block =
   | { type: "text"; text: string }
@@ -46,7 +48,7 @@ export type Entry = {
   id: number;
   kind: string;
   model?: Message[];
-  data?: { attachments?: Attachment[]; shell?: ShellReceipt };
+  data?: { attachments?: Attachment[]; shell?: ShellReceipt; mcp?: McpReceipt };
 };
 
 type Change =
