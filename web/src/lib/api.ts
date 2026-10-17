@@ -137,6 +137,11 @@ export const api = {
   changes: (id: string) => call<import("../../../src/core/changes.ts").ChangeSet>("GET", `projects/${id}/changes`),
   files: (id: string, path: string) =>
     call<ProjectFolder>("GET", `projects/${id}/files?path=${encodeURIComponent(path)}`),
+  search: (id: string, query: string, mode: "text" | "regex" | "files") =>
+    call<import("../../../src/core/search.ts").SearchResults>(
+      "GET",
+      `projects/${id}/search?q=${encodeURIComponent(query)}&mode=${mode}`,
+    ),
   file: (id: string, path: string) =>
     call<import("../../../src/core/files.ts").FilePreview>(
       "GET",

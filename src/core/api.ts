@@ -16,6 +16,7 @@ import { AdmissionStopped, ChatNotFound, ProjectUnavailable } from "./chats.ts";
 import { cookie, HttpError, isOwnOrigin, readJson, sendJson } from "./http.ts";
 import { OwnerError, SESSION_COOKIE, SESSION_MAX_AGE_SECONDS } from "./owner.ts";
 import { FileAccessError } from "./files.ts";
+import { SearchError } from "./search.ts";
 import { FolderError } from "./projects.ts";
 import { InvalidRequest, RequestConflict, validate } from "./requests.ts";
 import { UploadBody, UploadError } from "./uploads.ts";
@@ -345,8 +346,20 @@ export function createApi(pal: Pal, publicOrigin?: string) {
       await pal.changes.review(id, body.path, body.revision, body.reviewed);
       return send(200, { reviewed: body.reviewed });
     }
+    if (resource === "projects" && id !== undefined && action === "search" && path.length === 3 && method === "GET") {
+      const project = await pal.projects.get(id);
+      if (project?.state !== "ready") throw new FileAccessError("no such ready project");
+      const query = url.searchParams.get("q") ?? "";
+      const mode = url.searchParams.get("mode") ?? "text";
+      if (query.length > 500) throw new HttpError(400, "invalid_request", "the query is too long");
+      if (mode !== "files" && mode !== "text" && mode !== "regex")
+        throw new HttpError(400, "invalid_request", "unknown search mode");
+      return send(200, await pal.search.search(project.root, query, mode));
+    }
     if (resource === "projects" && id !== undefined && action === undefined && method === "DELETE") {
+      const removing = await pal.projects.get(id);
       await pal.projects.remove(id);
+      if (removing !== undefined) await pal.search.forget(removing.root);
       pal.mcp.revokeProject(id);
       await Promise.all([pal.terminals.removeProject(id), pal.chats.abortDeleted(context)]);
       return send(200, { removed: true });
@@ -472,6 +485,7 @@ function classify(error: unknown): [number, string] {
   if (error instanceof AdmissionStopped) return [503, "admission_stopped"];
   if (error instanceof McpConfigError) return [400, "mcp_config"];
   if (error instanceof FileAccessError) return [403, "file_access"];
+  if (error instanceof SearchError) return [422, "search_unavailable"];
   if (error instanceof UploadError) {
     const status = { not_found: 404, too_large: 413, size_mismatch: 400, not_receiving: 409, not_ready: 409 };
     return [status[error.code], `upload_${error.code}`];

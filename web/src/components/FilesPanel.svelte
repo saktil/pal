@@ -4,6 +4,7 @@
   import Icon from "../lib/Icon.svelte";
 
   type Preview = Awaited<ReturnType<typeof api.file>>;
+  type Found = Awaited<ReturnType<typeof api.search>>;
 
   let {
     project,
@@ -26,6 +27,27 @@
   const lines = $derived(preview?.kind === "text" ? preview.text.split("\n") : []);
   /** Selected line range, 1-based and inclusive; pick a line, then another to extend. */
   let selection: { from: number; to: number } | undefined = $state();
+  let query = $state("");
+  let mode: "text" | "regex" | "files" = $state("text");
+  let found: Found | undefined = $state.raw();
+
+  const find = (event: SubmitEvent) => {
+    event.preventDefault();
+    void run(async () => {
+      found = query.trim() === "" ? undefined : await api.search(project.id, query, mode);
+    });
+  };
+
+  /** Open a search hit with its line selected and in view. */
+  const reveal = (path: string, line: number | undefined) =>
+    run(async () => {
+      await display(path);
+      if (line !== undefined) {
+        selection = { from: line, to: line };
+        await tick();
+        document.querySelector(`[aria-label="Select line ${line}"]`)?.scrollIntoView({ block: "center" });
+      }
+    });
   const MAX_SNIPPET_CHARS = 20_000;
 
   function pick(line: number) {
@@ -163,8 +185,50 @@
   </div>
   {#if error}<div class="callout er" role="alert">{error}</div>{/if}
   {#if preview === undefined}
-    <p class="hint">Read-only view of the project folder. Viewing a file doesn't send it to the model.</p>
-    <div class="scroll">{@render tree("", 0)}</div>
+    <form class="search" role="search" onsubmit={find}>
+      <input class="f" type="search" aria-label="Search files" placeholder="Search the project" bind:value={query} />
+      <div class="seg" role="radiogroup" aria-label="Search mode">
+        {#each [["text", "Text"], ["regex", "Regex"], ["files", "Names"]] as const as [value, label] (value)}
+          <button type="button" class="segb" role="radio" aria-checked={mode === value} onclick={() => (mode = value)}
+            >{label}</button
+          >
+        {/each}
+      </div>
+      <button class="b sm" type="submit" disabled={busy || query.trim() === ""}>Search</button>
+    </form>
+    {#if found !== undefined}
+      <div class="results-head">
+        <span
+          >{found.hits.length === 0
+            ? "No matches"
+            : `${found.hits.length} ${found.hits.length === 1 ? "match" : "matches"}`}</span
+        >
+        {#if found.truncated}<span class="warning">More matches exist; narrow the search.</span>{/if}
+        {#if found.indexing}<span class="warning">Index still building; results may be incomplete.</span>{/if}
+        <button class="b sm q" onclick={() => (found = undefined)}>Back to folders</button>
+      </div>
+      <ul role="list" class="rows scroll" aria-label="Search results">
+        {#each found.hits as hit, index (`${hit.path}:${hit.line ?? 0}:${index}`)}
+          <li>
+            <button class="frow hit" data-file-row={hit.path} onclick={() => reveal(hit.path, hit.line)}>
+              <span class="mono hitpath">{hit.path}{hit.line === undefined ? "" : `:${hit.line}`}</span>
+              {#if hit.text !== undefined}
+                {@const ranges = hit.ranges ?? []}
+                <span class="mono hittext"
+                  >{#each ranges as [start, end], at (at)}{hit.text.slice(
+                      at === 0 ? 0 : (ranges[at - 1]?.[1] ?? 0),
+                      start,
+                    )}<mark>{hit.text.slice(start, end)}</mark>{/each}{hit.text.slice(ranges.at(-1)?.[1] ?? 0)}</span
+                >
+              {/if}
+            </button>
+          </li>
+        {/each}
+      </ul>
+    {:else}
+      <p class="hint">Read-only view of the project folder. Viewing a file doesn't send it to the model.</p>
+      <div class="scroll">{@render tree("", 0)}</div>
+    {/if}
   {:else}
     {@const slash = preview.path.lastIndexOf("/")}
     <div class="filehead">
@@ -337,6 +401,53 @@
   }
   .chosen {
     background: var(--acbg);
+  }
+  .search {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+    align-items: center;
+    padding: 8px 10px;
+    border-bottom: 1px solid var(--line);
+  }
+  .search .f {
+    flex: 1 1 160px;
+    min-width: 0;
+    padding: 4px 9px;
+  }
+  .results-head {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+    align-items: center;
+    padding: 6px 12px;
+    font-size: 12px;
+    color: var(--tx3);
+    border-bottom: 1px solid var(--line);
+  }
+  .results-head .b {
+    margin-left: auto;
+  }
+  .hit {
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 2px;
+    padding-top: 6px;
+    padding-bottom: 6px;
+  }
+  .hitpath {
+    font-size: 12px;
+    color: var(--tx2);
+    overflow-wrap: anywhere;
+  }
+  .hittext {
+    font-size: 12px;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+  }
+  mark {
+    background: var(--acbg);
+    color: var(--ac);
   }
   .actions {
     display: flex;

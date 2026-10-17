@@ -19,6 +19,7 @@ import { FILES_NAMESPACE, fileTools, projectFiles } from "./files.ts";
 import { HostCommands, SHELL_NAMESPACE, shellTools, WorkspaceLocks } from "./execution.ts";
 import { Owner } from "./owner.ts";
 import { type Project, Projects } from "./projects.ts";
+import { ProjectSearch } from "./search.ts";
 import { Uploads } from "./uploads.ts";
 import { Terminals } from "./terminals.ts";
 
@@ -44,6 +45,8 @@ export type Pal = {
   readonly changes: Changes;
   /** The owner's read-only view of project folders for the Files panel. */
   readonly files: ReturnType<typeof projectFiles>;
+  /** Shared lazy fff indexes for project folders. */
+  readonly search: ProjectSearch;
   readonly terminals: Terminals;
   close(): Promise<void>;
 };
@@ -60,6 +63,7 @@ const NO_AMBIENT_AUTH = { env: async () => undefined, fileExists: async () => fa
 export async function openPal(options: PalOptions, context: Context): Promise<Pal> {
   const store = await openStore(options.dataRoot);
   const commands = new HostCommands();
+  const search = new ProjectSearch([options.dataRoot]);
   let changes: Changes | undefined;
   const locks = new WorkspaceLocks(async (root) => {
     await changes?.capture(root);
@@ -75,6 +79,7 @@ export async function openPal(options: PalOptions, context: Context): Promise<Pa
       try {
         await (harness === undefined ? store.close() : harness.close(context));
       } finally {
+        search.close();
         await Promise.all([commands.close(), terminals?.close()]);
         await Promise.all([sandbox?.close(), mcp?.close()]);
       }
@@ -108,7 +113,7 @@ export async function openPal(options: PalOptions, context: Context): Promise<Pa
     sandbox = codemode.sandbox;
     const registry = createRegistry();
     for (const extension of codemode.extensions) registry.install(extension);
-    registry.install(fileTools({ root: projectRoot, deny: [options.dataRoot], locks }));
+    registry.install(fileTools({ root: projectRoot, deny: [options.dataRoot], locks, search }));
     registry.install(shellTools({ root: projectRoot, commands, locks }));
     const connections = await McpManager.open({
       database: store.database,
@@ -180,6 +185,7 @@ export async function openPal(options: PalOptions, context: Context): Promise<Pa
         deny: [options.dataRoot],
       }),
       terminals,
+      search,
       close,
     };
   } catch (error) {

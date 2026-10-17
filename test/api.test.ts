@@ -313,6 +313,13 @@ describe("API", () => {
     }
     expect((await files("src/main.ts")).body.error).toBe("file_access");
 
+    const search = (query: string, mode: string) =>
+      api("GET", `projects/${project.id}/search?q=${encodeURIComponent(query)}&mode=${mode}`);
+    expect((await search("answer = 42", "text")).body.hits).toEqual([
+      { path: "src/main.ts", line: 1, text: "export const answer = 42;", ranges: [[13, 24]] },
+    ]);
+    expect((await search("answer", "bogus")).status).toBe(400);
+
     // Read-only and owner-only.
     const write = await fetch(`${base}/api/projects/${project.id}/file?path=src/main.ts`, {
       method: "POST",
@@ -325,6 +332,7 @@ describe("API", () => {
     // Removing the project revokes the view at once; the folder itself stays.
     await api("DELETE", `projects/${project.id}`);
     expect((await files("")).body.error).toBe("file_access");
+    expect((await search("answer", "text")).body.error).toBe("file_access");
     expect((await stat(join(folder, "src", "main.ts"))).isFile()).toBe(true);
   });
 

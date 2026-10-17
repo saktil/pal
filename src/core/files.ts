@@ -4,6 +4,7 @@ import { constants } from "node:fs";
 import { access, link, open, readdir, realpath, rename, stat, unlink } from "node:fs/promises";
 import { basename, dirname, isAbsolute, join, relative, sep } from "node:path";
 import { WorkspaceLocks } from "./execution.ts";
+import type { ProjectSearch } from "./search.ts";
 import type { ConversationId } from "@earendil-works/pi-durable";
 import { defineExtension, defineTool, type Extension } from "@earendil-works/pi-durable";
 import type { CodemodeNamespace } from "@earendil-works/pi-durable/codemode";
@@ -36,6 +37,8 @@ export function fileTools(options: {
   /** Directories no project may read, such as Pal's data root. */
   readonly deny: readonly string[];
   readonly locks?: WorkspaceLocks;
+  /** Shared fff indexes behind `files_search`; without it the tool is not offered. */
+  readonly search?: ProjectSearch;
 }): Extension {
   const locks = options.locks ?? new WorkspaceLocks();
   async function resolve(
@@ -220,6 +223,38 @@ export function fileTools(options: {
             context.abortSignal,
           ),
       }),
+      ...(options.search === undefined
+        ? []
+        : [
+            defineTool({
+              name: "files_search",
+              description:
+                "Search the project: mode `text` finds exact text in files (default), `regex` a regular expression, `files` file names (fuzzy). Results show path:line: text, at most 50; zero matches means none, never a guess.",
+              parameters: Type.Object({
+                query: Type.String({ minLength: 1, maxLength: 500 }),
+                mode: Type.Optional(Type.Union([Type.Literal("text"), Type.Literal("regex"), Type.Literal("files")])),
+              }),
+              callers: ["tools"],
+              replay: "safe",
+              execute: async (args, api) => {
+                const configured = await options.root(api.conversationId);
+                if (configured === undefined) throw new FileAccessError("this conversation has no project folder");
+                const found = await (options.search as ProjectSearch).search(
+                  configured,
+                  args.query,
+                  args.mode ?? "text",
+                );
+                const lines = found.hits.map((hit) =>
+                  hit.line === undefined ? hit.path : `${hit.path}:${hit.line}: ${hit.text ?? ""}`,
+                );
+                const notes = [
+                  ...(found.truncated ? ["[more matches exist; narrow the query]"] : []),
+                  ...(found.indexing ? ["[index still building; results may be incomplete]"] : []),
+                ];
+                return text([lines.join("\n") || "No matches.", ...notes].join("\n"));
+              },
+            }),
+          ]),
       defineTool({
         name: "files_find",
         description: "Find files and folders in the project whose path contains the given text (case-insensitive).",

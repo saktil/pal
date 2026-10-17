@@ -458,6 +458,21 @@ describe("Pal in a browser", () => {
     await panel.getByRole("heading", { name: "Changes" }).waitFor();
     await panel.getByLabel("File diff").filter({ hasText: "+manual edit" }).waitFor();
     expect(fixture.apiRequests.length).toBe(modelRequests);
+    // Search finds exact text and opens the hit with its line selected.
+    await page.getByRole("button", { name: "Files", exact: true }).click();
+    await panel.getByLabel("Search files").fill("second version");
+    await panel.getByRole("button", { name: "Search", exact: true }).click();
+    await panel
+      .getByRole("list", { name: "Search results" })
+      .getByRole("button", { name: /docs\/guide\.md:2/ })
+      .click();
+    await expect
+      .poll(() => panel.getByRole("button", { name: "Select line 2" }).getAttribute("aria-pressed"))
+      .toBe("true");
+    await shoot("files-search-1440");
+    await panel.getByRole("button", { name: "Back to files" }).click();
+    await panel.getByRole("button", { name: "Back to folders" }).click();
+    await page.getByRole("button", { name: "Changes", exact: true }).click();
     // Switching back opens Files afresh, folders collapsed.
     await page.getByRole("button", { name: "Files", exact: true }).click();
     await panel.getByRole("button", { name: /^docs/ }).click();
