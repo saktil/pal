@@ -3,6 +3,8 @@
   import { api, ApiError, type McpServer, type McpState } from "../lib/api.ts";
   import Icon from "../lib/Icon.svelte";
 
+  let { onReviewed }: { onReviewed?: () => void } = $props();
+
   let review = $state(false);
   let servers: McpServer[] = $state([]);
   let loaded = $state(false);
@@ -69,6 +71,7 @@
     busy.review = true;
     try {
       accept(await api.mcpReview(enable));
+      onReviewed?.();
     } catch (failure) {
       error = failure instanceof ApiError ? failure.message : String(failure);
     } finally {

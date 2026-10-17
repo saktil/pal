@@ -5,6 +5,7 @@
   import { app, navigate, refreshChatGPT, refreshProjects, type Route, viewport } from "../lib/state.svelte.ts";
   import ChatView from "./ChatView.svelte";
   import CreateProject from "./CreateProject.svelte";
+  import Onboarding from "./Onboarding.svelte";
   import Settings from "./Settings.svelte";
   import Sidebar from "./Sidebar.svelte";
 
@@ -44,72 +45,74 @@
   }
 </script>
 
-<div class="shell">
-  {#if size === "phone" && app.route.view !== "settings"}
-    <header class="phonehdr">
-      <button class="b i q" aria-label="Projects and chats" onclick={() => (drawerRoute = app.route)}
-        ><Icon name="menu" /></button
-      >
-      <div class="phonetitle">
-        <div class="t">{located?.chat.title ?? (located ? "New chat" : "Pal")}</div>
-        {#if located}<div class="s">{located.project.name}</div>{/if}
-      </div>
-    </header>
-  {/if}
-  <div class="body">
-    {#if size === "desktop" || drawer}
-      <div
-        class="side"
-        class:drawer={size !== "desktop"}
-        style:width={size === "desktop" ? "252px" : size === "phone" ? "86%" : "300px"}
-      >
-        <Sidebar
-          currentChatId={chatId}
-          onNewChat={newChat}
-          onCreateProject={() => (creating = true)}
-          {...size === "desktop" ? {} : { onClose: () => (drawerRoute = undefined) }}
-        />
-      </div>
+{#if !loaded}
+  <div class="center" role="status">Loading Pal…</div>
+{:else if error !== undefined && app.projects.length === 0}
+  <div class="center">
+    <div class="callout er" role="alert">Couldn't load Pal: {error}</div>
+    <button class="b" onclick={() => location.reload()}>Try again</button>
+  </div>
+{:else if app.projects.length === 0}
+  <Onboarding onCreateProject={() => (creating = true)} {onSignOut} />
+{:else}
+  <div class="shell">
+    {#if size === "phone" && app.route.view !== "settings"}
+      <header class="phonehdr">
+        <button class="b i q" aria-label="Projects and chats" onclick={() => (drawerRoute = app.route)}
+          ><Icon name="menu" /></button
+        >
+        <div class="phonetitle">
+          <div class="t">{located?.chat.title ?? (located ? "New chat" : "Pal")}</div>
+          {#if located}<div class="s">{located.project.name}</div>{/if}
+        </div>
+      </header>
     {/if}
-    {#if size !== "desktop" && drawer}
-      <button class="scrim" aria-label="Close projects" onclick={() => (drawerRoute = undefined)}></button>
-    {/if}
+    <div class="body">
+      {#if size === "desktop" || drawer}
+        <div
+          class="side"
+          class:drawer={size !== "desktop"}
+          style:width={size === "desktop" ? "252px" : size === "phone" ? "86%" : "300px"}
+        >
+          <Sidebar
+            currentChatId={chatId}
+            onNewChat={newChat}
+            onCreateProject={() => (creating = true)}
+            {...size === "desktop" ? {} : { onClose: () => (drawerRoute = undefined) }}
+          />
+        </div>
+      {/if}
+      {#if size !== "desktop" && drawer}
+        <button class="scrim" aria-label="Close projects" onclick={() => (drawerRoute = undefined)}></button>
+      {/if}
 
-    <main>
-      {#if error !== undefined}<div class="callout er banner" role="alert">{error}</div>{/if}
-      {#if app.route.view === "settings"}
-        <Settings tab={app.route.tab} {onSignOut} />
-      {:else if located !== undefined}
-        {#key located.chat.id}
-          <ChatView chat={located.chat} project={located.project} />
-        {/key}
-      {:else if loaded}
-        <div class="center">
-          <div class="intro">
-            {#if size === "tablet"}
-              <button class="b q" onclick={() => (drawerRoute = app.route)}><Icon name="menu" />Projects</button>
-            {/if}
-            {#if app.projects.length === 0}
-              <h1>No projects yet</h1>
-              <p>
-                A project gives Pal a folder on this server to work in, with its own chats. Pal can create a new folder
-                or use one that already exists.
-              </p>
-              <button class="b p" onclick={() => (creating = true)}><Icon name="folderPlus" />Create project</button>
-            {:else}
+      <main>
+        {#if error !== undefined}<div class="callout er banner" role="alert">{error}</div>{/if}
+        {#if app.route.view === "settings"}
+          <Settings tab={app.route.tab} {onSignOut} />
+        {:else if located !== undefined}
+          {#key located.chat.id}
+            <ChatView chat={located.chat} project={located.project} />
+          {/key}
+        {:else if loaded}
+          {@const ready = app.projects.find((project) => project.state === "ready")}
+          <div class="center">
+            <div class="intro">
+              {#if size === "tablet"}
+                <button class="b q" onclick={() => (drawerRoute = app.route)}><Icon name="menu" />Projects</button>
+              {/if}
               <h1>{chatId === undefined ? "Pick a chat" : "Chat not found"}</h1>
               <p>Choose a chat in a project, or start a new one.</p>
-              {@const ready = app.projects.find((project) => project.state === "ready")}
               {#if ready}<button class="b p" onclick={() => newChat(ready.id)}
                   ><Icon name="plus" />New chat in {ready.name}</button
                 >{/if}
-            {/if}
+            </div>
           </div>
-        </div>
-      {/if}
-    </main>
+        {/if}
+      </main>
+    </div>
   </div>
-</div>
+{/if}
 
 {#if creating}
   <CreateProject

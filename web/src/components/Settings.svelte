@@ -4,7 +4,7 @@
   import { app, navigate, refreshChatGPT, saveSetting, type SettingsTab, viewport } from "../lib/state.svelte.ts";
   import McpSettings from "./McpSettings.svelte";
 
-  let { tab, onSignOut }: { tab: SettingsTab; onSignOut: () => void } = $props();
+  let { tab, onSignOut, embedded = false }: { tab: SettingsTab; onSignOut: () => void; embedded?: boolean } = $props();
 
   let paste = $state("");
   let busy = $state(false);
@@ -51,17 +51,19 @@
 </script>
 
 <div class="settings" class:narrow>
-  <nav aria-label="Settings sections">
-    <div class="title">
-      <button class="b i q" aria-label="Back to chat" onclick={() => history.back()}><Icon name="chevL" /></button>
-      <h1>Settings</h1>
-    </div>
-    {#each tabs as item (item.id)}
-      <button class="row" aria-current={tab === item.id} onclick={() => navigate({ view: "settings", tab: item.id })}>
-        <Icon name={item.icon} />{item.label}
-      </button>
-    {/each}
-  </nav>
+  {#if !embedded}
+    <nav aria-label="Settings sections">
+      <div class="title">
+        <button class="b i q" aria-label="Back to chat" onclick={() => history.back()}><Icon name="chevL" /></button>
+        <h1>Settings</h1>
+      </div>
+      {#each tabs as item (item.id)}
+        <button class="row" aria-current={tab === item.id} onclick={() => navigate({ view: "settings", tab: item.id })}>
+          <Icon name={item.icon} />{item.label}
+        </button>
+      {/each}
+    </nav>
+  {/if}
   <div class="content">
     <div class="column">
       {#if tab === "general"}

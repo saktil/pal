@@ -64,26 +64,16 @@ describe("Pal in a browser", () => {
     await page.getByLabel("Confirm passphrase").fill("correct horse battery");
     await shoot("setup-1440");
     await page.getByRole("button", { name: "Create owner" }).click();
-    await page.getByRole("heading", { name: "No projects yet" }).waitFor();
-    // The token leaves the address bar once used.
+    await page.getByRole("heading", { name: "Welcome to Pal" }).waitFor();
+    // The token leaves the address bar once used; projects cannot precede sign-in.
     expect(page.url()).not.toContain("setup=");
-    await shoot("empty-1440");
+    expect(await page.getByRole("button", { name: "Create project" }).count()).toBe(0);
+    await page.reload();
+    await page.getByRole("button", { name: "Sign in with ChatGPT" }).waitFor();
+    await shoot("onboarding-1440");
   });
 
-  it("creates a managed project and chat before ChatGPT sign-in", async () => {
-    await page.getByRole("button", { name: "Project", exact: true }).click();
-    await page.getByLabel("Project name").fill("Notes");
-    await shoot("create-project-1440");
-    await page.getByRole("dialog", { name: "Create project" }).getByRole("button", { name: "Create project" }).click();
-    await page.getByRole("heading", { name: "Start the conversation" }).waitFor();
-    chatUrl = page.url();
-    await page.getByLabel("Message").fill("hi");
-    expect(await page.getByRole("button", { name: "Send" }).isDisabled()).toBe(true);
-  });
-
-  it("connects ChatGPT from Settings", async () => {
-    await page.getByRole("button", { name: "Settings" }).click();
-    await page.getByRole("button", { name: "Models" }).click();
+  it("connects ChatGPT before offering internet tools or projects", async () => {
     await page.getByRole("button", { name: "Sign in with ChatGPT" }).click();
     const link = page.getByRole("link", { name: "Open ChatGPT sign-in" });
     const authUrl = await link.getAttribute("href");
@@ -91,14 +81,23 @@ describe("Pal in a browser", () => {
     await shoot("chatgpt-waiting-1440");
     // The owner's own browser completes sign-in on ChatGPT and lands on the server's callback.
     await browse(authUrl);
-    await page.getByText("Signed in as").waitFor();
-    await expect.poll(() => page.getByRole("radio", { name: /GPT-5\.5/ }).isChecked()).toBe(true);
-    await shoot("settings-models-1440");
+    await page.getByText("Enable internet tools?").waitFor();
+    expect(await page.getByRole("button", { name: "Create project" }).count()).toBe(0);
+    await shoot("onboarding-internet-1440");
   });
 
-  it("clicks Send in the chat created before sign-in and gets a streamed answer", async () => {
-    await page.goto(chatUrl);
+  it("reviews internet tools, then creates the first project and chats", async () => {
+    await page.getByRole("button", { name: "Not now" }).click();
+    await page.getByRole("heading", { name: "Create your first project" }).waitFor();
+    await page.reload();
+    await page.getByRole("heading", { name: "Create your first project" }).waitFor();
+    expect((await pal.mcp.list()).every((server) => !server.enabled)).toBe(true);
+    await page.getByRole("button", { name: "Create project" }).click();
+    await page.getByLabel("Project name").fill("Notes");
+    await shoot("create-project-1440");
+    await page.getByRole("dialog", { name: "Create project" }).getByRole("button", { name: "Create project" }).click();
     await page.getByRole("heading", { name: "Start the conversation" }).waitFor();
+    chatUrl = page.url();
     await page.getByLabel("Message").fill("hi");
     await page.getByRole("button", { name: "Send" }).click({ timeout: 3000 });
     await page.getByText("Hello").waitFor();
@@ -116,8 +115,6 @@ describe("Pal in a browser", () => {
 
   it("adds a private MCP server, approves its tools, and a chat script calls them", async () => {
     await page.goto(`${base}/#/settings/mcp`);
-    await page.getByText("Enable internet tools?").waitFor();
-    await page.getByRole("button", { name: "Not now" }).click();
     await page.getByRole("button", { name: "Add server" }).click();
     await page.getByLabel("Name").fill("Fixture");
     await page.getByLabel("URL").fill(mcp.url);
@@ -171,6 +168,47 @@ describe("Pal in a browser", () => {
     await page.getByText("files_list", { exact: true }).waitFor();
     await shoot("chat-upload-1440");
     fixture.behavior.responses = "ok";
+  });
+
+  it("clicks Send in a legacy chat created before ChatGPT sign-in", async () => {
+    const root = await realpath(await mkdtemp(join(tmpdir(), "pal-e2e-legacy-")));
+    cleanups.push(() => rm(root, { recursive: true, force: true }));
+    const legacy = await openPal(
+      { dataRoot: root, installRoot: "/nonexistent-install", endpoints: fixture.endpoints },
+      context,
+    );
+    cleanups.push(() => legacy.close());
+    const project = await legacy.projects.create("legacy-project", { name: "Legacy" });
+    const chat = await legacy.chats.createChat("legacy-chat", { projectId: project.id }, context);
+    const server = await startServer({ host: "127.0.0.1", port: 0, version: "e2e", webRoot, api: createApi(legacy) });
+    cleanups.push(() => {
+      server.closeAllConnections();
+      return new Promise((resolve) => server.close(resolve));
+    });
+    const url = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    const legacyPage = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+    cleanups.push(() => legacyPage.close());
+    await legacyPage
+      .context()
+      .addCookies([
+        { name: "pal_session", value: await legacy.owner.setup(legacy.owner.setupToken, "correct horse battery"), url },
+      ]);
+    await legacyPage.goto(`${url}/#/chat/${chat.id}`);
+    await legacyPage.getByLabel("Message").fill("hi");
+    expect(await legacyPage.getByRole("button", { name: "Send" }).isDisabled()).toBe(true);
+    await legacyPage.getByRole("button", { name: "Connect", exact: true }).click();
+    await legacyPage.getByRole("button", { name: "Sign in with ChatGPT" }).click();
+    const auth = await legacyPage.getByRole("link", { name: "Open ChatGPT sign-in" }).getAttribute("href");
+    if (auth === null) throw new Error("no sign-in link");
+    await browse(auth);
+    await legacyPage.getByText("Signed in as").waitFor();
+    await legacyPage.goto(`${url}/#/chat/${chat.id}`);
+    await legacyPage.getByLabel("Message").fill("hi");
+    await legacyPage.getByRole("button", { name: "Send" }).click({ timeout: 3000 });
+    await legacyPage.getByText("Hello").waitFor();
+    expect(
+      (await (await legacy.harness.conversation(chat.conversationId, context))?.agent(context))?.model?.modelId,
+    ).toBe("gpt-5.5");
   });
 
   it("lays out for tablet and phone", async () => {
