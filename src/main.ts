@@ -1,5 +1,4 @@
 import { existsSync } from "node:fs";
-import { mkdir } from "node:fs/promises";
 import type { AddressInfo } from "node:net";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -7,6 +6,8 @@ import { fileURLToPath } from "node:url";
 import pkg from "../package.json" with { type: "json" };
 import { parseCommand, USAGE, UsageError } from "./core/config.ts";
 import { startServer } from "./core/server.ts";
+import { DatabaseOwnedError } from "./storage/sqlite.ts";
+import { openStore } from "./storage/store.ts";
 
 // The build puts the frontend in dist/public next to this bundle; running from src has none.
 const webRoot = fileURLToPath(new URL("public", import.meta.url));
@@ -37,13 +38,26 @@ async function main(argv: readonly string[]): Promise<number> {
     }
     case "serve": {
       const { host, port, dataRoot } = command.config;
-      await mkdir(dataRoot, { recursive: true, mode: 0o700 });
-      const server = await startServer({
-        host,
-        port,
-        version: pkg.version,
-        webRoot: existsSync(join(webRoot, "index.html")) ? webRoot : undefined,
-      });
+      let store;
+      try {
+        store = await openStore(dataRoot);
+      } catch (error) {
+        if (!(error instanceof DatabaseOwnedError)) throw error;
+        process.stderr.write(`pal: ${dataRoot} is in use by another Pal process\n`);
+        return 1;
+      }
+      let server;
+      try {
+        server = await startServer({
+          host,
+          port,
+          version: pkg.version,
+          webRoot: existsSync(join(webRoot, "index.html")) ? webRoot : undefined,
+        });
+      } catch (error) {
+        await store.close();
+        throw error;
+      }
       const address = server.address() as AddressInfo;
       const shown = address.family === "IPv6" ? `[${address.address}]` : address.address;
       process.stdout.write(`pal ${pkg.version} listening on http://${shown}:${address.port} (data: ${dataRoot})\n`);
@@ -55,7 +69,9 @@ async function main(argv: readonly string[]): Promise<number> {
       };
       process.once("SIGINT", stop);
       process.once("SIGTERM", stop);
-      return await new Promise((done) => server.once("close", () => done(0)));
+      await new Promise((done) => server.once("close", done));
+      await store.close();
+      return 0;
     }
   }
 }

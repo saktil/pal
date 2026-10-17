@@ -25,6 +25,11 @@ runCommand "pal-smoke-${pal.version}"
     curl -fsS "http://127.0.0.1:$port/api/health" | tee health.json
     grep -F '"status":"ok"' health.json
     curl -fsS "http://127.0.0.1:$port/" | grep -F '<title>Pal</title>'
+    if pal --port 0 --data-dir "$TMPDIR/data" > second.log 2>&1; then
+      echo "a second Pal started on an owned data directory" >&2
+      exit 1
+    fi
+    grep -F 'is in use by another Pal process' second.log
     kill -TERM "$server"
     wait "$server"
     test "$(stat -c %a "$TMPDIR/data")" = 700

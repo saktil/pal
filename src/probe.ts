@@ -41,7 +41,7 @@ async function probeSqlite(dir: string): Promise<string> {
       throw new Error(`FTS5 MATCH returned ${JSON.stringify(hits)}`);
     }
     const version = await database.get<{ version: string }>("SELECT sqlite_version() AS version");
-    return `SQLite ${version?.version}; WAL, synchronous=FULL, FTS5 MATCH`;
+    return `SQLite ${version?.version}; exclusive WAL, synchronous=FULL, fullfsync, FTS5 MATCH`;
   } finally {
     await database.close();
   }
