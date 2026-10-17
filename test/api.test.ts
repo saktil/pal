@@ -104,6 +104,37 @@ async function putBytes(base: string, cookie: string, id: string, bytes: Uint8Ar
 }
 
 describe("API", () => {
+  it("requires a separate owner-authorized request to delete a removed managed workspace", async () => {
+    const { api, base, cookie, pal, dataRoot } = await signedIn();
+    const project = (await api("POST", "projects", { requestId: "purge-project-api", name: "Cleanup" })).body.project;
+    const chat = await pal.chats.createChat("purge-history-chat", { projectId: project.id }, context);
+    const upload = (
+      await api("POST", `projects/${project.id}/uploads`, { name: "note.txt", size: 4, type: "text/plain" })
+    ).body.upload;
+    expect((await putBytes(base, cookie(), upload.id, Buffer.from("kept"))).status).toBe(200);
+    await writeFile(join(project.root, "keep-until-confirmed.txt"), "retained");
+    expect((await api("GET", "removed-workspaces")).body.workspaces).toEqual([]);
+    expect((await api("DELETE", `projects/${project.id}`)).status).toBe(200);
+    expect(await readFile(join(project.root, "keep-until-confirmed.txt"), "utf8")).toBe("retained");
+    const item = (await api("GET", "removed-workspaces")).body.workspaces[0];
+    const body = { root: item.root, identity: item.identity };
+    const path = `removed-workspaces/${project.id}/purge`;
+    expect((await api("POST", path, {})).status).toBe(400);
+    expect((await api("POST", path, { ...body, identity: "0:0:0:0" })).status).toBe(409);
+    expect((await fetch(`${base}/api/removed-workspaces`)).status).toBe(401);
+    expect((await fetch(`${base}/api/${path}`, { method: "POST", headers: { origin: base } })).status).toBe(401);
+    expect(
+      (await raw(base, `/api/${path}`, { cookie: cookie(), origin: "https://attacker.example" }, body)).status,
+    ).toBe(403);
+    expect(await readFile(join(project.root, "keep-until-confirmed.txt"), "utf8")).toBe("retained");
+    expect((await api("POST", path, body)).status).toBe(200);
+    expect(await stat(project.root).catch(() => undefined)).toBeUndefined();
+    expect((await api("POST", path, body)).status).toBe(200);
+    expect((await api("GET", "removed-workspaces")).body.workspaces).toEqual([]);
+    expect(await pal.harness.conversation(chat.conversationId, context)).toBeDefined();
+    expect(await readFile(join(dataRoot, "uploads", project.id, upload.id, "data"), "utf8")).toBe("kept");
+  });
+
   it("renames only the title snapshot shown, preserving chat identity and enforcing owner authorization", async () => {
     const { api, pal, base, cookie } = await signedIn();
     const project = (await api("POST", "projects", { requestId: "rename-project-api", name: "Notes" })).body.project;

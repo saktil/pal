@@ -5,6 +5,7 @@
   import { app } from "../lib/state.svelte.ts";
   import McpSettings from "./McpSettings.svelte";
   import Settings from "./Settings.svelte";
+  import WorkspaceCleanup from "./WorkspaceCleanup.svelte";
 
   let { onCreateProject, onSignOut }: { onCreateProject: () => void; onSignOut: () => void } = $props();
   let reviewed: boolean | undefined = $state();
@@ -46,6 +47,7 @@
         <h2 class="h2">Create your first project</h2>
         <p class="sub">Give Pal a managed workspace or choose an existing folder on this server.</p>
         <button class="b p" onclick={onCreateProject}><Icon name="folderPlus" />Create project</button>
+        <WorkspaceCleanup />
       {/if}
     </div>
   {/if}

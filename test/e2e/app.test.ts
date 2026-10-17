@@ -1,7 +1,7 @@
 // The built UI in Chromium against the real server, with ChatGPT replaced by the loopback OpenAI fixture.
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
-import { mkdir, mkdtemp, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, readFile, realpath, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -808,6 +808,57 @@ describe("Pal in a browser", () => {
     }
   });
 
+  it("deletes retained workspaces only after a separate confirmation and refuses a replaced folder", async () => {
+    const project = await pal.projects.create("cleanup-browser-project", { name: "Cleanup fixture" });
+    await writeFile(join(project.root, "notes.txt"), "retained until confirmed");
+    await pal.projects.remove(project.id);
+    await page.goto(`${base}/#/settings/general`);
+    await page.reload();
+    const cleanup = page.getByRole("region", { name: "Removed managed workspaces" });
+    const trigger = cleanup.getByRole("button", { name: "Delete workspace Cleanup fixture", exact: true });
+    const dialog = page.getByRole("alertdialog", { name: "Delete workspace “Cleanup fixture”?", exact: true });
+    await trigger.click();
+    expect(await dialog.getByRole("button", { name: "Cancel" }).evaluate((button) => button.matches(":focus"))).toBe(
+      true,
+    );
+    await page.keyboard.press("Escape");
+    await dialog.waitFor({ state: "detached" });
+    expect(await readFile(join(project.root, "notes.txt"), "utf8")).toBe("retained until confirmed");
+    await trigger.click();
+    for (const width of [1440, 768, 390]) {
+      await page.setViewportSize({ width, height: 900 });
+      await dialog.getByText(project.root, { exact: true }).waitFor();
+      expect(await page.evaluate("document.documentElement.scrollWidth <= innerWidth")).toBe(true);
+      await shoot(`delete-workspace-${width}`);
+    }
+    const saved = join(dataRoot, "saved-workspace");
+    await rename(project.root, saved);
+    try {
+      await mkdir(project.root);
+      await writeFile(join(project.root, "new.txt"), "not confirmed");
+      await dialog.getByRole("button", { name: "Delete workspace", exact: true }).click();
+      await dialog.getByRole("alert").filter({ hasText: "folder changed" }).waitFor();
+      expect(await readFile(join(project.root, "new.txt"), "utf8")).toBe("not confirmed");
+      await dialog.getByRole("button", { name: "Cancel" }).click();
+      await rm(project.root, { recursive: true });
+    } finally {
+      await rename(saved, project.root);
+    }
+    await cleanup.getByRole("button", { name: "Refresh workspaces" }).click();
+    await expect.poll(() => trigger.isEnabled()).toBe(true);
+    await trigger.click();
+    await dialog.getByRole("button", { name: "Delete workspace", exact: true }).click();
+    await dialog.waitFor({ state: "detached" });
+    await cleanup.getByRole("status").filter({ hasText: "Workspace deleted" }).waitFor();
+    expect(await stat(project.root).catch(() => undefined)).toBeUndefined();
+    expect(await trigger.count()).toBe(0);
+    await page.reload();
+    expect(await trigger.count()).toBe(0);
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.goto(chatUrl);
+    await page.getByLabel("Message").waitFor();
+  });
+
   it("clicks Send in a legacy chat created before ChatGPT sign-in", async () => {
     const root = await realpath(await mkdtemp(join(tmpdir(), "pal-e2e-legacy-")));
     cleanups.push(() => rm(root, { recursive: true, force: true }));
@@ -886,5 +937,9 @@ describe("Pal in a browser", () => {
     await page.reload();
     await page.getByRole("heading", { name: "Create your first project" }).waitFor();
     expect(await pal.projects.list()).toEqual([]);
+    await page
+      .getByRole("region", { name: "Removed managed workspaces" })
+      .getByRole("button", { name: "Delete workspace Notes", exact: true })
+      .waitFor();
   });
 });

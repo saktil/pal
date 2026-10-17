@@ -3,6 +3,7 @@
   import Icon from "../lib/Icon.svelte";
   import { app, navigate, refreshChatGPT, saveSetting, type SettingsTab, viewport } from "../lib/state.svelte.ts";
   import McpSettings from "./McpSettings.svelte";
+  import WorkspaceCleanup from "./WorkspaceCleanup.svelte";
 
   let { tab, onSignOut, embedded = false }: { tab: SettingsTab; onSignOut: () => void; embedded?: boolean } = $props();
 
@@ -100,6 +101,7 @@
             <button class="b" onclick={onSignOut}>Sign out of Pal</button>
           </div>
         </div>
+        <WorkspaceCleanup />
       {:else if tab === "mcp"}
         <McpSettings />
       {:else}

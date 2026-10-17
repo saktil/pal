@@ -3,6 +3,7 @@
 export type Session = { owner: boolean; signedIn: boolean };
 export type { Change, ChangeComment, ChangeSet } from "../../../src/core/changes.ts";
 export type { TerminalInfo } from "../../../src/core/terminals.ts";
+export type { RemovedWorkspace } from "../../../src/core/workspace-purge.ts";
 export type { ProjectMcp, ProjectMcpServer } from "../../../src/core/mcp-grants.ts";
 
 export type Effort = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
@@ -171,6 +172,13 @@ export const api = {
   closeTerminal: (project: string, id: string) =>
     call<{ closed: true }>("DELETE", `projects/${project}/terminals/${id}`),
   removeProject: (id: string) => call<{ removed: true }>("DELETE", `projects/${id}`),
+  removedWorkspaces: () =>
+    call<{ workspaces: import("../../../src/core/workspace-purge.ts").RemovedWorkspace[]; truncated: boolean }>(
+      "GET",
+      "removed-workspaces",
+    ),
+  purgeWorkspace: (id: string, root: string, identity: string) =>
+    call<{ deleted: true }>("POST", `removed-workspaces/${id}/purge`, { root, identity }),
   folders: (path?: string) =>
     call<FolderListing>("GET", `folders${path === undefined ? "" : `?path=${encodeURIComponent(path)}`}`),
 

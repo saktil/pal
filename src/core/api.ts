@@ -410,6 +410,14 @@ export function createApi(pal: Pal, publicOrigin?: string) {
       return send(200, { upload: await pal.uploads.receive(id, request) });
     }
 
+    if (resource === "removed-workspaces") {
+      if (path.length === 1 && method === "GET") return send(200, await pal.workspacePurge.list());
+      if (id !== undefined && action === "purge" && path.length === 3 && method === "POST") {
+        await pal.workspacePurge.purge(id, await readJson(request));
+        return send(200, { deleted: true });
+      }
+    }
+
     if (resource === "folders" && path.length === 1 && method === "GET") {
       return send(200, await pal.projects.browse(url.searchParams.get("path") ?? undefined));
     }

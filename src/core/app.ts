@@ -22,6 +22,7 @@ import { type Project, Projects } from "./projects.ts";
 import { ProjectSearch } from "./search.ts";
 import { Uploads } from "./uploads.ts";
 import { Terminals } from "./terminals.ts";
+import { WorkspacePurge } from "./workspace-purge.ts";
 
 export type PalOptions = {
   readonly dataRoot: string;
@@ -48,6 +49,7 @@ export type Pal = {
   /** Shared lazy fff indexes for project folders. */
   readonly search: ProjectSearch;
   readonly terminals: Terminals;
+  readonly workspacePurge: WorkspacePurge;
   close(): Promise<void>;
 };
 
@@ -186,6 +188,7 @@ export async function openPal(options: PalOptions, context: Context): Promise<Pa
       }),
       terminals,
       search,
+      workspacePurge: new WorkspacePurge(database, options.dataRoot, locks),
       close,
     };
   } catch (error) {

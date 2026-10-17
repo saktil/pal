@@ -215,6 +215,18 @@ export const MIGRATIONS: readonly Migration[] = [
       );
     },
   },
+  {
+    version: 13,
+    name: "workspace_purges",
+    up: async (transaction) => {
+      await transaction.exec(`CREATE TABLE pal_workspace_purges (
+        project_id TEXT PRIMARY KEY,
+        directory TEXT NOT NULL UNIQUE,
+        identity TEXT NOT NULL,
+        completed_at INTEGER
+      ) STRICT`);
+    },
+  },
 ];
 
 /**
