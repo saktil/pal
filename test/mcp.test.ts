@@ -98,6 +98,36 @@ describe("MCP connections", () => {
     expect((await reopened.list()).map((server) => server.id)).toEqual(["exa", "context7"]);
   });
 
+  it("persists exact-preset fake-IP consent and revokes approvals when routing changes", async () => {
+    const { manager, store, open, fixture, add } = await setup();
+    const sample = await add();
+    await manager.test(sample.id);
+    await manager.approve(sample.id, ["search"]);
+    const row = await store.database.get<{ approved: string }>(
+      "SELECT approved FROM pal_mcp_servers WHERE id = ?",
+      sample.id,
+    );
+    if (row === undefined) throw new Error("fixture approval is missing");
+    await store.database.run("UPDATE pal_mcp_servers SET enabled = 1, approved = ? WHERE id = 'exa'", row.approved);
+    const restored = await open();
+    cleanups.push(() => restored.close());
+    expect((await restored.get("exa")).tools[0]?.approved).toBe(true);
+    const requests = fixture.requests.length;
+    expect(await restored.setFakeIp("exa", true)).toMatchObject({
+      fakeIp: true,
+      private: false,
+      enabled: false,
+      tools: [],
+      url: PRESETS[0]?.url,
+    });
+    const again = await open();
+    cleanups.push(() => again.close());
+    expect((await again.get("exa")).fakeIp).toBe(true);
+    expect((await again.setFakeIp("exa", false)).fakeIp).toBe(false);
+    await expect(manager.setFakeIp(sample.id, true)).rejects.toBeInstanceOf(McpConfigError);
+    expect(fixture.requests).toHaveLength(requests);
+  });
+
   it("keeps keys write-only and sends them only in the configured header", async () => {
     const { fixture, manager, add } = await setup();
     const header = await add({ kind: "header", header: "x-api-key" });
@@ -151,7 +181,11 @@ describe("MCP connections", () => {
     await manager.setEnabled(server.id, true);
     let disabling: Promise<unknown> | undefined;
     fixture.state.beforeCall = async (call) => {
-      if (call.name === "search") await (disabling = manager.setEnabled(server.id, false));
+      if (call.name === "search") {
+        disabling = manager.setEnabled(server.id, false);
+        expect(manager.allows(`mcp__${server.id}__fetch`)).toBe(false);
+        await disabling;
+      }
     };
     // Disabling closes the connection, so the call in flight may end too; the next one never reaches the server.
     const output = await script(`
@@ -161,7 +195,7 @@ describe("MCP connections", () => {
       catch (error) { second = "error: " + error.message; }
       return { first, second };
     `);
-    expect(output).toMatch(/"second":"error: [^"]*not granted/);
+    expect(output).toMatch(/"second":"error: [^"]*(not granted|not available)/);
     expect(fixture.calls.map((call) => call.name)).toEqual(["search"]);
     await disabling;
   });

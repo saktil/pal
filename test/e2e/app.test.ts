@@ -148,6 +148,13 @@ describe("Pal in a browser", () => {
     // Testing and approving never called a tool.
     expect(mcp.calls).toEqual([]);
     await shoot("settings-mcp-1440");
+    await page.getByRole("button", { name: /^Context7/ }).click();
+    const routing = page.getByRole("checkbox", { name: "Allow fake-IP routing for Context7" });
+    await routing.check();
+    await expect.poll(async () => (await pal.mcp.get("context7")).fakeIp).toBe(true);
+    expect((await pal.mcp.get("context7")).enabled).toBe(false);
+    await routing.uncheck();
+    await expect.poll(async () => (await pal.mcp.get("context7")).fakeIp).toBe(false);
 
     const server = (await pal.mcp.list()).find((candidate) => candidate.name === "Fixture");
     fixture.behavior.responses = "script";

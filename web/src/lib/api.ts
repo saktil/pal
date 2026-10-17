@@ -52,6 +52,7 @@ export type McpServer = {
   url: string;
   auth: McpAuth;
   private: boolean;
+  fakeIp: boolean;
   enabled: boolean;
   keyConfigured: boolean;
   state: McpState;
@@ -162,6 +163,8 @@ export const api = {
     ),
   mcpEnabled: (id: string, enabled: boolean) =>
     call<{ server: McpServer }>("PUT", `mcp/servers/${id}/enabled`, { enabled }),
+  mcpFakeIp: (id: string, enabled: boolean) =>
+    call<{ server: McpServer }>("PUT", `mcp/servers/${id}/fake-ip`, { enabled }),
   mcpTest: (id: string) => call<{ server: McpServer }>("POST", `mcp/servers/${id}/test`),
   mcpTools: (id: string, tools: string[]) => call<{ server: McpServer }>("PUT", `mcp/servers/${id}/tools`, { tools }),
 };

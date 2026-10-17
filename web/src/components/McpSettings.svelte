@@ -289,6 +289,22 @@
             <button class="b sm" onclick={() => act(server.id, () => api.mcpTest(server.id))}>Test connection</button>
           </div>
           <p class="sub">Testing connects and lists tools. It never calls one.</p>
+          {#if !server.private}
+            <label class="flr">
+              <input
+                type="checkbox"
+                checked={server.fakeIp}
+                disabled={busy[server.id]}
+                aria-label={`Allow fake-IP routing for ${server.name}`}
+                onchange={(event) => act(server.id, () => api.mcpFakeIp(server.id, event.currentTarget.checked))}
+              />
+              Allow a trusted local proxy’s fake-IP DNS for this endpoint (198.18.0.0/15).
+            </label>
+            <p class="sub">
+              Only for a proxy you already trust. HTTPS and certificate verification stay on; other private addresses
+              stay blocked. Changing this disables the server and clears tool approvals. Test, then enable it again.
+            </p>
+          {/if}
           <div class="h3">Tools</div>
           {#if server.tools.length === 0}
             <p class="sub">Test the connection to list this server's tools.</p>

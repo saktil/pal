@@ -155,6 +155,15 @@ export const MIGRATIONS: readonly Migration[] = [
       await transaction.exec("ALTER TABLE pal_chats ADD COLUMN deleted_at INTEGER");
     },
   },
+  {
+    version: 9,
+    name: "mcp_fake_ip_routing",
+    up: async (transaction) => {
+      await transaction.exec(
+        "ALTER TABLE pal_mcp_servers ADD COLUMN fake_ip INTEGER NOT NULL DEFAULT 0 CHECK (fake_ip IN (0, 1))",
+      );
+    },
+  },
 ];
 
 /**

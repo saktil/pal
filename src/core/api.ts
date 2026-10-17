@@ -258,6 +258,11 @@ export function createApi(pal: Pal) {
           return send(200, { server: await pal.mcp.setKey(serverId, validate(KeyBody, await readJson(request)).key) });
         }
         if (part === "key" && method === "DELETE") return send(200, { server: await pal.mcp.setKey(serverId, null) });
+        if (part === "fake-ip" && method === "PUT") {
+          return send(200, {
+            server: await pal.mcp.setFakeIp(serverId, validate(Toggle, await readJson(request)).enabled),
+          });
+        }
         if (part === "enabled" && method === "PUT") {
           const { enabled } = validate(Toggle, await readJson(request));
           return send(200, { server: await pal.mcp.setEnabled(serverId, enabled) });

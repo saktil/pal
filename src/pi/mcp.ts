@@ -72,6 +72,7 @@ export type McpServerView = {
   readonly url: string;
   readonly auth: McpAuth;
   readonly private: boolean;
+  readonly fakeIp: boolean;
   readonly enabled: boolean;
   readonly keyConfigured: boolean;
   readonly state: McpState;
@@ -111,6 +112,7 @@ type Server = {
   url: string;
   auth: McpAuth;
   private: boolean;
+  fakeIp: boolean;
   enabled: boolean;
   approved: Record<string, Approved>;
 };
@@ -171,6 +173,7 @@ export class McpManager {
       url: string;
       auth: string;
       private: number;
+      fake_ip: number;
       enabled: number;
       approved: string;
     }>("SELECT * FROM pal_mcp_servers ORDER BY created_at, rowid");
@@ -182,6 +185,7 @@ export class McpManager {
         url: row.url,
         auth: JSON.parse(row.auth),
         private: row.private === 1,
+        fakeIp: row.fake_ip === 1,
         enabled: row.enabled === 1,
         approved: JSON.parse(row.approved),
       });
@@ -220,7 +224,7 @@ export class McpManager {
         .replace(/[^a-z0-9]/g, "")
         .slice(0, 10) || "server";
     const id = `${slug}${randomBytes(3).toString("hex")}`;
-    const server: Server = { id, ...input, preset: null, enabled: false, approved: {} };
+    const server: Server = { id, ...input, preset: null, fakeIp: false, enabled: false, approved: {} };
     await this.#database.run(
       "INSERT INTO pal_mcp_servers (id, name, preset, url, auth, private, enabled, approved, created_at) VALUES (?, ?, NULL, ?, ?, ?, 0, '{}', ?)",
       id,
@@ -242,9 +246,21 @@ export class McpManager {
       JSON.stringify([value.url, value.auth, value.private]);
     const moved = identity(server) !== identity(input);
     if (server.preset !== null && moved) throw new McpConfigError("a preset's endpoint and authentication are fixed");
-    Object.assign(server, input, moved ? { enabled: false, approved: {} } : {});
+    Object.assign(server, input, moved ? { enabled: false, approved: {}, fakeIp: false } : {});
     await this.#save(server);
     if (moved) await this.#drop(id);
+    this.#install();
+    return await this.#view(server);
+  }
+
+  /** Explicit per-endpoint exception for a trusted local proxy's fake-IP DNS; never an exception for private ranges. */
+  async setFakeIp(id: string, enabled: boolean): Promise<McpServerView> {
+    const server = this.#require(id);
+    if (server.private && enabled) throw new McpConfigError("private endpoints do not need fake-IP routing");
+    if (server.fakeIp === enabled) return await this.#view(server);
+    Object.assign(server, { fakeIp: enabled, enabled: false, approved: {} });
+    await this.#save(server);
+    await this.#drop(id);
     this.#install();
     return await this.#view(server);
   }
@@ -344,11 +360,12 @@ export class McpManager {
 
   async #save(server: Server): Promise<void> {
     await this.#database.run(
-      "UPDATE pal_mcp_servers SET name = ?, url = ?, auth = ?, private = ?, enabled = ?, approved = ? WHERE id = ?",
+      "UPDATE pal_mcp_servers SET name = ?, url = ?, auth = ?, private = ?, fake_ip = ?, enabled = ?, approved = ? WHERE id = ?",
       server.name,
       server.url,
       JSON.stringify(server.auth),
       server.private ? 1 : 0,
+      server.fakeIp ? 1 : 0,
       server.enabled ? 1 : 0,
       JSON.stringify(server.approved),
       server.id,
@@ -383,10 +400,11 @@ export class McpManager {
             ? { authorization: `Bearer ${key}` }
             : { [server.auth.header]: key };
       const client = new McpClient({ name: "pal", version: "0.0.0", requestTimeoutMs: CONNECT_TIMEOUT_MS });
+      const network = policyFetch({ endpoint: server.url, allowPrivate: server.private, allowFakeIp: server.fakeIp });
       const transport = new StreamableHttpTransport({
         url: server.url,
         headers,
-        fetch: policyFetch({ allowPrivate: server.private }),
+        fetch: network,
         openGetStream: false,
       });
       try {
@@ -398,10 +416,12 @@ export class McpManager {
         this.#refreshState(server);
         client.onClose(() => {
           if (live.client !== undefined) live.client = undefined;
+          void network.close().catch(() => {});
         });
         return client;
       } catch (error) {
         await client.close().catch(() => {});
+        await network.close();
         live.client = undefined;
         this.#fail(server, error, key);
         throw error;
@@ -486,6 +506,7 @@ export class McpManager {
       url: server.url,
       auth: server.auth,
       private: server.private,
+      fakeIp: server.fakeIp,
       enabled: server.enabled,
       keyConfigured: (await this.#key(server.id)) !== undefined,
       // The latest connection outcome, even for a disabled server the owner is testing; otherwise idle or disabled.
