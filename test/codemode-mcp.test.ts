@@ -3,12 +3,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import { createModels, fauxAssistantMessage, fauxProvider, fauxText, fauxToolCall } from "@earendil-works/pi-ai";
-import { CodemodeSandbox } from "@earendil-works/pi-codemode";
 import { createRegistry, defineExtension, Harness } from "@earendil-works/pi-durable";
-import { createCodemodeExtension } from "@earendil-works/pi-durable/codemode";
 import { SqliteStorage } from "@earendil-works/pi-durable/storage/sqlite";
 import { McpClient, StreamableHttpTransport } from "@earendil-works/pi-mcp";
 import { afterEach, describe, expect, it } from "vitest";
+import { createPalCodemode } from "../src/pi/codemode.ts";
 import { mcpTools } from "../src/pi/mcp-tools.ts";
 import { openDatabase } from "../src/storage/sqlite.ts";
 import { startMcpFixture } from "./fixtures/mcp-server.ts";
@@ -44,19 +43,15 @@ describe("Code Mode over MCP", () => {
     const listed = await client.listTools();
     expect(listed.map((tool) => tool.name)).toEqual(["search", "fetch", "delete_everything"]);
 
-    const sandbox = new CodemodeSandbox({ timeoutMs: 20_000, memoryLimitBytes: 64 * 1024 * 1024 });
+    const granted = mcpTools("fixture", client, listed, new Set(["search", "fetch"]));
+    const { extensions, sandbox } = createPalCodemode({
+      allows: (_conversation, name) => granted.some((tool) => tool.name === name),
+      namespaces: [{ name: "fixture", description: "Fixture web search", prefix: "mcp__fixture__" }],
+    });
     cleanups.push(() => sandbox.close());
     const registry = createRegistry();
-    registry.install(
-      defineExtension({ name: "mcp", tools: mcpTools("fixture", client, listed, new Set(["search", "fetch"])) }),
-    );
-    registry.install(
-      createCodemodeExtension({
-        sandbox,
-        models: false,
-        namespaces: [{ name: "fixture", description: "Fixture web search", prefix: "mcp__fixture__" }],
-      }),
-    );
+    registry.install(defineExtension({ name: "mcp", tools: granted }));
+    for (const extension of extensions) registry.install(extension);
 
     const faux = fauxProvider();
     const models = createModels();
