@@ -55,6 +55,21 @@ export const MIGRATIONS: readonly Migration[] = [
       ) STRICT`);
     },
   },
+  {
+    version: 3,
+    name: "credentials",
+    // `sealed` is the encrypted credential, NULL after sign-out; `retained` keeps non-secret identity for returning.
+    up: async (transaction) => {
+      await transaction.exec(`CREATE TABLE pal_credentials (
+        provider_id TEXT PRIMARY KEY,
+        type TEXT CHECK (type IN ('api_key', 'oauth')),
+        sealed BLOB,
+        retained TEXT,
+        updated_at INTEGER NOT NULL,
+        CHECK ((type IS NULL) = (sealed IS NULL))
+      ) STRICT`);
+    },
+  },
 ];
 
 /**
