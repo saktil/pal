@@ -28,6 +28,7 @@ stdenv.mkDerivation {
       (root + "/vite.config.ts")
       (root + "/vitest.config.ts")
       (root + "/vitest.feasibility.config.ts")
+      (root + "/vitest.e2e.config.ts")
       (root + "/eslint.config.js")
       (root + "/.prettierrc.json")
       (root + "/.prettierignore")

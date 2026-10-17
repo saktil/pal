@@ -1,21 +1,61 @@
 <script lang="ts">
-  // Placeholder shell until the approved design export is implemented.
-  type Health = { status: string; version: string };
+  import { onMount } from "svelte";
+  import OwnerGate from "./components/OwnerGate.svelte";
+  import Workspace from "./components/Workspace.svelte";
+  import { api, type Session, signedOut } from "./lib/api.ts";
 
-  async function loadHealth(): Promise<Health> {
-    const response = await fetch("/api/health", { cache: "no-store" });
-    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-    return (await response.json()) as Health;
+  let session: Session | undefined = $state();
+  let failure: string | undefined = $state();
+
+  async function load() {
+    try {
+      session = await api.session();
+      failure = undefined;
+    } catch (error) {
+      failure = error instanceof Error ? error.message : String(error);
+    }
+  }
+
+  onMount(() => {
+    void load();
+    const ended = () => {
+      if (session !== undefined) session = { ...session, signedIn: false };
+    };
+    signedOut.addEventListener("signed-out", ended);
+    return () => signedOut.removeEventListener("signed-out", ended);
+  });
+
+  async function signOut() {
+    await api.signOut().catch(() => {});
+    await load();
   }
 </script>
 
-<main>
-  <h1>Pal</h1>
-  {#await loadHealth()}
-    <p>Checking server…</p>
-  {:then health}
-    <p>Server {health.status} (version {health.version})</p>
-  {:catch error}
-    <p role="alert">Server unreachable: {error.message}</p>
-  {/await}
-</main>
+{#if session === undefined}
+  <div class="loading">
+    {#if failure === undefined}
+      <span class="ring spin" aria-hidden="true"></span><span>Connecting to Pal…</span>
+    {:else}
+      <div class="callout er" role="alert">Pal's server isn't reachable: {failure}</div>
+      <button class="b" onclick={load}>Try again</button>
+    {/if}
+  </div>
+{:else if !session.signedIn}
+  <OwnerGate {session} onSignedIn={load} />
+{:else}
+  <Workspace onSignOut={signOut} />
+{/if}
+
+<style>
+  .loading {
+    height: 100dvh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    gap: 10px;
+    flex-wrap: wrap;
+    padding: 16px;
+    color: var(--tx2);
+    background: var(--bg1);
+  }
+</style>
