@@ -5,13 +5,15 @@ import { constants } from "node:fs";
 import { link, lstat, mkdir, mkdtemp, open, realpath, rename, rm, stat, unlink, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { dirname, isAbsolute, join, relative, sep } from "node:path";
-import type { SqliteDatabase } from "@earendil-works/pi-durable/storage/sqlite";
+import type { SqliteDatabase, SqliteExecutor } from "@earendil-works/pi-durable/storage/sqlite";
 import { WorkspaceLocks } from "./execution.ts";
 import { FileAccessError, readFileSnapshot, resolveProjectPath } from "./files.ts";
 import { HttpError } from "./http.ts";
 import type { Projects } from "./projects.ts";
 
 const MAX_FILES = 128;
+const MAX_COMMENTS = 200;
+const LINE_TEXT = 1000;
 const MAX_BYTES = 256 * 1024;
 const SAFE_GIT = [
   "--no-pager",
@@ -66,10 +68,23 @@ export type Change = {
   reviewed: boolean;
   problem?: string;
 };
+/** A review comment on one line of a file revision; outdated once that line's text changes or the file stops differing. */
+export type ChangeComment = {
+  id: string;
+  path: string;
+  revision: string;
+  line: number;
+  lineText: string;
+  body: string;
+  /** Put into the chat composer by "Send feedback"; whether the owner then sent that message is not tracked. */
+  sent: boolean;
+  outdated: boolean;
+};
 export type ChangeSet = {
   state: "ready" | "unavailable";
   base: string | null;
   files: Change[];
+  comments: ChangeComment[];
   truncated: boolean;
   note: string;
 };
@@ -139,6 +154,7 @@ export class Changes {
           state: "unavailable",
           base: null,
           files: [],
+          comments: [],
           truncated: false,
           note: "Git is unavailable or this folder is not a repository root. No baseline or rollback is invented. Use the host terminal to initialize Git explicitly.",
         };
@@ -159,6 +175,12 @@ export class Changes {
         "SELECT path, revision FROM pal_change_reviews WHERE project_id = ?",
         projectId,
       );
+      const comments = await this.#database.all<CommentRow>(
+        "SELECT * FROM pal_change_comments WHERE project_id = ? ORDER BY created_at, id",
+        projectId,
+      );
+      const commented = new Set(comments.map((comment) => comment.path));
+      const lines = new Map<string, string[]>();
       const files: Change[] = [];
       let budget = 2 * 1024 * 1024;
       let truncated = names.length > MAX_FILES;
@@ -188,6 +210,7 @@ export class Changes {
           break;
         }
         const { status, patch, revision } = change;
+        if (commented.has(path) && change.after !== null) lines.set(path, change.after.toString("utf8").split("\n"));
         files.push({
           path,
           status,
@@ -196,7 +219,20 @@ export class Changes {
           reviewed: reviews.some((row) => row.path === path && row.revision === revision),
         });
       }
-      return { state: "ready", base: baseline.head, files, truncated, note };
+      return {
+        state: "ready",
+        base: baseline.head,
+        files,
+        comments: comments.map((row) => {
+          const line = lines.get(row.path)?.[row.line - 1];
+          return {
+            ...toComment(row),
+            outdated: line === undefined || createHash("sha256").update(line).digest("hex") !== row.line_hash,
+          };
+        }),
+        truncated,
+        note,
+      };
     } finally {
       this.#active--;
     }
@@ -297,17 +333,10 @@ export class Changes {
       if (!this.#allowed(root, path)) throw new FileAccessError(`${path} is outside the project folder or protected`);
       if (baseline === undefined) throw stale();
       const signal = AbortSignal.timeout(10_000);
-      const entry =
-        baseline.head === null
-          ? ""
-          : (await git(root, ["--literal-pathspecs", "ls-tree", "-z", baseline.head, "--", path], signal)).toString();
-      const tracked = /^(\d{6}) (\w+) [a-f0-9]+\t([^\0]*)\0$/.exec(entry);
-      if (
-        entry !== "" &&
-        (tracked?.[3] !== path || tracked[2] !== "blob" || !/^100(?:644|755)$/.test(tracked[1] ?? ""))
-      )
+      const entry = await this.#entry(root, baseline.head, path, signal);
+      if (entry !== undefined && (entry.type !== "blob" || !/^100(?:644|755)$/.test(entry.mode)))
         throw new HttpError(409, "changes_unsupported", "only regular baseline files can be restored here");
-      const change = await this.#inspect(root, baseline.head, path, tracked !== null, signal).catch(() => {
+      const change = await this.#inspect(root, baseline.head, path, entry !== undefined, signal).catch(() => {
         throw new HttpError(409, "changes_unsupported", "this file cannot be discarded here; use the terminal");
       });
       if (change?.revision !== revision) throw stale();
@@ -339,7 +368,7 @@ export class Changes {
           }
         const { target } = await resolveProjectPath(root, path, [this.#deny], true);
         const mode =
-          change.after === null ? (tracked?.[1] === "100755" ? 0o755 : 0o644) : (await stat(target)).mode & 0o777;
+          change.after === null ? (entry?.mode === "100755" ? 0o755 : 0o644) : (await stat(target)).mode & 0o777;
         const temporary = join(dirname(target), `.pal-${randomUUID()}.tmp`);
         const handle = await open(temporary, "wx", mode);
         try {
@@ -360,10 +389,132 @@ export class Changes {
           });
         }
       }
-      await this.#database.run("DELETE FROM pal_change_reviews WHERE project_id = ? AND path = ?", projectId, path);
+      for (const table of ["pal_change_reviews", "pal_change_comments"])
+        await this.#database.run(`DELETE FROM ${table} WHERE project_id = ? AND path = ?`, projectId, path);
     });
   }
+
+  /** Comment on a line of the file as currently shown; its text is read here, not taken from the browser. */
+  async comment(projectId: string, path: string, revision: string, line: number, body: string): Promise<ChangeComment> {
+    const project = await this.#projects.get(projectId);
+    if (project?.state !== "ready") throw new HttpError(404, "not_found", "no such ready project");
+    const root = await realpath(project.root);
+    if (!this.#allowed(root, path)) throw new FileAccessError(`${path} is outside the project folder or protected`);
+    const baseline = await this.#baseline(projectId, root);
+    const signal = AbortSignal.timeout(10_000);
+    const change =
+      baseline === undefined
+        ? undefined
+        : await this.#entry(root, baseline.head, path, signal)
+            .then((entry) => this.#inspect(root, baseline.head, path, entry !== undefined, signal))
+            .catch(() => undefined);
+    if (change?.revision !== revision)
+      throw new HttpError(409, "changes_stale", "the file changed; refresh and comment on its latest revision");
+    const lines = change.after?.toString("utf8").split("\n") ?? [];
+    const text = lines[line - 1];
+    if (text === undefined || (line === lines.length && text === ""))
+      throw new HttpError(400, "invalid_request", "that line is not in the current file");
+    if (body.trim() === "") throw new HttpError(400, "invalid_request", "write a comment first");
+    const row: CommentRow = {
+      id: randomUUID(),
+      project_id: projectId,
+      path,
+      revision,
+      line,
+      line_text: text.slice(0, LINE_TEXT),
+      line_hash: createHash("sha256").update(text).digest("hex"),
+      body: body.trim(),
+      created_at: Date.now(),
+      sent_at: null,
+    };
+    await this.#database.transaction(async (transaction) => {
+      await this.#ready(projectId, transaction);
+      const count = await transaction.get<{ count: number }>(
+        "SELECT count(*) AS count FROM pal_change_comments WHERE project_id = ?",
+        projectId,
+      );
+      if ((count?.count ?? 0) >= MAX_COMMENTS)
+        throw new HttpError(409, "comments_full", `at most ${MAX_COMMENTS} comments per project; delete some first`);
+      await transaction.run(
+        "INSERT INTO pal_change_comments (id, project_id, path, revision, line, line_text, line_hash, body, created_at, sent_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)",
+        row.id,
+        projectId,
+        path,
+        revision,
+        line,
+        row.line_text,
+        row.line_hash,
+        row.body,
+        row.created_at,
+      );
+    });
+    return { ...toComment(row), outdated: false };
+  }
+
+  async #ready(projectId: string, database: SqliteExecutor): Promise<void> {
+    if (
+      (await database.get(
+        "SELECT 1 FROM pal_projects WHERE id = ? AND state = 'ready' AND removed_at IS NULL",
+        projectId,
+      )) === undefined
+    )
+      throw new HttpError(404, "not_found", "no such ready project");
+  }
+
+  async uncomment(projectId: string, id: string): Promise<void> {
+    await this.#database.transaction(async (transaction) => {
+      await this.#ready(projectId, transaction);
+      await transaction.run("DELETE FROM pal_change_comments WHERE project_id = ? AND id = ?", projectId, id);
+    });
+  }
+
+  async markSent(projectId: string, ids: readonly string[]): Promise<void> {
+    const now = Date.now();
+    await this.#database.transaction(async (transaction) => {
+      await this.#ready(projectId, transaction);
+      for (const id of ids)
+        await transaction.run(
+          "UPDATE pal_change_comments SET sent_at = ? WHERE project_id = ? AND id = ? AND sent_at IS NULL",
+          now,
+          projectId,
+          id,
+        );
+    });
+  }
+
+  /** The baseline's tree entry for exactly this path, or undefined when the baseline lacks it. */
+  async #entry(root: string, head: string | null, path: string, signal: AbortSignal) {
+    if (head === null) return undefined;
+    const listed = (await git(root, ["--literal-pathspecs", "ls-tree", "-z", head, "--", path], signal)).toString();
+    if (listed === "") return undefined;
+    const match = /^(\d{6}) (\w+) [a-f0-9]+\t([^\0]*)\0$/.exec(listed);
+    if (match?.[3] !== path || match[1] === undefined || match[2] === undefined)
+      throw new HttpError(409, "changes_unsupported", "this path is not a single file in the baseline");
+    return { mode: match[1], type: match[2] };
+  }
 }
+
+type CommentRow = {
+  id: string;
+  project_id: string;
+  path: string;
+  revision: string;
+  line: number;
+  line_text: string;
+  line_hash: string;
+  body: string;
+  created_at: number;
+  sent_at: number | null;
+};
+const toComment = (row: CommentRow): Omit<ChangeComment, "outdated"> => ({
+  id: row.id,
+  path: row.path,
+  revision: row.revision,
+  line: row.line,
+  lineText: row.line_text,
+  body: row.body,
+  sent: row.sent_at !== null,
+});
 
 async function syncDirectory(path: string): Promise<void> {
   const directory = await open(path, constants.O_RDONLY | constants.O_DIRECTORY);

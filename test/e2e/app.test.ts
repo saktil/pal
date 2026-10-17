@@ -524,6 +524,154 @@ describe("Pal in a browser", () => {
     await panel.waitFor({ state: "detached" });
   });
 
+  it("comments on diff lines, keeps outdated comments visible and sends feedback only to the composer", async () => {
+    const project = (await pal.projects.list())[0];
+    if (project === undefined) throw new Error("missing project");
+    const modelRequests = fixture.apiRequests.length;
+    await writeFile(join(project.root, "base.txt"), "one\ntwo\nthree\n");
+    await page.getByRole("button", { name: "Changes", exact: true }).click();
+    const panel = page.getByRole("complementary", { name: "Workspace panel" });
+    await panel.getByRole("button", { name: /base\.txt/ }).click();
+    await panel.getByRole("button", { name: "Comment on line 2" }).click();
+    await panel.getByRole("textbox", { name: "Comment on line 2" }).fill("Rename two.");
+    await panel.getByRole("button", { name: "Add comment" }).click();
+    await panel.getByText("Rename two.").waitFor();
+    await panel.getByRole("button", { name: "Comment on line 3" }).click();
+    await panel.getByRole("textbox", { name: "Comment on line 3" }).fill("Unsubmitted draft");
+    await panel.getByRole("button", { name: /host\.txt/ }).click();
+    expect(await panel.getByRole("textbox", { name: /Comment on line/ }).count()).toBe(0);
+    await panel.getByRole("button", { name: /base\.txt/ }).click();
+    expect(await panel.getByRole("textbox", { name: /Comment on line/ }).count()).toBe(0);
+    // Comments live on the server, so they survive a reload.
+    await page.reload();
+    await page.getByRole("button", { name: "Changes", exact: true }).click();
+    await panel.getByRole("button", { name: /base\.txt/ }).click();
+    await panel.getByText("Rename two.").waitFor();
+    await writeFile(join(project.root, "base.txt"), "one\nTWO\nthree\n");
+    await panel.getByRole("button", { name: "Refresh", exact: true }).click();
+    await panel.getByText("1 outdated comment").waitFor();
+    await panel.getByRole("button", { name: "Comment on line 3" }).click();
+    await panel.getByRole("textbox", { name: "Comment on line 3" }).fill("Keep three.");
+    await panel.getByRole("button", { name: "Add comment" }).click();
+    await panel.getByText("Keep three.").waitFor();
+    for (const width of [1440, 768, 390]) {
+      await page.setViewportSize({ width, height: 900 });
+      expect(await page.evaluate("document.documentElement.scrollWidth <= innerWidth")).toBe(true);
+      for (const name of ["Project internet tools", "Changes", "Files", "Terminal"]) {
+        const box = await page.getByRole("button", { name, exact: true }).boundingBox();
+        expect(box).not.toBeNull();
+        expect(box?.x).toBeGreaterThanOrEqual(0);
+        expect((box?.x ?? 0) + (box?.width ?? 0)).toBeLessThanOrEqual(width);
+      }
+      await shoot(`comments-${width}`);
+    }
+    await page.setViewportSize({ width: 1440, height: 900 });
+    const receiptRoute = `**/api/projects/${project.id}/comments/sent`;
+    await page.route(receiptRoute, (route) =>
+      route.fulfill({
+        status: 503,
+        contentType: "application/json",
+        body: JSON.stringify({ error: "fixture_error", message: "Feedback receipt failed" }),
+      }),
+    );
+    try {
+      await panel.getByRole("button", { name: "Send feedback to chat (2)" }).click();
+      await panel.getByRole("alert").filter({ hasText: "Feedback receipt failed" }).waitFor();
+      expect(await panel.getByRole("status").filter({ hasText: "Feedback is in the composer" }).count()).toBe(0);
+      expect(await panel.getByText("Added to composer").count()).toBe(0);
+    } finally {
+      await page.unroute(receiptRoute);
+    }
+    await page.getByLabel("Message").fill("");
+    await panel.getByRole("button", { name: "Send feedback to chat (2)" }).click();
+    await expect
+      .poll(() => page.getByLabel("Message").inputValue())
+      .toMatch(
+        /^Review feedback:\n\nbase\.txt \(revision [0-9a-f]{12}\), line 2 \(outdated\): two\nRename two\.\n\nbase\.txt \(revision [0-9a-f]{12}\), line 3: three\nKeep three\.$/,
+      );
+    await expect.poll(() => panel.getByText("Added to composer").count()).toBe(2);
+    await expect
+      .poll(() => panel.getByRole("button", { name: "Send feedback to chat", exact: true }).isDisabled())
+      .toBe(true);
+    expect(fixture.apiRequests.length).toBe(modelRequests);
+    await panel.getByRole("button", { name: "Delete comment on line 3" }).click();
+    await expect.poll(() => panel.getByText("Keep three.").count()).toBe(0);
+    await page.getByLabel("Message").fill("");
+    await panel.getByRole("button", { name: "Discard…" }).click();
+    await page.getByRole("button", { name: "Discard changes" }).click();
+    await expect.poll(() => panel.getByText("Rename two.").count()).toBe(0);
+    await page.keyboard.press("Escape");
+    await panel.waitFor({ state: "detached" });
+  });
+
+  it("keeps review comments accessible outside diff hunks and after the last change disappears", async () => {
+    const project = await pal.projects.create("comment-visibility-project", { name: "Review fixture" });
+    try {
+      await exec("git", ["init", "-q"], { cwd: project.root });
+      const lines = Array.from({ length: 20 }, (_, i) => `line ${i + 1}`);
+      const original = lines.join("\n") + "\n";
+      await writeFile(join(project.root, "review.txt"), original);
+      await exec("git", ["add", "review.txt"], { cwd: project.root });
+      await exec(
+        "git",
+        [
+          "-c",
+          "user.name=Fixture",
+          "-c",
+          "user.email=fixture@example.test",
+          "-c",
+          "commit.gpgsign=false",
+          "commit",
+          "-qm",
+          "base",
+        ],
+        { cwd: project.root },
+      );
+      await pal.changes.list(project.id);
+      lines[0] = "changed first line";
+      await writeFile(join(project.root, "review.txt"), lines.join("\n") + "\n");
+      const revision = (await pal.changes.list(project.id)).files[0]?.revision ?? "";
+      await pal.changes.comment(project.id, "review.txt", revision, 2, "Keep this context line.\n" + "X".repeat(1000));
+      const chat = await pal.chats.createChat("comment-visibility-chat", { projectId: project.id }, context);
+      await page.goto(`${base}/#/chat/${chat.id}`);
+      await page.reload();
+      await page.getByRole("button", { name: "Changes", exact: true }).click();
+      const panel = page.getByRole("complementary", { name: "Workspace panel" });
+      await panel.getByText("Keep this context line.").waitFor();
+      lines[0] = "line 1";
+      lines[19] = "changed last line";
+      await writeFile(join(project.root, "review.txt"), lines.join("\n") + "\n");
+      await panel.getByRole("button", { name: "Refresh", exact: true }).click();
+      await panel.getByLabel("File diff").filter({ hasText: "+changed last line" }).waitFor();
+      await panel.getByText("Keep this context line.").waitFor();
+      expect(await panel.getByText("Outdated", { exact: true }).count()).toBe(0);
+      await writeFile(join(project.root, "review.txt"), original);
+      await panel.getByRole("button", { name: "Refresh", exact: true }).click();
+      await panel.getByRole("heading", { name: "No changes found" }).waitFor();
+      await panel.getByText("Keep this context line.").waitFor();
+      await page.setViewportSize({ width: 390, height: 900 });
+      await expect
+        .poll(() =>
+          panel
+            .getByRole("region", { name: "Other review comments" })
+            .evaluate((element) => element.scrollWidth <= element.clientWidth),
+        )
+        .toBe(true);
+      await panel.getByRole("button", { name: "Send feedback to chat (1)" }).click();
+      await panel.waitFor({ state: "detached" });
+      await expect.poll(() => page.getByLabel("Message").inputValue()).toContain("Keep this context line.");
+      await expect.poll(async () => (await pal.changes.list(project.id)).comments[0]?.sent).toBe(true);
+      await page.getByRole("button", { name: "Changes", exact: true }).click();
+      await panel.getByRole("button", { name: "Delete comment on line 2" }).click();
+      await expect.poll(() => panel.getByText("Keep this context line.").count()).toBe(0);
+    } finally {
+      await pal.projects.remove(project.id);
+      await page.setViewportSize({ width: 1440, height: 900 });
+      await page.goto(chatUrl);
+      await page.reload();
+    }
+  });
+
   it("reattaches a real human shell on a phone, transfers control and shares only selected output", async () => {
     const project = (await pal.projects.list())[0];
     if (project === undefined) throw new Error("missing project");

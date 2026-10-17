@@ -194,6 +194,27 @@ export const MIGRATIONS: readonly Migration[] = [
       ) STRICT`);
     },
   },
+  {
+    version: 12,
+    name: "change_comments",
+    up: async (transaction) => {
+      await transaction.exec(`CREATE TABLE pal_change_comments (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL,
+        path TEXT NOT NULL,
+        revision TEXT NOT NULL,
+        line INTEGER NOT NULL,
+        line_text TEXT NOT NULL,
+        line_hash TEXT NOT NULL,
+        body TEXT NOT NULL,
+        created_at INTEGER NOT NULL,
+        sent_at INTEGER
+      ) STRICT`);
+      await transaction.exec(
+        "CREATE INDEX pal_change_comments_project ON pal_change_comments (project_id, created_at)",
+      );
+    },
+  },
 ];
 
 /**

@@ -1,8 +1,10 @@
+import { execFile } from "node:child_process";
 import { mkdir, mkdtemp, readFile, realpath, rm, stat, symlink, writeFile } from "node:fs/promises";
 import { request as httpRequest } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { promisify } from "node:util";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import { watchEvents } from "@earendil-works/pi-durable";
 import { afterEach, describe, expect, it } from "vitest";
@@ -102,6 +104,47 @@ async function putBytes(base: string, cookie: string, id: string, bytes: Uint8Ar
 }
 
 describe("API", () => {
+  it("bounds review comments and scopes their updates to an authenticated ready project", async () => {
+    const { pal, api, base, cookie } = await signedIn();
+    const project = (await api("POST", "projects", { requestId: "review-comments-api", name: "Review" })).body.project;
+    await promisify(execFile)("git", ["init", "-q"], { cwd: project.root });
+    await writeFile(join(project.root, "review.txt"), "line\n");
+    const revision = (await api("GET", `projects/${project.id}/changes`)).body.files[0].revision;
+    const body = { path: "review.txt", revision, line: 1, body: "Keep this line." };
+    const created = await api("POST", `projects/${project.id}/comments`, body);
+    expect(created.status).toBe(200);
+    const id = created.body.comment.id;
+    for (const invalid of [
+      { ...body, line: 0 },
+      { ...body, body: " " },
+      { ...body, body: "x".repeat(4001) },
+    ])
+      expect((await api("POST", `projects/${project.id}/comments`, invalid)).status).toBe(400);
+    expect((await api("POST", `projects/${project.id}/comments`, { ...body, path: "../outside" })).status).toBe(403);
+    expect((await api("POST", `projects/${project.id}/comments`, { ...body, revision: "0".repeat(64) })).status).toBe(
+      409,
+    );
+    const other = (await api("POST", "projects", { requestId: "other-comments-api", name: "Other" })).body.project;
+    await api("POST", `projects/${other.id}/comments/sent`, { ids: [id] });
+    await api("DELETE", `projects/${other.id}/comments/${id}`);
+    expect((await api("GET", `projects/${project.id}/changes`)).body.comments).toHaveLength(1);
+    expect((await api("GET", `projects/${project.id}/changes`)).body.comments[0].sent).toBe(false);
+    const crossOrigin = await fetch(`${base}/api/projects/${project.id}/comments/sent`, {
+      method: "POST",
+      headers: { origin: "https://attacker.example", cookie: cookie(), "content-type": "application/json" },
+      body: JSON.stringify({ ids: [id] }),
+    });
+    expect(crossOrigin.status).toBe(403);
+    await api("DELETE", `projects/${project.id}`);
+    expect((await api("POST", `projects/${project.id}/comments/sent`, { ids: [id] })).status).toBe(404);
+    expect((await api("DELETE", `projects/${project.id}/comments/${id}`)).status).toBe(404);
+    expect(await pal.store.database.get("SELECT sent_at FROM pal_change_comments WHERE id = ?", id)).toEqual({
+      sent_at: null,
+    });
+    await api("POST", "sign-out");
+    expect((await api("POST", `projects/${other.id}/comments`, body)).status).toBe(401);
+  });
+
   it("persists per-project MCP narrowing and rejects stale or widening permission changes", async () => {
     const { api } = await signedIn();
     const a = (await api("POST", "projects", { requestId: "grant-project-a", name: "A" })).body.project;

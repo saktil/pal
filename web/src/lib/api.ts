@@ -1,7 +1,7 @@
 // Typed calls to Pal's API. Shapes mirror src/core/api.ts responses.
 
 export type Session = { owner: boolean; signedIn: boolean };
-export type { Change, ChangeSet } from "../../../src/core/changes.ts";
+export type { Change, ChangeComment, ChangeSet } from "../../../src/core/changes.ts";
 export type { TerminalInfo } from "../../../src/core/terminals.ts";
 export type { ProjectMcp, ProjectMcpServer } from "../../../src/core/mcp-grants.ts";
 
@@ -149,6 +149,15 @@ export const api = {
     ),
   discard: (id: string, path: string, revision: string) =>
     call<{ discarded: true }>("POST", `projects/${id}/discard`, { path, revision }),
+  comment: (id: string, path: string, revision: string, line: number, body: string) =>
+    call<{ comment: import("../../../src/core/changes.ts").ChangeComment }>("POST", `projects/${id}/comments`, {
+      path,
+      revision,
+      line,
+      body,
+    }),
+  uncomment: (id: string, comment: string) => call<{ deleted: true }>("DELETE", `projects/${id}/comments/${comment}`),
+  commentsSent: (id: string, ids: string[]) => call<{ sent: true }>("POST", `projects/${id}/comments/sent`, { ids }),
   review: (id: string, path: string, revision: string, reviewed: boolean) =>
     call<{ reviewed: boolean }>("PUT", `projects/${id}/review`, { path, revision, reviewed }),
   terminals: (id: string) =>

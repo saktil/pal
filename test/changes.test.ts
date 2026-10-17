@@ -170,6 +170,68 @@ describe("revision-bound Git changes", () => {
     expect((await changes.list(project.id)).files.find((file) => file.path === "file.txt")?.reviewed).toBe(false);
   });
 
+  it("keeps line comments on the revision shown and marks them outdated when that line changes", async () => {
+    const { root, project, changes } = await setup();
+    await writeFile(join(root, "file.txt"), "one\ntwo\nthree\n");
+    const shown = (await changes.list(project.id)).files[0];
+    if (shown === undefined) throw new Error("missing diff");
+    await expect(changes.comment(project.id, "file.txt", "0".repeat(64), 2, "Rename")).rejects.toMatchObject({
+      code: "changes_stale",
+    });
+    await expect(changes.comment(project.id, "file.txt", shown.revision, 4, "Past the end")).rejects.toMatchObject({
+      status: 400,
+    });
+    const comment = await changes.comment(project.id, "file.txt", shown.revision, 2, "  Rename two.  ");
+    expect(comment).toMatchObject({ line: 2, lineText: "two", body: "Rename two.", sent: false, outdated: false });
+    await changes.comment(project.id, "file.txt", shown.revision, 3, "Keep three.");
+
+    // Editing another line keeps the comment current; editing its own line makes it outdated, not moved or lost.
+    await writeFile(join(root, "file.txt"), "ONE\ntwo\nthree\n");
+    expect((await changes.list(project.id)).comments.map((c) => [c.line, c.outdated])).toEqual([
+      [2, false],
+      [3, false],
+    ]);
+    await writeFile(join(root, "file.txt"), "ONE\nTWO\nthree\n");
+    const listed = await changes.list(project.id);
+    expect(listed.comments.map((c) => [c.lineText, c.outdated])).toEqual([
+      ["two", true],
+      ["three", false],
+    ]);
+    await changes.markSent(project.id, [comment.id]);
+    expect((await changes.list(project.id)).comments.map((c) => c.sent)).toEqual([true, false]);
+    await changes.uncomment(project.id, comment.id);
+    expect((await changes.list(project.id)).comments.map((c) => c.body)).toEqual(["Keep three."]);
+
+    // A file that stops differing leaves its comments listed as outdated until deleted; discarding removes them.
+    await writeFile(join(root, "file.txt"), "before\n");
+    expect((await changes.list(project.id)).comments.map((c) => c.outdated)).toEqual([true]);
+    await writeFile(join(root, "file.txt"), "one\ntwo\nthree\n");
+    const again = (await changes.list(project.id)).files[0];
+    await changes.discard(project.id, "file.txt", again?.revision ?? "");
+    expect((await changes.list(project.id)).comments).toEqual([]);
+  });
+
+  it("detects edits beyond a comment's display excerpt", async () => {
+    const { root, project, changes } = await setup();
+    const prefix = "x".repeat(1200);
+    await writeFile(join(root, "file.txt"), `${prefix}before\n`);
+    const revision = (await changes.list(project.id)).files[0]?.revision ?? "";
+    await changes.comment(project.id, "file.txt", revision, 1, "Check the end of this line.");
+    expect((await changes.list(project.id)).comments[0]).toMatchObject({ outdated: false });
+    await writeFile(join(root, "file.txt"), `${prefix}after\n`);
+    expect((await changes.list(project.id)).comments[0]).toMatchObject({ outdated: true });
+  });
+
+  it("bounds comments per project", async () => {
+    const { root, project, changes } = await setup();
+    await writeFile(join(root, "file.txt"), "line\n");
+    const revision = (await changes.list(project.id)).files[0]?.revision ?? "";
+    for (let i = 0; i < 200; i++) await changes.comment(project.id, "file.txt", revision, 1, `note ${i}`);
+    await expect(changes.comment(project.id, "file.txt", revision, 1, "one more")).rejects.toMatchObject({
+      code: "comments_full",
+    });
+  });
+
   it("never invokes repository clean filters, textconv, external diffs or hooks", async () => {
     const { root, project, changes } = await setup();
     const marker = join(root, "executed");

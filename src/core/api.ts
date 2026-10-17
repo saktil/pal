@@ -71,6 +71,19 @@ const FileDiscard = Type.Object(
   { path: Type.String({ maxLength: 4096 }), revision: Type.String({ pattern: "^[a-f0-9]{64}$" }) },
   { additionalProperties: false },
 );
+const FileComment = Type.Object(
+  {
+    path: Type.String({ maxLength: 4096 }),
+    revision: Type.String({ pattern: "^[a-f0-9]{64}$" }),
+    line: Type.Integer({ minimum: 1, maximum: 10_000_000 }),
+    body: Type.String({ minLength: 1, maxLength: 4000 }),
+  },
+  { additionalProperties: false },
+);
+const CommentsSent = Type.Object(
+  { ids: Type.Array(Type.String({ maxLength: 64 }), { maxItems: 200 }) },
+  { additionalProperties: false },
+);
 const FileReview = Type.Object(
   {
     path: Type.String({ maxLength: 4096 }),
@@ -355,6 +368,20 @@ export function createApi(pal: Pal, publicOrigin?: string) {
       const body = validate(FileDiscard, await readJson(request));
       await pal.changes.discard(id, body.path, body.revision);
       return send(200, { discarded: true });
+    }
+    if (resource === "projects" && id !== undefined && action === "comments") {
+      if (path.length === 3 && method === "POST") {
+        const body = validate(FileComment, await readJson(request));
+        return send(200, { comment: await pal.changes.comment(id, body.path, body.revision, body.line, body.body) });
+      }
+      if (path.length === 4 && path[3] === "sent" && method === "POST") {
+        await pal.changes.markSent(id, validate(CommentsSent, await readJson(request)).ids);
+        return send(200, { sent: true });
+      }
+      if (path.length === 4 && path[3] !== undefined && method === "DELETE") {
+        await pal.changes.uncomment(id, path[3]);
+        return send(200, { deleted: true });
+      }
     }
     if (resource === "projects" && id !== undefined && action === "search" && path.length === 3 && method === "GET") {
       const project = await pal.projects.get(id);

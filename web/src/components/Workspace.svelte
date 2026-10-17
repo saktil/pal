@@ -191,7 +191,14 @@
                     {#await changesPanel()}
                       <p role="status">Loading changes…</p>
                     {:then { default: ChangesPanel }}
-                      <ChangesPanel project={located.project} initialPath={diffPath} />
+                      <ChangesPanel
+                        project={located.project}
+                        initialPath={diffPath}
+                        onFeedback={(text) => {
+                          chatView?.insertText(text);
+                          if (size !== "desktop") panelRoute = undefined;
+                        }}
+                      />
                     {:catch failure}<p role="alert">Couldn't load changes: {String(failure)}</p>{/await}
                   {/if}
                 {/key}
@@ -297,6 +304,7 @@
   }
   .workspace-tools {
     display: flex;
+    flex-wrap: wrap;
     align-items: center;
     justify-content: flex-end;
     padding: 4px 8px;
