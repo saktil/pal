@@ -193,6 +193,34 @@ describe("API", () => {
     expect(projects[0].chats).toEqual([expect.objectContaining({ id: chat.id, title: "hi" })]);
   });
 
+  it("persists per-chat reasoning effort, clamps model switches, and rejects invalid choices", async () => {
+    const { api, pal, dataRoot, fixture } = await signedIn();
+    const project = (await api("POST", "projects", { requestId: "effort-project", name: "Notes" })).body.project;
+    const chat = (await api("POST", "chats", { requestId: "effort-chat", projectId: project.id })).body.chat;
+    expect((await api("PUT", `chats/${chat.id}/model`, { model: "gpt-5.5", effort: "high" })).body).toMatchObject({
+      model: "gpt-5.5",
+      effort: "high",
+    });
+    expect((await api("GET", `chats/${chat.id}`)).body.effort).toBe("high");
+    expect((await api("PUT", `chats/${chat.id}/model`, { model: "gpt-4.1" })).body.effort).toBe("off");
+    expect((await api("PUT", `chats/${chat.id}/model`, { model: "gpt-4.1", effort: "high" })).body.effort).toBe("off");
+    for (const body of [
+      { model: "missing", effort: "high" },
+      { model: "gpt-5.5", effort: "unbounded" },
+    ]) {
+      expect((await api("PUT", `chats/${chat.id}/model`, body)).status).toBe(400);
+    }
+    await api("PUT", `chats/${chat.id}/model`, { model: "gpt-5.5", effort: "medium" });
+    await pal.close();
+    const reopened = await openPal(
+      { dataRoot, installRoot: "/nonexistent-install", endpoints: fixture.endpoints },
+      context,
+    );
+    cleanups.push(() => reopened.close());
+    const agent = await (await reopened.harness.conversation(chat.conversationId, context))?.agent(context);
+    expect(agent).toMatchObject({ model: { modelId: "gpt-5.5" }, thinkingLevel: "medium" });
+  });
+
   it("receives device uploads exactly, then attaches them to a message", async () => {
     const { base, api, cookie, fixture, pal } = await signedIn();
     const started = await api("POST", "chatgpt/sign-in");

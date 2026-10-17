@@ -1,6 +1,6 @@
 import type { IncomingMessage, ServerResponse } from "node:http";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
-import type { ProviderAuthInteraction } from "@earendil-works/pi-ai";
+import { clampThinkingLevel, type ProviderAuthInteraction } from "@earendil-works/pi-ai";
 import { type AgentEvent, watchEvents } from "@earendil-works/pi-durable";
 import { Type } from "typebox";
 import {
@@ -30,6 +30,10 @@ const Setup = Type.Object(
 const Paste = Type.Object({ url: Type.String({ maxLength: 8192 }) }, { additionalProperties: false });
 const ModelChoice = Type.Object(
   { model: Type.String({ minLength: 1, maxLength: 200 }) },
+  { additionalProperties: false },
+);
+const ChatModelChoice = Type.Object(
+  { ...ModelChoice.properties, effort: Type.Optional(Type.Enum(["off", "low", "medium", "high"])) },
   { additionalProperties: false },
 );
 const Keyed = Type.Object({ requestId: Type.Unknown() }, { additionalProperties: true });
@@ -306,7 +310,13 @@ export function createApi(pal: Pal) {
       if (conversation === undefined) throw new HttpError(404, "not_found", "the chat's conversation is missing");
       if (action === undefined && method === "GET") {
         const agent = await conversation.agent(context);
-        return send(200, { chat, model: agent.model?.modelId ?? null });
+        const model =
+          agent.model === undefined ? undefined : pal.models.getModel(CHATGPT_PROVIDER, agent.model.modelId);
+        return send(200, {
+          chat,
+          model: agent.model?.modelId ?? null,
+          effort: model === undefined ? "off" : clampThinkingLevel(model, agent.thinkingLevel),
+        });
       }
       if (action === "inputs" && method === "POST") {
         const { requestId, ...body } = validate(Keyed, await readJson(request));
@@ -317,9 +327,16 @@ export function createApi(pal: Pal) {
         return send(200, { stopped: true });
       }
       if (action === "model" && method === "PUT") {
-        const { model } = validate(ModelChoice, await readJson(request));
-        await conversation.configure({ model: { provider: CHATGPT_PROVIDER, modelId: model } }, context);
-        return send(200, { chat, model });
+        const { model, effort: requested } = validate(ChatModelChoice, await readJson(request));
+        const known = pal.models.getModel(CHATGPT_PROVIDER, model);
+        if (known === undefined)
+          throw new HttpError(400, "unknown_model", "Pal does not know this model’s capabilities");
+        const effort = clampThinkingLevel(known, requested ?? (await conversation.agent(context)).thinkingLevel);
+        await conversation.configure(
+          { model: { provider: CHATGPT_PROVIDER, modelId: model }, thinkingLevel: effort },
+          context,
+        );
+        return send(200, { chat, model, effort });
       }
       if (action === "events" && method === "GET") return await observe(request, response, chat.conversationId);
     }

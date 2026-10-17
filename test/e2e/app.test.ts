@@ -105,6 +105,26 @@ describe("Pal in a browser", () => {
     await shoot("chat-1440");
   });
 
+  it("keeps reasoning effort for this chat across reload and sends it to the model", async () => {
+    await page.getByRole("button", { name: "Choose model" }).click();
+    const high = page
+      .getByRole("radiogroup", { name: "Reasoning effort" })
+      .getByRole("radio", { name: "High", exact: true });
+    await high.click();
+    await expect.poll(() => high.getAttribute("aria-checked")).toBe("true");
+    await page.reload();
+    await page.getByRole("button", { name: "Choose model" }).click();
+    await expect.poll(() => high.getAttribute("aria-checked")).toBe("true");
+    await shoot("reasoning-1440");
+    await page.getByRole("button", { name: "Choose model" }).click();
+    await page.getByLabel("Message").fill("reason carefully");
+    await page.getByRole("button", { name: "Send" }).click();
+    await expect.poll(() => page.getByText("Hello", { exact: true }).count()).toBe(2);
+    expect(fixture.apiRequests.filter((call) => call.path === "/v1/responses").at(-1)?.body.reasoning).toMatchObject({
+      effort: "high",
+    });
+  });
+
   it("explains the usage limit instead of retrying", async () => {
     fixture.behavior.responses = "usage_limit";
     await page.getByLabel("Message").fill("again");

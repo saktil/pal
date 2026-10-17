@@ -2,7 +2,8 @@
 
 export type Session = { owner: boolean; signedIn: boolean };
 
-export type ChatGPTModel = { slug: string; displayName: string; supported: boolean };
+export type Effort = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+export type ChatGPTModel = { slug: string; displayName: string; supported: boolean; efforts: Effort[] };
 export type SignInState = "waiting" | "verifying" | "connected" | "failed" | "cancelled";
 export type ChatGPTState = {
   account: { accountId: string; email?: string } | null;
@@ -117,7 +118,7 @@ export const api = {
 
   createChat: (key: string, projectId: string) =>
     call<{ chat: ChatSummary }>("POST", "chats", { requestId: key, projectId }),
-  chat: (id: string) => call<{ chat: ChatSummary; model: string | null }>("GET", `chats/${id}`),
+  chat: (id: string) => call<{ chat: ChatSummary; model: string | null; effort: Effort }>("GET", `chats/${id}`),
   send: (id: string, key: string, text: string, whenBusy: "followUp" | "steer", attachments: string[]) =>
     call<{ admission: { submissionId: number } }>("POST", `chats/${id}/inputs`, {
       requestId: key,
@@ -144,7 +145,8 @@ export const api = {
     return data.upload;
   },
   stop: (id: string) => call<{ stopped: true }>("POST", `chats/${id}/stop`),
-  setChatModel: (id: string, model: string) => call<{ model: string }>("PUT", `chats/${id}/model`, { model }),
+  setChatModel: (id: string, model: string, effort?: Effort) =>
+    call<{ model: string; effort: Effort }>("PUT", `chats/${id}/model`, { model, effort }),
 
   mcp: () => call<McpListing>("GET", "mcp"),
   mcpReview: (enable: boolean) => call<McpListing>("POST", "mcp/review", { enable }),

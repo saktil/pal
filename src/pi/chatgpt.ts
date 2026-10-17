@@ -1,7 +1,15 @@
 import { createHash, randomBytes } from "node:crypto";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
-import type { Models, OAuthAuth, OAuthCredential, Provider, ProviderAuthInteraction } from "@earendil-works/pi-ai";
+import {
+  getSupportedThinkingLevels,
+  type Models,
+  type ModelThinkingLevel,
+  type OAuthAuth,
+  type OAuthCredential,
+  type Provider,
+  type ProviderAuthInteraction,
+} from "@earendil-works/pi-ai";
 import { openaiProvider } from "@earendil-works/pi-ai/providers/openai";
 import { createRemoteJWKSet, jwtVerify } from "jose";
 import type { SqliteCredentialStore } from "../storage/credentials.ts";
@@ -230,7 +238,12 @@ export function chatGPTProvider(endpoints: ChatGPTEndpoints): Provider {
   return { ...openaiProvider(), auth: { oauth: chatGPTAuth(endpoints) } };
 }
 
-export type ChatGPTModel = { readonly slug: string; readonly displayName: string; readonly supported: boolean };
+export type ChatGPTModel = {
+  readonly slug: string;
+  readonly displayName: string;
+  readonly supported: boolean;
+  readonly efforts: readonly ModelThinkingLevel[];
+};
 
 /**
  * The signed-in account's models in the server's order. Only listed entries are kept; one Pi has no capability
@@ -248,18 +261,18 @@ export async function listChatGPTModels(models: Models, signal?: AbortSignal): P
   });
   if (!response.ok) throw new Error(`ChatGPT model listing failed: HTTP ${response.status}`);
   const body = (await response.json()) as { models?: unknown };
-  const known = new Set(models.getModels(CHATGPT_PROVIDER).map((model) => model.id));
-  return (Array.isArray(body.models) ? (body.models as Record<string, unknown>[]) : []).flatMap((entry) =>
-    entry.visibility === "list" && typeof entry.slug === "string"
-      ? [
-          {
-            slug: entry.slug,
-            displayName: typeof entry.display_name === "string" ? entry.display_name : entry.slug,
-            supported: known.has(entry.slug),
-          },
-        ]
-      : [],
-  );
+  return (Array.isArray(body.models) ? (body.models as Record<string, unknown>[]) : []).flatMap((entry) => {
+    if (entry.visibility !== "list" || typeof entry.slug !== "string") return [];
+    const model = models.getModel(CHATGPT_PROVIDER, entry.slug);
+    return [
+      {
+        slug: entry.slug,
+        displayName: typeof entry.display_name === "string" ? entry.display_name : entry.slug,
+        supported: model !== undefined,
+        efforts: model === undefined ? [] : getSupportedThinkingLevels(model),
+      },
+    ];
+  });
 }
 
 export type ChatGPTUsageState = "usage_limited" | "not_eligible" | "unavailable" | "reauthorize" | "unsupported";

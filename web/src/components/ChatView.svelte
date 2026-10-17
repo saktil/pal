@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { api, ApiError, type ChatSummary, type Project, requestId, type Upload } from "../lib/api.ts";
+  import { api, ApiError, type ChatSummary, type Effort, type Project, requestId, type Upload } from "../lib/api.ts";
   import {
     type Attachment,
     type Block,
@@ -39,6 +39,9 @@
 
   let stream: ChatStream | undefined = $state();
   let model: string | null = $state(null);
+  let effort: Effort = $state("off");
+  let choosing = $state(false);
+  const efforts = ["off", "low", "medium", "high"] as const;
   let draft = $state("");
   let pending: { key: string; text: string; files: string } | undefined;
   let attachments: Upload[] = $state([]);
@@ -56,7 +59,10 @@
   $effect(() => {
     const current = new ChatStream(chat.id);
     stream = current;
-    void api.chat(chat.id).then((loaded) => (model = loaded.model));
+    void api.chat(chat.id).then((loaded) => {
+      model = loaded.model;
+      effort = loaded.effort;
+    });
     return () => current.close();
   });
 
@@ -67,7 +73,10 @@
   const modelName = $derived(
     choices.find((choice) => choice.slug === effectiveModel)?.displayName ?? effectiveModel ?? "Choose model",
   );
-  const canSend = $derived(!sending && uploading === 0 && draft.trim() !== "" && connected && effectiveModel !== null);
+  const supportedEfforts = $derived(choices.find((choice) => choice.slug === effectiveModel)?.efforts ?? []);
+  const canSend = $derived(
+    !sending && !choosing && uploading === 0 && draft.trim() !== "" && connected && effectiveModel !== null,
+  );
 
   function build(entries: Entry[], partial: Message | undefined): Item[] {
     // A result belongs to the call of that ID in the latest assistant message before it; IDs may repeat across turns.
@@ -161,12 +170,18 @@
     }
   }
 
-  async function chooseModel(slug: string) {
-    picker = false;
+  async function chooseModel(slug: string, level?: Effort) {
+    if (choosing) return;
+    if (level === undefined) picker = false;
+    choosing = true;
     try {
-      model = (await api.setChatModel(chat.id, slug)).model;
+      const chosen = await api.setChatModel(chat.id, slug, level);
+      model = chosen.model;
+      effort = chosen.effort;
     } catch (failure) {
       error = failure instanceof ApiError ? failure.message : String(failure);
+    } finally {
+      choosing = false;
     }
   }
 
@@ -335,12 +350,29 @@
               <button
                 class="opt"
                 role="radio"
-                aria-checked={choice.slug === model}
+                aria-checked={choice.slug === effectiveModel}
+                disabled={choosing}
                 onclick={() => chooseModel(choice.slug)}
               >
                 <span>{choice.displayName}</span><span class="mono optd">{choice.slug}</span>
               </button>
             {/each}
+          </div>
+          <div class="reasoning">
+            <span>Reasoning effort</span>
+            <div class="seg" role="radiogroup" aria-label="Reasoning effort">
+              {#each efforts as level (level)}
+                <button
+                  class="segb"
+                  role="radio"
+                  aria-checked={effort === level}
+                  disabled={choosing || effectiveModel === null || !supportedEfforts.includes(level)}
+                  onclick={() => effectiveModel !== null && chooseModel(effectiveModel, level)}
+                  >{level[0]?.toUpperCase()}{level.slice(1)}</button
+                >
+              {/each}
+            </div>
+            <p class="optd">Current: {effort}. Applies to this chat; unavailable levels are disabled.</p>
           </div>
         </div>
       {/if}
@@ -444,6 +476,14 @@
 </section>
 
 <style>
+  .reasoning {
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    gap: 6px;
+    padding: 8px 10px 2px;
+    border-top: 1px solid var(--line);
+  }
   section {
     flex: 1 1 0;
     min-width: 0;

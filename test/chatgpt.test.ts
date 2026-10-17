@@ -352,9 +352,14 @@ describe("Sign in with ChatGPT", () => {
       await signIn(connection)
     ).result;
     expect(await listChatGPTModels(models)).toEqual([
-      { slug: "gpt-5.5", displayName: "GPT-5.5", supported: true },
-      { slug: "gpt-unknown-next", displayName: "Next", supported: false },
-      { slug: "gpt-5.4-mini", displayName: "GPT-5.4 mini", supported: true },
+      { slug: "gpt-5.5", displayName: "GPT-5.5", supported: true, efforts: ["off", "low", "medium", "high", "xhigh"] },
+      { slug: "gpt-unknown-next", displayName: "Next", supported: false, efforts: [] },
+      {
+        slug: "gpt-5.4-mini",
+        displayName: "GPT-5.4 mini",
+        supported: true,
+        efforts: ["off", "low", "medium", "high", "xhigh"],
+      },
     ]);
   });
 });
