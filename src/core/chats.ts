@@ -1,5 +1,6 @@
 import { randomUUID } from "node:crypto";
 import type { Context } from "@earendil-works/chord";
+import type { ImageContent, TextContent } from "@earendil-works/pi-ai";
 import {
   type AgentChange,
   type ConversationId,
@@ -24,6 +25,8 @@ export const InputBody = Type.Object(
   {
     text: Type.String({ minLength: 1, maxLength: MAX_INPUT_CHARS }),
     whenBusy: Type.Optional(Type.Union([Type.Literal("followUp"), Type.Literal("steer")])),
+    /** Upload IDs from this chat's project, in the order shown. */
+    attachments: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 64 }), { maxItems: 10 })),
   },
   { additionalProperties: false },
 );
@@ -66,6 +69,14 @@ export type ChatServiceOptions = {
   readonly harness: Harness;
   /** Agent settings for a new conversation in a project; undefined while the project is missing or not ready. */
   readonly agentFor: (projectId: string) => Promise<AgentChange | undefined>;
+  /** Device uploads a message may attach: checked before admission, turned into model content at submission. */
+  readonly attachments?: {
+    check(
+      projectId: string,
+      ids: readonly string[],
+    ): Promise<readonly { id: string; name: string; size: number; mediaType: string }[]>;
+    content(projectId: string, ids: readonly string[]): Promise<(TextContent | ImageContent)[]>;
+  };
   readonly barrier?: (point: Barrier) => void | Promise<void>;
 };
 
@@ -116,6 +127,14 @@ export class ChatService {
       conversationId: row.conversation_id,
       createdAt: row.created_at,
     }));
+  }
+
+  /** The project a conversation's chat belongs to. */
+  async projectOf(conversationId: ConversationId): Promise<string | undefined> {
+    const row = await this.#guard((db) =>
+      db.get<{ project_id: string }>("SELECT project_id FROM pal_chats WHERE conversation_id = ?", conversationId),
+    );
+    return row?.project_id;
   }
 
   async get(chatId: string): Promise<ChatSummary | undefined> {
@@ -177,7 +196,18 @@ export class ChatService {
     const { key, intent, digest } = normalize(requestId, InputBody, body, (value) => ({
       text: value.text,
       whenBusy: value.whenBusy ?? "followUp",
+      attachments: value.attachments ?? [],
     }));
+    const attached = (body as InputBody).attachments ?? [];
+    if (attached.length > 0) {
+      const projectId = await this.#guard((db) =>
+        db.get<{ project_id: string }>("SELECT project_id FROM pal_chats WHERE id = ?", chatId),
+      );
+      if (projectId === undefined || this.#options.attachments === undefined) {
+        throw new ChatNotFound(`chat ${chatId} cannot take attachments`);
+      }
+      await this.#options.attachments.check(projectId.project_id, attached);
+    }
     const row = await this.#guard((db) =>
       db.transaction(async (tx) => {
         const chat = await tx.get<{ state: string }>("SELECT state FROM pal_chats WHERE id = ?", chatId);
@@ -242,15 +272,38 @@ export class ChatService {
   /** Submit under the same request ID, which Pi deduplicates per conversation, then record the acknowledgement. */
   async #admit(chatId: string, requestId: string, intent: Required<InputBody>, context: Context): Promise<Admission> {
     const submissionId = await this.#guard(async (db) => {
-      const row = await db.get<{ conversation_id: ConversationId }>(
-        "SELECT conversation_id FROM pal_chats WHERE id = ?",
+      const row = await db.get<{ conversation_id: ConversationId; project_id: string }>(
+        "SELECT conversation_id, project_id FROM pal_chats WHERE id = ?",
         chatId,
       );
       const conversation =
         row === undefined ? undefined : await this.#options.harness.conversation(row.conversation_id, context);
-      if (conversation === undefined) throw new Error(`chat ${chatId} has no conversation`);
+      if (row === undefined || conversation === undefined) throw new Error(`chat ${chatId} has no conversation`);
+      const attached = intent.attachments ?? [];
+      const uploads = this.#options.attachments;
+      const withFiles =
+        attached.length === 0 || uploads === undefined
+          ? {}
+          : {
+              content: [
+                { type: "text" as const, text: intent.text },
+                ...(await uploads.content(row.project_id, attached)),
+              ],
+              // The transcript entry carries the labels the UI shows; the model sees the content above.
+              entry: {
+                kind: "pal.user",
+                data: {
+                  attachments: (await uploads.check(row.project_id, attached)).map(({ id, name, size, mediaType }) => ({
+                    id,
+                    name,
+                    size,
+                    mediaType,
+                  })),
+                },
+              },
+            };
       const submission = await conversation.submit(
-        { type: "input", requestId, content: intent.text, whenBusy: intent.whenBusy },
+        { type: "input", requestId, content: intent.text, whenBusy: intent.whenBusy, ...withFiles },
         context,
       );
       return submission.id;

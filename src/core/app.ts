@@ -14,8 +14,10 @@ import { McpManager } from "../pi/mcp.ts";
 import { loadMasterKey, SqliteCredentialStore } from "../storage/credentials.ts";
 import { openStore, type Store } from "../storage/store.ts";
 import { ChatService } from "./chats.ts";
+import { FILES_NAMESPACE, fileTools } from "./files.ts";
 import { Owner } from "./owner.ts";
 import { type Project, Projects } from "./projects.ts";
+import { Uploads } from "./uploads.ts";
 
 export type PalOptions = {
   readonly dataRoot: string;
@@ -35,6 +37,7 @@ export type Pal = {
   readonly harness: Harness;
   readonly settings: Settings;
   readonly mcp: McpManager;
+  readonly uploads: Uploads;
   close(): Promise<void>;
 };
 
@@ -53,11 +56,13 @@ export async function openPal(options: PalOptions, context: Context): Promise<Pa
   let sandbox: { close(): Promise<void> } | undefined;
   let mcp: McpManager | undefined;
   // The Harness, once open, owns the storage and closes it; scripts stop before their sandbox and connections do.
-  const close = async () => {
-    await (harness === undefined ? store.close() : harness.close(context));
-    await sandbox?.close();
-    await mcp?.close();
-  };
+  let closing: Promise<void> | undefined;
+  const close = () =>
+    (closing ??= (async () => {
+      await (harness === undefined ? store.close() : harness.close(context));
+      await sandbox?.close();
+      await mcp?.close();
+    })());
   try {
     const { database } = store;
     const credentials = new SqliteCredentialStore(
@@ -69,16 +74,32 @@ export async function openPal(options: PalOptions, context: Context): Promise<Pa
     const models = createModels({ credentials, authContext: NO_AMBIENT_AUTH });
     models.setProvider(chatGPTProvider(endpoints));
 
-    // Code Mode is always on; scripts may call only tools the MCP manager grants at the moment of each call.
-    const codemode = createPalCodemode({ allows: (_conversation, name) => mcp?.allows(name) === true });
+    // Code Mode is always on. Scripts may read their project's folder, and call MCP tools only as the MCP manager
+    // grants them at the moment of each call.
+    const codemode = createPalCodemode({
+      allows: (_conversation, name) => name.startsWith(FILES_NAMESPACE.prefix) || mcp?.allows(name) === true,
+      namespaces: [FILES_NAMESPACE],
+    });
     sandbox = codemode.sandbox;
     const registry = createRegistry();
     for (const extension of codemode.extensions) registry.install(extension);
+    // File tools resolve a conversation's folder through services opened below.
+    const services: { chats?: ChatService; projects?: Projects } = {};
+    registry.install(
+      fileTools({
+        root: async (conversationId) => {
+          const projectId = await services.chats?.projectOf(conversationId);
+          const project = projectId === undefined ? undefined : await services.projects?.get(projectId);
+          return project?.state === "ready" ? project.root : undefined;
+        },
+        deny: [options.dataRoot],
+      }),
+    );
     const connections = await McpManager.open({
       database: store.database,
       credentials,
       registry,
-      codemode: codemode.withNamespaces,
+      codemode: (namespaces) => codemode.withNamespaces([FILES_NAMESPACE, ...namespaces]),
     });
     mcp = connections;
     const running = await Harness.open(store.storage, { models, registry }, context);
@@ -94,13 +115,20 @@ export async function openPal(options: PalOptions, context: Context): Promise<Pa
         );
       },
     };
-    const projects = await Projects.open({ database, dataRoot: options.dataRoot, installRoot: options.installRoot });
-    const chats = await ChatService.open(
+    const openedProjects = await Projects.open({
+      database,
+      dataRoot: options.dataRoot,
+      installRoot: options.installRoot,
+    });
+    services.projects = openedProjects;
+    const uploads = await Uploads.open(database, options.dataRoot);
+    const openedChats = await ChatService.open(
       {
         database,
         harness: running,
+        attachments: uploads,
         agentFor: async (projectId) => {
-          const project = await projects.get(projectId);
+          const project = await openedProjects.get(projectId);
           if (project?.state !== "ready") return undefined;
           const model = await settings.model();
           return agentFor(project, model);
@@ -108,12 +136,13 @@ export async function openPal(options: PalOptions, context: Context): Promise<Pa
       },
       context,
     );
+    services.chats = openedChats;
     running.resume();
     return {
       store,
       owner: new Owner(database),
-      projects,
-      chats,
+      projects: openedProjects,
+      chats: openedChats,
       chatgpt: new ChatGPTConnection(credentials, {
         endpoints,
         installationId: store.installationId,
@@ -123,6 +152,7 @@ export async function openPal(options: PalOptions, context: Context): Promise<Pa
       harness: running,
       settings,
       mcp: connections,
+      uploads,
       close,
     };
   } catch (error) {

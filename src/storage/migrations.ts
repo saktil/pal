@@ -129,6 +129,24 @@ export const MIGRATIONS: readonly Migration[] = [
       ) STRICT`);
     },
   },
+  {
+    version: 7,
+    name: "uploads",
+    // Bytes live at dataRoot/uploads/<project>/<id>/data once ready; `name` is display metadata from the device.
+    up: async (transaction) => {
+      await transaction.exec(`CREATE TABLE pal_uploads (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL,
+        name TEXT NOT NULL,
+        media_type TEXT NOT NULL,
+        size INTEGER NOT NULL,
+        sha256 TEXT,
+        state TEXT NOT NULL CHECK (state IN ('receiving', 'ready')),
+        created_at INTEGER NOT NULL,
+        CHECK ((state = 'ready') = (sha256 IS NOT NULL))
+      ) STRICT`);
+    },
+  },
 ];
 
 /**

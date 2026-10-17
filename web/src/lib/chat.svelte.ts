@@ -29,7 +29,10 @@ export type NestedCall = {
   error?: string;
 };
 
-export type Entry = { id: number; kind: string; model?: Message[] };
+export type Attachment = { id: string; name: string; size: number; mediaType: string };
+
+/** `pal.user` entries are user inputs with attachments; their `data` holds the labels. */
+export type Entry = { id: number; kind: string; model?: Message[]; data?: { attachments?: Attachment[] } };
 
 type Change =
   | { type: "text_start" | "thinking_start" | "toolcall_start" | "block"; contentIndex: number; block: Block }

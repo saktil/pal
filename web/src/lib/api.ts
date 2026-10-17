@@ -12,6 +12,7 @@ export type ChatGPTState = {
   model: string | null;
 };
 
+export type Upload = { id: string; name: string; size: number; mediaType: string; state: "receiving" | "ready" };
 export type ChatSummary = { id: string; projectId: string; title: string | null; createdAt: number };
 export type Project = {
   id: string;
@@ -117,8 +118,31 @@ export const api = {
   createChat: (key: string, projectId: string) =>
     call<{ chat: ChatSummary }>("POST", "chats", { requestId: key, projectId }),
   chat: (id: string) => call<{ chat: ChatSummary; model: string | null }>("GET", `chats/${id}`),
-  send: (id: string, key: string, text: string, whenBusy: "followUp" | "steer") =>
-    call<{ admission: { submissionId: number } }>("POST", `chats/${id}/inputs`, { requestId: key, text, whenBusy }),
+  send: (id: string, key: string, text: string, whenBusy: "followUp" | "steer", attachments: string[]) =>
+    call<{ admission: { submissionId: number } }>("POST", `chats/${id}/inputs`, {
+      requestId: key,
+      text,
+      whenBusy,
+      ...(attachments.length === 0 ? {} : { attachments }),
+    }),
+  /** Admit an upload, then stream its bytes; the server checks size and hashes while receiving. */
+  upload: async (projectId: string, file: File): Promise<Upload> => {
+    const { upload } = await call<{ upload: Upload }>("POST", `projects/${projectId}/uploads`, {
+      name: file.name,
+      size: file.size,
+      type: file.type,
+    });
+    const response = await fetch(`/api/uploads/${upload.id}`, {
+      method: "PUT",
+      headers: { "content-type": "application/octet-stream" },
+      body: file,
+    });
+    const data = (await response.json()) as { upload?: Upload; error?: string; message?: string };
+    if (!response.ok || data.upload === undefined) {
+      throw new ApiError(response.status, data.error ?? "error", data.message ?? `HTTP ${response.status}`);
+    }
+    return data.upload;
+  },
   stop: (id: string) => call<{ stopped: true }>("POST", `chats/${id}/stop`),
   setChatModel: (id: string, model: string) => call<{ model: string }>("PUT", `chats/${id}/model`, { model }),
 

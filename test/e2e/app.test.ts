@@ -142,6 +142,31 @@ describe("Pal in a browser", () => {
     fixture.behavior.responses = "ok";
   });
 
+  it("uploads from this device and lets a script read the project folder", async () => {
+    await page.locator('input[type="file"]').setInputFiles({
+      name: "plan.txt",
+      mimeType: "text/plain",
+      buffer: Buffer.from("The launch is on Tuesday."),
+    });
+    await page.getByRole("button", { name: "Remove plan.txt" }).waitFor();
+    fixture.behavior.responses = "script";
+    fixture.behavior.script = "return await tools.files_list({});";
+    await page.getByLabel("Message").fill("what is in the project?");
+    await page.getByRole("button", { name: "Send" }).click();
+    // The sent message shows its attachment; the upload reached the model with it.
+    await page.locator(".user .chip").filter({ hasText: "plan.txt" }).waitFor();
+    await page.getByRole("status").filter({ hasText: "Running" }).waitFor({ state: "detached" });
+    const sent = fixture.apiRequests.filter((call) => call.path === "/v1/responses");
+    expect(JSON.stringify(sent.map((call) => call.body.input))).toContain("The launch is on Tuesday.");
+    await page
+      .getByRole("button", { name: /Ran a script/ })
+      .last()
+      .click();
+    await page.getByText("files_list", { exact: true }).waitFor();
+    await shoot("chat-upload-1440");
+    fixture.behavior.responses = "ok";
+  });
+
   it("lays out for tablet and phone", async () => {
     await page.setViewportSize({ width: 768, height: 1024 });
     await shoot("chat-768");

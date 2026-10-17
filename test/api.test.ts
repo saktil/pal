@@ -75,6 +75,15 @@ async function signedIn() {
   return app;
 }
 
+async function putBytes(base: string, cookie: string, id: string, bytes: Uint8Array) {
+  const response = await fetch(`${base}/api/uploads/${id}`, {
+    method: "PUT",
+    headers: { origin: base, cookie, "content-type": "application/octet-stream" },
+    body: bytes,
+  });
+  return { status: response.status, body: (await response.json()) as Record<string, unknown> };
+}
+
 describe("API", () => {
   it("answers only its own host and accepts writes only from its own origin", async () => {
     const { base, api } = await start();
@@ -182,5 +191,76 @@ describe("API", () => {
 
     const projects = (await api("GET", "projects")).body.projects;
     expect(projects[0].chats).toEqual([expect.objectContaining({ id: chat.id, title: "hi" })]);
+  });
+
+  it("receives device uploads exactly, then attaches them to a message", async () => {
+    const { base, api, cookie, fixture, pal } = await signedIn();
+    const started = await api("POST", "chatgpt/sign-in");
+    await browse(started.body.attempt.authUrl);
+    await eventually(
+      () => api("GET", "chatgpt"),
+      (state) => state.body.model !== null,
+    );
+    const project = (await api("POST", "projects", { requestId: "project-request-1", name: "Notes" })).body.project;
+    const other = (await api("POST", "projects", { requestId: "project-request-2", name: "Other" })).body.project;
+    const text = new TextEncoder().encode("The launch is on Tuesday.");
+
+    const tooBig = await api("POST", `projects/${project.id}/uploads`, { name: "x", size: 26 * 1024 * 1024, type: "" });
+    expect(tooBig.body.error).toBe("invalid_request");
+    const short = (await api("POST", `projects/${project.id}/uploads`, { name: "a.txt", size: 3, type: "text/plain" }))
+      .body.upload;
+    expect((await putBytes(base, cookie(), short.id, text)).body.error).toBe("upload_size_mismatch");
+
+    const admitted = (
+      await api("POST", `projects/${project.id}/uploads`, { name: "plan.txt", size: text.length, type: "text/plain" })
+    ).body.upload;
+    const received = await putBytes(base, cookie(), admitted.id, text);
+    expect(received.body.upload).toMatchObject({
+      state: "ready",
+      size: text.length,
+      sha256: expect.stringMatching(/^[0-9a-f]{64}$/),
+    });
+    expect((await putBytes(base, cookie(), admitted.id, text)).body.error).toBe("upload_not_receiving");
+
+    const chat = (await api("POST", "chats", { requestId: "chat-request-1", projectId: project.id })).body.chat;
+    const foreign = (await api("POST", "chats", { requestId: "chat-request-2", projectId: other.id })).body.chat;
+    expect(
+      (
+        await api("POST", `chats/${foreign.id}/inputs`, {
+          requestId: "input-foreign",
+          text: "x",
+          attachments: [admitted.id],
+        })
+      ).body.error,
+    ).toBe("upload_not_found");
+    const sent = await api("POST", `chats/${chat.id}/inputs`, {
+      requestId: "input-request-1",
+      text: "When is the launch?",
+      attachments: [admitted.id],
+    });
+    expect(sent.status).toBe(200);
+    const request = await eventually(
+      async () => fixture.apiRequests.filter((call) => call.path === "/v1/responses").at(-1),
+      (call) => call !== undefined,
+    );
+    expect(JSON.stringify(request?.body.input)).toContain("The launch is on Tuesday.");
+    expect(JSON.stringify(request?.body.input)).toContain('name=\\"plan.txt\\"');
+
+    // An upload left unfinished is dropped when Pal next opens.
+    const pending = (
+      await api("POST", `projects/${project.id}/uploads`, { name: "b.txt", size: 5, type: "text/plain" })
+    ).body.upload;
+    await pal.close();
+    const reopened = await openPal(
+      {
+        dataRoot: pal.store.path.replace(/\/pal\.sqlite$/, ""),
+        installRoot: "/nonexistent-install",
+        endpoints: fixture.endpoints,
+      },
+      context,
+    );
+    cleanups.push(() => reopened.close());
+    expect(await reopened.uploads.get(pending.id)).toBeUndefined();
+    expect(await reopened.uploads.get(admitted.id)).toMatchObject({ state: "ready" });
   });
 });

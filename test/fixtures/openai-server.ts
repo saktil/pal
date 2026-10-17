@@ -156,15 +156,14 @@ export async function startOpenAIFixture() {
       };
       const usage = { input_tokens: 3, output_tokens: 1, total_tokens: 4 };
       const events: object[] = [created];
-      // Pi returns a tool result as a function or custom (grammar) tool output; either means the script has run.
-      const answered = /"type":"(custom_tool_call|function_call)_output"/.test(
-        JSON.stringify(apiRequests.at(-1)?.body.input ?? []),
-      );
+      // The script has run when the newest input item is its result (a function or custom grammar tool output).
+      const latest = (apiRequests.at(-1)?.body.input as { type?: string }[] | undefined)?.at(-1);
+      const answered = latest?.type === "custom_tool_call_output" || latest?.type === "function_call_output";
       if (behavior.responses === "script" && !answered) {
         const call = {
-          id: "fc_1",
+          id: `fc_${counter}`,
           type: "function_call",
-          call_id: "call_script",
+          call_id: `call_script_${++counter}`,
           name: "codemode",
           arguments: JSON.stringify({ code: behavior.script }),
           status: "completed",
@@ -175,11 +174,11 @@ export async function startOpenAIFixture() {
             output_index: 0,
             item: { ...call, arguments: "", status: "in_progress" },
           },
-          { type: "response.function_call_arguments.delta", output_index: 0, item_id: "fc_1", delta: call.arguments },
+          { type: "response.function_call_arguments.delta", output_index: 0, item_id: call.id, delta: call.arguments },
           {
             type: "response.function_call_arguments.done",
             output_index: 0,
-            item_id: "fc_1",
+            item_id: call.id,
             arguments: call.arguments,
           },
           { type: "response.output_item.done", output_index: 0, item: call },

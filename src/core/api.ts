@@ -17,6 +17,7 @@ import { cookie, HttpError, isOwnOrigin, readJson, sendJson } from "./http.ts";
 import { OwnerError, SESSION_MAX_AGE_SECONDS } from "./owner.ts";
 import { FolderError } from "./projects.ts";
 import { InvalidRequest, RequestConflict, validate } from "./requests.ts";
+import { UploadBody, UploadError } from "./uploads.ts";
 
 const SESSION_COOKIE = "pal_session";
 const HEARTBEAT_MS = 25_000;
@@ -280,6 +281,15 @@ export function createApi(pal: Pal) {
         return send(200, { project: await pal.projects.create(requestId, body) });
       }
     }
+    if (resource === "projects" && id !== undefined && action === "uploads" && method === "POST") {
+      const project = await pal.projects.get(id);
+      if (project?.state !== "ready") throw new HttpError(404, "not_found", "no such ready project");
+      return send(200, { upload: await pal.uploads.admit(id, validate(UploadBody, await readJson(request))) });
+    }
+    if (resource === "uploads" && id !== undefined && action === undefined && method === "PUT") {
+      return send(200, { upload: await pal.uploads.receive(id, request) });
+    }
+
     if (resource === "folders" && path.length === 1 && method === "GET") {
       return send(200, await pal.projects.browse(url.searchParams.get("path") ?? undefined));
     }
@@ -374,6 +384,10 @@ function classify(error: unknown): [number, string] {
   if (error instanceof FolderError) return [422, `folder_${error.code}`];
   if (error instanceof AdmissionStopped) return [503, "admission_stopped"];
   if (error instanceof McpConfigError) return [400, "mcp_config"];
+  if (error instanceof UploadError) {
+    const status = { not_found: 404, too_large: 413, size_mismatch: 400, not_receiving: 409, not_ready: 409 };
+    return [status[error.code], `upload_${error.code}`];
+  }
   if (error instanceof ChatGPTAuthError) return [400, `chatgpt_${error.code}`];
   if (error instanceof OwnerError) {
     const status = { exists: 409, invalid_setup: 403, weak_passphrase: 400, wrong_passphrase: 401, throttled: 429 };

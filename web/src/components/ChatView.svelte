@@ -1,6 +1,14 @@
 <script lang="ts">
-  import { api, ApiError, type ChatSummary, type Project, requestId } from "../lib/api.ts";
-  import { type Block, ChatStream, type Entry, type Message, type NestedCall, textOf } from "../lib/chat.svelte.ts";
+  import { api, ApiError, type ChatSummary, type Project, requestId, type Upload } from "../lib/api.ts";
+  import {
+    type Attachment,
+    type Block,
+    ChatStream,
+    type Entry,
+    type Message,
+    type NestedCall,
+    textOf,
+  } from "../lib/chat.svelte.ts";
   import Icon from "../lib/Icon.svelte";
   import { renderMarkdown } from "../lib/markdown.ts";
   import { app, navigate, refreshProjects, viewport } from "../lib/state.svelte.ts";
@@ -14,7 +22,7 @@
     result: { text: string; isError: boolean; calls: NestedCall[] } | undefined;
   };
   type Item =
-    | { kind: "user"; id: string; text: string; at: number | undefined }
+    | { kind: "user"; id: string; text: string; at: number | undefined; attachments: Attachment[] }
     | {
         kind: "assistant";
         id: string;
@@ -32,7 +40,10 @@
   let stream: ChatStream | undefined = $state();
   let model: string | null = $state(null);
   let draft = $state("");
-  let pending: { key: string; text: string } | undefined;
+  let pending: { key: string; text: string; files: string } | undefined;
+  let attachments: Upload[] = $state([]);
+  let uploading = $state(0);
+  let fileInput: HTMLInputElement | undefined = $state();
   let whenBusy: "followUp" | "steer" = $state("followUp");
   let picker = $state(false);
   let sending = $state(false);
@@ -55,11 +66,15 @@
   const modelName = $derived(choices.find((choice) => choice.slug === model)?.displayName ?? model ?? "Choose model");
 
   function build(entries: Entry[], partial: Message | undefined): Item[] {
+    // A result belongs to the call of that ID in the latest assistant message before it; IDs may repeat across turns.
     const results: Record<string, { text: string; isError: boolean; calls: NestedCall[] }> = {};
+    const caller: Record<string, number> = {};
     for (const entry of entries) {
       const message = entry.model?.[0];
-      if (entry.kind === "pi.tool-result" && message?.toolCallId !== undefined) {
-        results[message.toolCallId] = {
+      if (entry.kind === "pi.assistant" && message !== undefined && typeof message.content !== "string") {
+        for (const block of message.content) if (block.type === "toolCall") caller[block.id] = entry.id;
+      } else if (entry.kind === "pi.tool-result" && message?.toolCallId !== undefined) {
+        results[`${caller[message.toolCallId]}/${message.toolCallId}`] = {
           text: textOf(message),
           isError: message.isError === true,
           calls: message.details?.calls ?? [],
@@ -80,7 +95,7 @@
                   id: block.id,
                   name: block.name,
                   code: typeof block.arguments.code === "string" ? block.arguments.code : undefined,
-                  result: results[block.id],
+                  result: results[`${id}/${block.id}`],
                 },
               ]
             : [],
@@ -94,8 +109,17 @@
     const built: Item[] = [];
     for (const entry of entries) {
       const message = entry.model?.[0];
-      if (entry.kind === "pi.user" && message !== undefined) {
-        built.push({ kind: "user", id: String(entry.id), text: textOf(message), at: message.timestamp });
+      if ((entry.kind === "pi.user" || entry.kind === "pal.user") && message !== undefined) {
+        // An input with attachments shows its own text; the attachments' contents went to the model, not the bubble.
+        const content = typeof message.content === "string" ? message.content : message.content[0];
+        const text = typeof content === "string" ? content : content?.type === "text" ? content.text : "";
+        built.push({
+          kind: "user",
+          id: String(entry.id),
+          text,
+          at: message.timestamp,
+          attachments: entry.data?.attachments ?? [],
+        });
       } else if (entry.kind === "pi.assistant" && message !== undefined) {
         built.push(assistant(String(entry.id), message, false));
       } else if (entry.kind === "pi.compaction") {
@@ -113,15 +137,17 @@
   async function send() {
     const text = draft.trim();
     if (text === "" || sending) return;
+    const ids = attachments.map((attachment) => attachment.id);
     // A retry after a lost response reuses the key, so the server admits the message once.
-    if (pending?.text !== text) pending = { key: requestId(), text };
+    if (pending?.text !== text || pending.files !== ids.join()) pending = { key: requestId(), text, files: ids.join() };
     sending = true;
     error = undefined;
     try {
-      const { admission } = await api.send(chat.id, pending.key, text, stream?.running ? whenBusy : "followUp");
+      const { admission } = await api.send(chat.id, pending.key, text, stream?.running ? whenBusy : "followUp", ids);
       if (stream?.running) queuedTexts[admission.submissionId] = text;
       pending = undefined;
       draft = "";
+      attachments = [];
       if (chat.title === null) void refreshProjects();
     } catch (failure) {
       error = failure instanceof ApiError ? failure.message : String(failure);
@@ -137,6 +163,25 @@
     } catch (failure) {
       error = failure instanceof ApiError ? failure.message : String(failure);
     }
+  }
+
+  async function upload(files: FileList | null) {
+    for (const file of files ?? []) {
+      uploading += 1;
+      try {
+        attachments = [...attachments, await api.upload(project.id, file)];
+      } catch (failure) {
+        error = `${file.name}: ${failure instanceof ApiError ? failure.message : String(failure)}`;
+      } finally {
+        uploading -= 1;
+      }
+    }
+    if (fileInput !== undefined) fileInput.value = "";
+  }
+
+  function size(bytes: number): string {
+    if (bytes < 1024) return `${bytes} B`;
+    return bytes < 1024 * 1024 ? `${Math.round(bytes / 1024)} KB` : `${(bytes / 1048576).toFixed(1)} MB`;
   }
 
   function onKey(event: KeyboardEvent) {
@@ -180,6 +225,15 @@
         {#if item.kind === "user"}
           <div class="user">
             <div class="bubble">{item.text}</div>
+            {#if item.attachments.length > 0}
+              <div class="chips end">
+                {#each item.attachments as attachment (attachment.id)}
+                  <span class="chip plain"
+                    ><Icon name="file" />{attachment.name}<span class="dim">{size(attachment.size)}</span></span
+                  >
+                {/each}
+              </div>
+            {/if}
             <span class="at">{time(item.at)}</span>
           </div>
         {:else if item.kind === "note"}
@@ -319,6 +373,24 @@
       {#if error !== undefined}<div class="callout er" role="alert">{error}</div>{/if}
 
       <div class="cbx">
+        {#if attachments.length > 0 || uploading > 0}
+          <div class="chips">
+            {#each attachments as attachment (attachment.id)}
+              <span class="chip">
+                <Icon name="file" /><span class="ellipsis">{attachment.name}</span>
+                <button
+                  class="chipx"
+                  aria-label={`Remove ${attachment.name}`}
+                  onclick={() => (attachments = attachments.filter((kept) => kept.id !== attachment.id))}
+                  ><Icon name="x" size={12} /></button
+                >
+              </span>
+            {/each}
+            {#if uploading > 0}<span class="chip plain"
+                ><span class="ring spin" aria-hidden="true"></span>Uploading…</span
+              >{/if}
+          </div>
+        {/if}
         <label for="composer" class="sr">Message</label>
         <textarea
           id="composer"
@@ -328,6 +400,18 @@
           bind:value={draft}
           onkeydown={onKey}></textarea>
         <div class="tools">
+          <input
+            bind:this={fileInput}
+            class="sr"
+            type="file"
+            multiple
+            tabindex="-1"
+            aria-hidden="true"
+            onchange={(event) => upload(event.currentTarget.files)}
+          />
+          <button class="b q" aria-label="Upload from this device" onclick={() => fileInput?.click()}>
+            <Icon name="clip" />{#if !phone}<span>Upload from this device</span>{/if}
+          </button>
           <button class="b q" aria-label="Choose model" aria-expanded={picker} onclick={() => (picker = !picker)}>
             <Icon name="model" />{modelName}<Icon name="chevD" />
           </button>
@@ -348,7 +432,7 @@
           <button
             class="b p send"
             onclick={send}
-            disabled={sending || draft.trim() === "" || !connected || model === null}
+            disabled={sending || uploading > 0 || draft.trim() === "" || !connected || model === null}
           >
             <Icon name="send" />{stream?.running ? (whenBusy === "steer" ? "Steer" : "Queue") : "Send"}
           </button>
@@ -621,5 +705,17 @@
   }
   .send {
     margin-left: 4px;
+  }
+  .chips {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+    padding: 2px 2px 0;
+  }
+  .chips.end {
+    justify-content: flex-end;
+  }
+  .plain {
+    padding-right: 8px;
   }
 </style>
