@@ -1,0 +1,22 @@
+#!/usr/bin/env bash
+# pal-local-guard: refuse staged private handoff docs, raw design exports and local secret config.
+# Deletions stay allowed so an explicit `git rm --cached` cleanup can untrack them.
+set -euo pipefail
+shopt -s nocasematch
+
+blocked=()
+while IFS= read -r -d '' path; do
+	case "$path" in
+	agents.md | */agents.md | stack.md | */stack.md | plan.md | */plan.md | \
+		.design/* | claude.local.md | */claude.local.md | .claude/settings.local.json | .mcp.json)
+		blocked+=("$path")
+		;;
+	esac
+done < <(git diff --cached --name-only --no-renames --diff-filter=d -z)
+
+if ((${#blocked[@]})); then
+	printf 'pre-commit: refusing to commit private/local files:\n' >&2
+	printf '  %s\n' "${blocked[@]}" >&2
+	printf 'Unstage them, keeping the files, with: git rm --cached -- <path>\n' >&2
+	exit 1
+fi

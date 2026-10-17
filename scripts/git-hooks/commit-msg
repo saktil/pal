@@ -1,0 +1,28 @@
+#!/usr/bin/env bash
+# pal-local-guard: exactly one Conventional Commit line, at most 72 bytes, no body or trailers.
+set -euo pipefail
+export LC_ALL=C
+
+comment=$(git config --get core.commentChar || true)
+[[ -n $comment && $comment != auto ]] || comment='#'
+
+lines=()
+while IFS= read -r line || [[ -n $line ]]; do
+	[[ $line == "$comment ------------------------ >8 ------------------------" ]] && break
+	[[ $line == "$comment"* ]] && continue
+	line="${line%"${line##*[![:space:]]}"}"
+	[[ -n $line ]] && lines+=("$line")
+done <"$1"
+
+fail() {
+	printf 'commit-msg: %s\n' "$1" >&2
+	printf 'Expected one line like: feat(scope): add managed project workspaces\n' >&2
+	exit 1
+}
+
+((${#lines[@]} == 1)) || fail "message must be exactly one non-empty line (no body or trailers)"
+subject=${lines[0]}
+((${#subject} <= 72)) || fail "subject is ${#subject} bytes; the limit is 72"
+types='build|chore|ci|docs|feat|fix|perf|refactor|revert|style|test'
+[[ $subject =~ ^($types)(\([a-z0-9][a-z0-9._/-]*\))?!?:\ [^[:space:]] ]] ||
+	fail "subject must match type(scope): purpose with type in: ${types//|/, }"

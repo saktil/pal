@@ -1,0 +1,11 @@
+node_modules/
+dist/
+coverage/
+result
+result-*
+.devenv/
+.direnv/
+*.sqlite
+*.sqlite-*
+.env
+.env.*

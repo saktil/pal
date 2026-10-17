@@ -1,0 +1,8 @@
+dist/
+coverage/
+pnpm-lock.yaml
+flake.lock
+*.md
+.agents/
+.claude/
+skills-lock.json
