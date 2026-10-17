@@ -489,6 +489,41 @@ describe("Pal in a browser", () => {
     await page.setViewportSize({ width: 1440, height: 900 });
   });
 
+  it("discards a file only at the revision shown, never over newer work", async () => {
+    const project = (await pal.projects.list())[0];
+    if (project === undefined) throw new Error("missing project");
+    await writeFile(join(project.root, "base.txt"), "agent edit\n");
+    await page.getByRole("button", { name: "Changes", exact: true }).click();
+    const panel = page.getByRole("complementary", { name: "Workspace panel" });
+    await panel.getByRole("button", { name: /base\.txt/ }).click();
+    await panel.getByLabel("File diff").filter({ hasText: "+agent edit" }).waitFor();
+    await panel.getByRole("button", { name: "Discard…" }).click();
+    const dialog = page.getByRole("alertdialog", { name: "Discard changes to this file?" });
+    await dialog.getByText(/Rewrites the file on disk to baseline/).waitFor();
+    for (const width of [1440, 390]) {
+      await page.setViewportSize({ width, height: 900 });
+      expect(await page.evaluate("document.documentElement.scrollWidth <= innerWidth")).toBe(true);
+      await shoot(`discard-${width}`);
+    }
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await writeFile(join(project.root, "base.txt"), "newer edit\n");
+    await dialog.getByRole("button", { name: "Discard changes" }).click();
+    await panel
+      .getByRole("alert")
+      .filter({ hasText: /Nothing was discarded/ })
+      .waitFor();
+    await dialog.waitFor({ state: "detached" });
+    expect(await readFile(join(project.root, "base.txt"), "utf8")).toBe("newer edit\n");
+    await panel.getByLabel("File diff").filter({ hasText: "+newer edit" }).waitFor();
+    await panel.getByRole("button", { name: "Discard…" }).click();
+    await dialog.getByRole("button", { name: "Discard changes" }).click();
+    await panel.getByRole("status").filter({ hasText: "Restored base.txt to the baseline." }).waitFor();
+    expect(await readFile(join(project.root, "base.txt"), "utf8")).toBe("original\n");
+    await expect.poll(() => panel.getByRole("button", { name: /base\.txt/ }).count()).toBe(0);
+    await page.keyboard.press("Escape");
+    await panel.waitFor({ state: "detached" });
+  });
+
   it("reattaches a real human shell on a phone, transfers control and shares only selected output", async () => {
     const project = (await pal.projects.list())[0];
     if (project === undefined) throw new Error("missing project");

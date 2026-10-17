@@ -15,6 +15,7 @@ import type { Pal } from "./app.ts";
 import { AdmissionStopped, ChatNotFound, ProjectUnavailable } from "./chats.ts";
 import { cookie, HttpError, isOwnOrigin, readJson, sendJson } from "./http.ts";
 import { OwnerError, SESSION_COOKIE, SESSION_MAX_AGE_SECONDS } from "./owner.ts";
+import { WorkspaceBusy } from "./execution.ts";
 import { FileAccessError } from "./files.ts";
 import { SearchError } from "./search.ts";
 import { FolderError } from "./projects.ts";
@@ -66,6 +67,10 @@ const ToolChoice = Type.Object(
   { additionalProperties: false },
 );
 const Review = Type.Object({ enable: Type.Boolean() }, { additionalProperties: false });
+const FileDiscard = Type.Object(
+  { path: Type.String({ maxLength: 4096 }), revision: Type.String({ pattern: "^[a-f0-9]{64}$" }) },
+  { additionalProperties: false },
+);
 const FileReview = Type.Object(
   {
     path: Type.String({ maxLength: 4096 }),
@@ -346,6 +351,11 @@ export function createApi(pal: Pal, publicOrigin?: string) {
       await pal.changes.review(id, body.path, body.revision, body.reviewed);
       return send(200, { reviewed: body.reviewed });
     }
+    if (resource === "projects" && id !== undefined && action === "discard" && path.length === 3 && method === "POST") {
+      const body = validate(FileDiscard, await readJson(request));
+      await pal.changes.discard(id, body.path, body.revision);
+      return send(200, { discarded: true });
+    }
     if (resource === "projects" && id !== undefined && action === "search" && path.length === 3 && method === "GET") {
       const project = await pal.projects.get(id);
       if (project?.state !== "ready") throw new FileAccessError("no such ready project");
@@ -486,6 +496,7 @@ function classify(error: unknown): [number, string] {
   if (error instanceof McpConfigError) return [400, "mcp_config"];
   if (error instanceof FileAccessError) return [403, "file_access"];
   if (error instanceof SearchError) return [422, "search_unavailable"];
+  if (error instanceof WorkspaceBusy) return [409, "workspace_busy"];
   if (error instanceof UploadError) {
     const status = { not_found: 404, too_large: 413, size_mismatch: 400, not_receiving: 409, not_ready: 409 };
     return [status[error.code], `upload_${error.code}`];

@@ -1,6 +1,18 @@
 import { execFile } from "node:child_process";
 import { createHash } from "node:crypto";
-import { access, mkdir, mkdtemp, readFile, realpath, rm, symlink, unlink, writeFile } from "node:fs/promises";
+import {
+  access,
+  chmod,
+  mkdir,
+  mkdtemp,
+  readFile,
+  realpath,
+  rm,
+  stat,
+  symlink,
+  unlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { promisify } from "node:util";
@@ -8,7 +20,7 @@ import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import type { ConversationId, ToolExecutionApi, ToolRegistration } from "@earendil-works/pi-durable";
 import { afterEach, describe, expect, it } from "vitest";
 import { Changes } from "../src/core/changes.ts";
-import { WorkspaceLocks } from "../src/core/execution.ts";
+import { WorkspaceBusy, WorkspaceLocks } from "../src/core/execution.ts";
 import { fileTools } from "../src/core/files.ts";
 import { Projects } from "../src/core/projects.ts";
 import { openStore } from "../src/storage/store.ts";
@@ -96,6 +108,66 @@ describe("revision-bound Git changes", () => {
     expect((await next.list(project.id)).files[0]?.reviewed).toBe(false);
     await projects.remove(project.id);
     await expect(next.list(project.id)).rejects.toMatchObject({ status: 404 });
+  });
+
+  it("discards one file to the baseline only while it still matches the revision shown", async () => {
+    const { root, project, changes, dataRoot, store, projects } = await setup();
+    await mkdir(join(root, "bin"));
+    await writeFile(join(root, "bin", "run.sh"), "#!/bin/sh\n");
+    await chmod(join(root, "bin", "run.sh"), 0o755);
+    await symlink("file.txt", join(root, "link"));
+    await git(root, "add", "bin/run.sh", "link");
+    await git(root, "commit", "-qm", "more");
+    await writeFile(join(root, "file.txt"), "after\n");
+    await unlink(join(root, "deleted.txt"));
+    await rm(join(root, "bin"), { recursive: true });
+    await unlink(join(root, "link"));
+    await writeFile(join(root, "new.txt"), "new\n");
+    const locks = new WorkspaceLocks();
+    const discarding = new Changes(store.database, projects, dataRoot, locks);
+    const revision = async (path: string) =>
+      (await changes.list(project.id)).files.find((file) => file.path === path)?.revision ?? "";
+
+    // Each kind of later change makes the revision shown stale; nothing is touched.
+    const shown = await revision("file.txt");
+    await changes.review(project.id, "file.txt", shown, true);
+    await writeFile(join(root, "file.txt"), "later\n");
+    const stale = { status: 409, code: "changes_stale" };
+    await expect(discarding.discard(project.id, "file.txt", shown)).rejects.toMatchObject(stale);
+    expect(await readFile(join(root, "file.txt"), "utf8")).toBe("later\n");
+    const added = await revision("new.txt");
+    await writeFile(join(root, "new.txt"), "newer\n");
+    await expect(discarding.discard(project.id, "new.txt", added)).rejects.toMatchObject(stale);
+    const deleted = await revision("deleted.txt");
+    await writeFile(join(root, "deleted.txt"), "recreated\n");
+    await expect(discarding.discard(project.id, "deleted.txt", deleted)).rejects.toMatchObject(stale);
+    expect(await readFile(join(root, "deleted.txt"), "utf8")).toBe("recreated\n");
+    await unlink(join(root, "deleted.txt"));
+
+    // Pal's own writes and commands hold the workspace lock, so a discard cannot interleave with them.
+    let release = () => {};
+    const held = locks.run(root, () => new Promise<void>((resolve) => (release = resolve)));
+    await expect(discarding.discard(project.id, "deleted.txt", deleted)).rejects.toBeInstanceOf(WorkspaceBusy);
+    release();
+    await held;
+
+    await writeFile(join(root, "file.txt"), "after\n");
+    await discarding.discard(project.id, "file.txt", shown);
+    expect(await readFile(join(root, "file.txt"), "utf8")).toBe("before\n");
+    await discarding.discard(project.id, "deleted.txt", deleted);
+    expect(await readFile(join(root, "deleted.txt"), "utf8")).toBe("old\n");
+    await discarding.discard(project.id, "bin/run.sh", await revision("bin/run.sh"));
+    expect((await stat(join(root, "bin", "run.sh"))).mode & 0o777).toBe(0o755);
+    await discarding.discard(project.id, "new.txt", await revision("new.txt"));
+    await expect(access(join(root, "new.txt"))).rejects.toThrow();
+    await expect(discarding.discard(project.id, "link", await revision("link"))).rejects.toMatchObject({
+      code: "changes_unsupported",
+    });
+    await expect(discarding.discard(project.id, ".git/config", "0".repeat(64))).rejects.toThrow(/protected/);
+    expect((await changes.list(project.id)).files.map((file) => file.path)).toEqual(["link"]);
+    // The review mark went with the discarded bytes.
+    await writeFile(join(root, "file.txt"), "after\n");
+    expect((await changes.list(project.id)).files.find((file) => file.path === "file.txt")?.reviewed).toBe(false);
   });
 
   it("never invokes repository clean filters, textconv, external diffs or hooks", async () => {

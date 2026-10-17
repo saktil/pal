@@ -4,13 +4,18 @@
   let {
     title,
     description,
+    detail,
     confirmLabel,
+    busyLabel = "Removing…",
     onCancel,
     onConfirm,
   }: {
     title: string;
     description: string;
+    /** A path or identifier shown exactly, in monospace. */
+    detail?: string;
     confirmLabel: string;
+    busyLabel?: string;
     onCancel: () => void;
     onConfirm: () => Promise<void>;
   } = $props();
@@ -49,10 +54,11 @@
 >
   <h2 id="remove-title">{title}</h2>
   <p id="remove-description">{description}</p>
+  {#if detail !== undefined}<p class="mono detail">{detail}</p>{/if}
   {#if error !== undefined}<div class="callout er" role="alert">{error}</div>{/if}
   <div class="buttons">
     <button bind:this={cancel} class="b" disabled={busy} onclick={onCancel}>Cancel</button>
-    <button class="b dz" disabled={busy} onclick={confirm}>{busy ? "Removing…" : confirmLabel}</button>
+    <button class="b dz" disabled={busy} onclick={confirm}>{busy ? busyLabel : confirmLabel}</button>
   </div>
 </dialog>
 
@@ -79,6 +85,11 @@
     margin: 0 0 12px;
     color: var(--tx2);
     font-size: 13px;
+  }
+  .detail {
+    color: var(--tx);
+    font-size: 12px;
+    overflow-wrap: anywhere;
   }
   .buttons {
     display: flex;

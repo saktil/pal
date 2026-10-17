@@ -141,7 +141,7 @@ export async function openPal(options: PalOptions, context: Context): Promise<Pa
       dataRoot: options.dataRoot,
       installRoot: options.installRoot,
     });
-    changes = new Changes(database, openedProjects, options.dataRoot);
+    changes = new Changes(database, openedProjects, options.dataRoot, locks);
     const owner = new Owner(database);
     const reviews = changes;
     terminals = new Terminals(openedProjects, owner, (root) => reviews.capture(root));

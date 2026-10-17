@@ -16,6 +16,8 @@ export const SHELL_NAMESPACE: CodemodeNamespace = {
     "Commands start in the project folder as the Pal user. Never access Pal data, credentials or unrelated private files. Print or return results. Interrupted commands have unknown effects: inspect before retrying.",
 };
 
+export class WorkspaceBusy extends Error {}
+
 /** Serializes overlapping writable roots, not external editors or arbitrary host processes. */
 export class WorkspaceLocks {
   readonly #active = new Set<string>();
@@ -29,7 +31,7 @@ export class WorkspaceLocks {
       return path === "" || (path !== ".." && !path.startsWith(`..${sep}`) && !isAbsolute(path));
     };
     if ([...this.#active].some((other) => inside(root, other) || inside(other, root)))
-      throw new Error("an overlapping workspace is busy; wait for its mutation to finish");
+      throw new WorkspaceBusy("an overlapping workspace is busy; wait for its mutation to finish");
     this.#active.add(root);
     try {
       await this.#before?.(root);

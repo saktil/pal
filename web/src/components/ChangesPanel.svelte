@@ -1,7 +1,8 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { api, type ChangeSet, type Project } from "../lib/api.ts";
+  import { api, ApiError, type Change, type ChangeSet, type Project } from "../lib/api.ts";
   import Icon from "../lib/Icon.svelte";
+  import ConfirmRemoval from "./ConfirmRemoval.svelte";
 
   let { project, initialPath }: { project: Project; initialPath?: string | undefined } = $props();
   let changes: ChangeSet | undefined = $state.raw();
@@ -10,12 +11,15 @@
   const selected = $derived(chosen ?? initialPath);
   let busy = $state(false);
   let error: string | undefined = $state();
+  let done: string | undefined = $state();
+  let discarding: Change | undefined = $state.raw();
   const file = $derived(changes?.files.find((candidate) => candidate.path === selected) ?? changes?.files[0]);
   const lines = $derived(file?.patch.split("\n") ?? []);
 
   async function refresh() {
     busy = true;
     error = undefined;
+    done = undefined;
     try {
       changes = await api.changes(project.id);
     } catch (failure) {
@@ -36,6 +40,24 @@
       busy = false;
     }
   }
+  async function discard() {
+    const target = discarding;
+    if (target === undefined) return;
+    try {
+      await api.discard(project.id, target.path, target.revision);
+    } catch (failure) {
+      if (!(failure instanceof ApiError && failure.code === "changes_stale")) throw failure;
+      discarding = undefined;
+      await refresh();
+      error =
+        "This file changed while the dialog was open. Nothing was discarded, so newer work wasn't overwritten. Review the latest revision.";
+      return;
+    }
+    discarding = undefined;
+    await refresh();
+    done = `Restored ${target.path} to the baseline.`;
+  }
+  const baseline = $derived(changes?.base?.slice(0, 12) ?? "empty tree");
   onMount(() => {
     void refresh();
   });
@@ -48,6 +70,7 @@
     <button class="b sm q" onclick={refresh} disabled={busy}><Icon name="refresh" />Refresh</button>
   </div>
   {#if error}<div class="callout er" role="alert">{error}</div>{/if}
+  {#if done}<p class="notice" role="status">{done}</p>{/if}
   {#if changes === undefined}
     <p class="notice" role="status">{busy ? "Reading changes…" : "Refresh to read changes."}</p>
   {:else}
@@ -97,6 +120,9 @@
             disabled={busy || file.problem !== undefined}
             onclick={review}><Icon name="check" />{file.reviewed ? "Reviewed" : "Mark reviewed"}</button
           >
+          <button class="b sm" disabled={busy || file.problem !== undefined} onclick={() => (discarding = file)}
+            >Discard…</button
+          >
         </div>
         {#if file.problem}<p class="notice" role="status">{file.problem}</p>
         {:else}
@@ -113,6 +139,24 @@
     {/if}
   {/if}
 </div>
+
+{#if discarding}
+  <ConfirmRemoval
+    title="Discard changes to this file?"
+    description={`${
+      discarding.status === "A"
+        ? "Deletes this file, which isn't in the baseline."
+        : discarding.status === "D"
+          ? `Restores the deleted file from baseline ${baseline}.`
+          : `Rewrites the file on disk to baseline ${baseline}.`
+    } This can't be undone from here and may include changes made before Pal recorded the baseline. If the file changes before you confirm, nothing is discarded.`}
+    detail={`${project.root}/${discarding.path} · revision ${discarding.revision.slice(0, 12)}`}
+    confirmLabel="Discard changes"
+    busyLabel="Discarding…"
+    onCancel={() => (discarding = undefined)}
+    onConfirm={discard}
+  />
+{/if}
 
 <style>
   .changes {

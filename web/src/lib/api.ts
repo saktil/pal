@@ -147,6 +147,8 @@ export const api = {
       "GET",
       `projects/${id}/file?path=${encodeURIComponent(path)}`,
     ),
+  discard: (id: string, path: string, revision: string) =>
+    call<{ discarded: true }>("POST", `projects/${id}/discard`, { path, revision }),
   review: (id: string, path: string, revision: string, reviewed: boolean) =>
     call<{ reviewed: boolean }>("PUT", `projects/${id}/review`, { path, revision, reviewed }),
   terminals: (id: string) =>
