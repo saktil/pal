@@ -116,7 +116,7 @@
     background: var(--acbg);
   }
   [aria-current="step"]::before {
-    background: var(--ribbon);
-    color: #fff;
+    background: var(--primary);
+    color: var(--on-primary);
   }
 </style>

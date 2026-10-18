@@ -345,7 +345,10 @@
     flex-direction: column;
   }
   .off {
-    opacity: 0.55;
     cursor: default;
+  }
+  .off .setl {
+    color: var(--tx2);
+    font-weight: 500;
   }
 </style>

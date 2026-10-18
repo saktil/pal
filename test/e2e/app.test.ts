@@ -194,25 +194,35 @@ describe("Pal in a browser", () => {
     const trigger = page.getByRole("button", { name: /^Model and reasoning/ });
     await trigger.click();
     const card = page.getByRole("dialog", { name: "Model and reasoning" });
-    const slider = card.getByRole("slider", { name: "Reasoning effort" });
-    // Opening focuses the stepped control; keys move only between levels this model supports.
-    await expect.poll(() => slider.evaluate((node) => node === document.activeElement)).toBe(true);
-    expect(await slider.getAttribute("aria-valuetext")).toBe("Off");
-    await page.keyboard.press("ArrowRight");
-    await expect.poll(() => trigger.getAttribute("aria-label")).toContain("reasoning low");
+    const levels = card.getByRole("radiogroup", { name: "Reasoning effort" });
+    const checked = levels.getByRole("radio", { checked: true });
+    const chosen = async () => (await checked.textContent())?.trim();
+    // Opening focuses the chosen level; keys move only between levels this model supports, choosing as they go.
+    await expect.poll(() => checked.evaluate((node) => node === document.activeElement)).toBe(true);
+    expect(await chosen()).toBe("Off");
+    expect(await trigger.getAttribute("aria-label")).toContain("reasoning off");
+    await page.keyboard.press("ArrowDown");
+    await expect.poll(() => trigger.getAttribute("aria-label")).toContain(", low");
     // The model's own top level is reachable, not just Pal's former four.
     await page.keyboard.press("End");
-    await expect.poll(() => slider.getAttribute("aria-valuetext")).toBe("Extra high");
-    await expect.poll(() => trigger.getAttribute("aria-label")).toContain("reasoning extra high");
-    await page.keyboard.press("ArrowLeft");
-    await expect.poll(() => slider.getAttribute("aria-valuetext")).toBe("High");
-    await expect.poll(() => trigger.getAttribute("aria-label")).toContain("reasoning high");
+    await expect.poll(chosen).toBe("Extra high");
+    await expect.poll(() => trigger.getAttribute("aria-label")).toContain(", extra high");
+    await page.keyboard.press("ArrowUp");
+    await expect.poll(chosen).toBe("High");
+    await expect.poll(() => trigger.getAttribute("aria-label")).toContain(", high");
     await page.reload();
     await trigger.click();
-    await expect.poll(() => slider.getAttribute("aria-valuetext")).toBe("High");
-    expect(await card.getByText("Off", { exact: true }).count()).toBe(1);
+    await expect.poll(chosen).toBe("High");
+    // Every level is named; a click chooses one directly.
+    expect((await levels.getByRole("radio").allTextContents()).map((text) => text.trim())).toEqual([
+      "Off",
+      "Low",
+      "Medium",
+      "High",
+      "Extra high",
+    ]);
     await shoot("reasoning-1440");
-    // The model header above the slider opens the real model list, with this chat's model chosen.
+    // The model header above the levels opens the real model list, with this chat's model chosen.
     await card.getByRole("button", { name: /^Choose model/ }).click();
     const list = page.getByRole("dialog", { name: "Choose model" });
     expect(await list.getByRole("radio", { checked: true }).count()).toBe(1);
@@ -251,7 +261,7 @@ describe("Pal in a browser", () => {
   it("shows a small optional pet that never takes input and keeps the owner's choice in this browser", async () => {
     const pet = page.locator(".pet");
     await pet.waitFor();
-    expect(await pet.getAttribute("data-coat")).toBe("ginger");
+    expect(await pet.getAttribute("data-coat")).toBe("silver");
     expect(await pet.getAttribute("aria-hidden")).toBe("true");
     const box = await pet.boundingBox();
     if (box === null) throw new Error("the pet is not rendered");
@@ -306,12 +316,12 @@ describe("Pal in a browser", () => {
     // Dark stays the default even though this browser reports a light system preference.
     expect(await page.evaluate(() => matchMedia("(prefers-color-scheme: light)").matches)).toBe(true);
     expect(await theme()).toBe("dark");
-    expect(await background()).toBe("rgb(11, 14, 22)");
+    expect(await background()).toBe("rgb(14, 14, 16)");
     await page.goto(`${base}/#/settings/general`);
     const group = page.getByRole("radiogroup", { name: "Theme" });
     await group.getByRole("radio", { name: "Light" }).click();
     await expect.poll(theme).toBe("light");
-    expect(await background()).toBe("rgb(247, 248, 252)");
+    expect(await background()).toBe("rgb(250, 250, 250)");
     await page.keyboard.press("ArrowRight");
     await expect.poll(() => group.getByRole("radio", { name: "System" }).getAttribute("aria-checked")).toBe("true");
     await page.emulateMedia({ colorScheme: "dark" });

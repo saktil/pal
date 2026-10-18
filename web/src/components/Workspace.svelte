@@ -580,7 +580,7 @@
   .divider:hover::after,
   .divider:focus-visible::after,
   .divider:active::after {
-    background: var(--glint);
+    background: var(--focus);
   }
   .divider:focus-visible {
     outline: none;

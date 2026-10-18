@@ -1017,7 +1017,7 @@
   .cbx {
     position: relative;
   }
-  /* The signature ribbon: present only while the agent runs, drifting so a live run reads at a glance. */
+  /* A quiet sheen along the composer's top edge, present only while the agent runs. */
   .cbx.live::before {
     content: "";
     position: absolute;
@@ -1026,15 +1026,17 @@
     right: 18px;
     height: 2px;
     border-radius: 2px;
-    background: linear-gradient(90deg, var(--ribbon), var(--glint), var(--bloom), var(--glint), var(--ribbon)) 0 0 /
-      200% 100%;
+    background: linear-gradient(90deg, transparent, var(--tx2), transparent) 0 0 / 50% 100% no-repeat;
     animation:
       fade var(--mid) var(--ease),
-      ribbon 2.8s linear infinite;
+      sheen 2.8s linear infinite;
   }
-  @keyframes ribbon {
+  @keyframes sheen {
+    from {
+      background-position: -100% 0;
+    }
     to {
-      background-position: -200% 0;
+      background-position: 200% 0;
     }
   }
   .queue {

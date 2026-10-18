@@ -58,15 +58,15 @@ export const PETS = {
     coats: {
       ginger: {
         name: "Ginger",
-        colors: { b: "#f0a04b", s: "#b9662a", w: "#ffe6c7", e: "#1b2033", p: "#ff9aae", z: "#52d6ff" },
+        colors: { b: "#f0a04b", s: "#b9662a", w: "#ffe6c7", e: "#1b2033", p: "#ff9aae", z: "#a1a1aa" },
       },
       tuxedo: {
         name: "Tuxedo",
-        colors: { b: "#4a5369", s: "#2b3142", w: "#f2f4f8", e: "#9de6b8", p: "#ff9aae", z: "#52d6ff" },
+        colors: { b: "#4a5369", s: "#2b3142", w: "#f2f4f8", e: "#9de6b8", p: "#ff9aae", z: "#a1a1aa" },
       },
       silver: {
         name: "Silver tabby",
-        colors: { b: "#aab3c5", s: "#6c768c", w: "#eef1f6", e: "#1a2236", p: "#ffb3c1", z: "#52d6ff" },
+        colors: { b: "#aab3c5", s: "#6c768c", w: "#eef1f6", e: "#1a2236", p: "#ffb3c1", z: "#a1a1aa" },
       },
     } satisfies Record<string, Coat>,
   },

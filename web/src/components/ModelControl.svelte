@@ -53,17 +53,17 @@
   let view: "effort" | "models" = $state("effort");
   let query = $state("");
   let saving = $state(false);
-  /** The step being dragged or keyed to, before the server confirms it. */
-  let preview: number | undefined = $state();
+  /** The level just chosen, shown checked before the server confirms it. */
+  let chosen: Effort | undefined = $state();
   let wanted: Effort | undefined;
   let container: HTMLDivElement | undefined;
   let opener: HTMLButtonElement | undefined;
-  let range: HTMLInputElement | undefined = $state();
 
   const steps = $derived(LEVELS.filter((level) => current?.efforts.includes(level)));
-  const index = $derived(Math.max(0, steps.indexOf(effort as (typeof LEVELS)[number])));
-  const shown = $derived(steps[preview ?? index] ?? effort);
+  const shown = $derived(chosen ?? effort);
   const adjustable = $derived(current !== undefined && steps.length > 1);
+  /** "Off" beside a model name reads as if the model were off. */
+  const levelName = (level: Effort) => (level === "off" ? "Reasoning off" : LABELS[level]);
   const modelName = $derived(current?.name ?? effective?.modelId ?? "Choose model");
   const providerName = $derived(groups.find((group) => group.provider === effective?.provider)?.name);
   const searchable = $derived(groups.reduce((total, group) => total + group.choices.length, 0) > 12);
@@ -85,9 +85,8 @@
         ? container?.querySelector<HTMLElement>(
             'input[type="search"], [role="radio"][aria-checked="true"], [role="radio"]',
           )
-        : adjustable
-          ? range
-          : container?.querySelector<HTMLElement>(".head");
+        : (container?.querySelector<HTMLElement>('.levels [aria-checked="true"]') ??
+          container?.querySelector<HTMLElement>(".head"));
     target?.focus();
   }
   function close(refocus: boolean) {
@@ -99,8 +98,9 @@
     close(true);
     await onModel(choice);
   }
-  /** Keyboard and drag changes arrive faster than the server answers; send only the latest, one at a time. */
+  /** Arrow keys move faster than the server answers; send only the latest level, one at a time. */
   async function commit(level: Effort) {
+    chosen = level;
     wanted = level;
     if (saving) return;
     saving = true;
@@ -113,10 +113,29 @@
     } finally {
       wanted = undefined;
       saving = false;
-      preview = undefined;
-      // A refused change snaps back to the chat's actual effort.
-      if (range !== undefined) range.value = String(index);
+      // A refused change falls back to the chat's actual effort.
+      chosen = undefined;
     }
+  }
+  /** Radio-group keys: arrows step through the model's levels and choose as they go. */
+  function stepKey(event: KeyboardEvent) {
+    const at = steps.indexOf(shown as (typeof LEVELS)[number]);
+    const last = steps.length - 1;
+    const next =
+      event.key === "ArrowDown" || event.key === "ArrowRight"
+        ? Math.min(last, at + 1)
+        : event.key === "ArrowUp" || event.key === "ArrowLeft"
+          ? Math.max(0, at - 1)
+          : event.key === "Home"
+            ? 0
+            : event.key === "End"
+              ? last
+              : undefined;
+    const level = next === undefined ? undefined : steps[next];
+    if (level === undefined) return;
+    event.preventDefault();
+    void commit(level);
+    void tick().then(() => container?.querySelector<HTMLElement>('.levels [aria-checked="true"]')?.focus());
   }
 </script>
 
@@ -133,13 +152,13 @@
   <button
     class="b q trigger"
     bind:this={opener}
-    aria-label={`Model and reasoning: ${modelName}, reasoning ${LABELS[effort].toLowerCase()}`}
+    aria-label={`Model and reasoning: ${modelName}, ${levelName(effort).toLowerCase()}`}
     title={providerName === undefined ? modelName : `${modelName} · ${providerName}`}
     aria-expanded={open}
     onclick={() => (open ? close(false) : show("effort"))}
   >
     <span class="name">{modelName}</span>{#if current !== undefined && steps.length > 1}<span class="level"
-        >{LABELS[effort]}</span
+        >{levelName(effort)}</span
       >{/if}<Icon name="chevD" />
   </button>
   {#if open}
@@ -151,46 +170,37 @@
     >
       {#if view === "effort"}
         <button class="head" aria-label={`Choose model (${modelName})`} onclick={() => show("models")}>
-          <Icon name="model" />
           <span class="grow">
             <span class="hname">{modelName}</span>
-            <span class="hlevel">{LABELS[shown]}</span>
             {#if providerName !== undefined && effective?.provider !== "openai"}<span class="hprov">{providerName}</span
               >{/if}
           </span>
+          <span class="change">Change</span>
           <Icon name="chevR" />
         </button>
-        <div class="slider">
-          <div class="track" style:--ratio={adjustable ? (preview ?? index) / (steps.length - 1) : 0}>
-            {#if adjustable}
-              {#each steps as level, at (level)}<span class="dot" style:--at={at / (steps.length - 1)}></span>{/each}
-            {/if}
-            <input
-              bind:this={range}
-              type="range"
-              min="0"
-              max={Math.max(0, steps.length - 1)}
-              step="1"
-              value={index}
-              disabled={!adjustable}
-              aria-label="Reasoning effort"
-              aria-valuetext={LABELS[shown]}
-              oninput={(event) => (preview = Number(event.currentTarget.value))}
-              onchange={(event) => {
-                const level = steps[Number(event.currentTarget.value)];
-                if (level !== undefined) void commit(level);
-              }}
-            />
+        {#if adjustable}
+          <div class="lbl">Reasoning</div>
+          <div class="levels" role="radiogroup" aria-label="Reasoning effort" tabindex="-1" onkeydown={stepKey}>
+            {#each steps as level, at (level)}
+              {@const on = level === shown}
+              <button
+                class="level-row"
+                role="radio"
+                aria-checked={on}
+                tabindex={on ? 0 : -1}
+                disabled={busy && !saving}
+                onclick={() => commit(level)}
+              >
+                <span class="meter" aria-hidden="true">
+                  {#each [0, 1, 2, 3] as bar (bar)}<span class:lit={bar < Math.round((at / (steps.length - 1)) * 4)}
+                    ></span>{/each}
+                </span>
+                <span class="grow">{LABELS[level]}</span>
+                {#if on}<Icon name="check" />{/if}
+              </button>
+            {/each}
           </div>
-          {#if adjustable}
-            <!-- The header names the current level; the ends say what the scale runs between. -->
-            <div class="ticks" aria-hidden="true">
-              {#each [steps[0], steps.at(-1)] as level, end (end)}<span class:on={level === shown}
-                  >{level === undefined ? "" : LABELS[level]}</span
-                >{/each}
-            </div>
-          {/if}
-        </div>
+        {/if}
         <p class="note" role="status">
           {#if current === undefined}
             {connected || effective?.provider !== "openai"
@@ -198,10 +208,10 @@
               : "Sign in with ChatGPT to choose a model."}
           {:else if steps.length <= 1}
             This model has no adjustable reasoning.
-          {:else if saving || busy}
+          {:else if saving}
             Saving…
           {:else}
-            Reasoning for this chat. Higher takes longer and uses more of your plan or credits.
+            Higher levels think longer and use more of your plan or credits.
           {/if}
         </p>
         <div class="defaults">
@@ -296,11 +306,11 @@
   .head {
     display: flex;
     align-items: center;
-    gap: 10px;
+    gap: 8px;
     width: 100%;
     padding: 8px 10px;
     border: 0;
-    border-radius: 10px;
+    border-radius: 8px;
     background: transparent;
     color: var(--tx);
     text-align: left;
@@ -316,106 +326,99 @@
     flex: 1;
     min-width: 0;
     display: flex;
-    flex-wrap: wrap;
-    align-items: baseline;
-    gap: 2px 8px;
+    flex-direction: column;
   }
   .hname {
-    font-size: 15px;
+    font-size: 14px;
     font-weight: 650;
-  }
-  .hlevel {
-    color: var(--tx2);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
   }
   .hprov {
-    flex-basis: 100%;
     font-size: 12px;
     color: var(--tx3);
   }
-  .slider {
-    padding: 10px 10px 4px;
-  }
-  /* A stepped track: the fill runs to the chosen step's thumb and every step has a dot behind the native input. */
-  .track {
-    --thumb: 28px;
-    position: relative;
-    height: 32px;
-    border-radius: 16px;
-    background:
-      linear-gradient(var(--ribbon), var(--ribbon)) 0 0 / calc(var(--thumb) + (100% - var(--thumb)) * var(--ratio)) 100%
-        no-repeat,
-      var(--bg3);
-    transition: background-size var(--mid) var(--ease);
-  }
-  .dot {
-    position: absolute;
-    top: 50%;
-    left: calc(var(--thumb) / 2 + (100% - var(--thumb)) * var(--at));
-    width: 5px;
-    height: 5px;
-    margin: -2.5px 0 0 -2.5px;
-    border-radius: 50%;
-    background: var(--tx3);
-  }
-  input[type="range"] {
-    -webkit-appearance: none;
-    appearance: none;
-    position: absolute;
-    inset: 0;
-    width: 100%;
-    height: 100%;
-    margin: 0;
-    border-radius: 16px;
-    background: transparent;
-    cursor: pointer;
-  }
-  input[type="range"]:disabled {
-    cursor: not-allowed;
-  }
-  .track:has(input:disabled) {
-    opacity: 0.5;
-  }
-  input[type="range"]::-moz-range-track {
-    background: transparent;
-  }
-  input[type="range"]::-webkit-slider-thumb {
-    -webkit-appearance: none;
-    width: var(--thumb);
-    height: var(--thumb);
-    border-radius: 50%;
-    background: #fff;
-    border: 0;
-    box-shadow:
-      0 1px 4px rgba(2, 4, 12, 0.5),
-      0 0 0 1px var(--line2);
-    transition: transform var(--fast) var(--ease);
-  }
-  input[type="range"]::-moz-range-thumb {
-    width: var(--thumb);
-    height: var(--thumb);
-    border-radius: 50%;
-    background: #fff;
-    border: 0;
-    box-shadow:
-      0 1px 4px rgba(2, 4, 12, 0.5),
-      0 0 0 1px var(--line2);
-  }
-  input[type="range"]:active::-webkit-slider-thumb {
-    transform: scale(0.92);
-  }
-  .ticks {
-    display: flex;
-    justify-content: space-between;
-    margin: 6px 2px 0;
-    font-size: 11.5px;
+  .change {
+    font-size: 12.5px;
     color: var(--tx3);
   }
-  .ticks .on {
+  .lbl {
+    padding: 10px 10px 4px;
+    border-top: 1px solid var(--line);
+    margin-top: 6px;
+  }
+  .levels {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+  }
+  .levels:focus {
+    outline: none;
+  }
+  .level-row {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    min-height: 32px;
+    padding: 0 10px;
+    border: 0;
+    border-radius: 8px;
+    background: transparent;
+    color: var(--tx2);
+    font-size: 13.5px;
+    text-align: left;
+    transition:
+      background-color var(--fast) var(--ease),
+      color var(--fast) var(--ease);
+  }
+  @media (pointer: coarse) {
+    .level-row {
+      min-height: 44px;
+    }
+  }
+  .level-row:hover:not(:disabled) {
+    background: var(--bg3);
     color: var(--tx);
-    font-weight: 650;
+  }
+  .level-row[aria-checked="true"] {
+    background: var(--acbg);
+    color: var(--tx);
+    font-weight: 600;
+  }
+  .level-row :global(svg) {
+    color: var(--tx);
+  }
+  /* Four small bars show where a level sits on the model's scale; color stays neutral. */
+  .meter {
+    display: inline-flex;
+    align-items: flex-end;
+    gap: 2px;
+    height: 12px;
+  }
+  .meter span {
+    width: 3px;
+    border-radius: 1px;
+    background: var(--line3);
+  }
+  .meter span:nth-child(1) {
+    height: 4px;
+  }
+  .meter span:nth-child(2) {
+    height: 6px;
+  }
+  .meter span:nth-child(3) {
+    height: 9px;
+  }
+  .meter span:nth-child(4) {
+    height: 12px;
+  }
+  .meter .lit {
+    background: var(--tx);
   }
   .note {
-    margin: 6px 10px 2px;
+    margin: 8px 10px 2px;
     font-size: 12.5px;
     color: var(--tx3);
   }
@@ -461,6 +464,6 @@
   }
   .opt :global(svg) {
     align-self: center;
-    color: var(--glint);
+    color: var(--tx);
   }
 </style>

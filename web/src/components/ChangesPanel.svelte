@@ -381,7 +381,7 @@
   .review-scope {
     padding: 6px 12px;
     border-bottom: 1px solid var(--line);
-    font-size: 12px;
+    font-size: 13px;
   }
   .review-scope label {
     display: flex;
@@ -390,6 +390,7 @@
     min-height: 44px;
   }
   .review-scope p {
+    max-width: 72ch;
     margin: 0 0 4px;
     color: var(--tx3);
     line-height: 1.5;
@@ -433,10 +434,11 @@
     margin: 0;
     padding: 10px 12px;
     color: var(--tx3);
-    font-size: 12px;
+    font-size: 13px;
     border-bottom: 1px solid var(--line);
   }
   .notice p {
+    max-width: 72ch;
     margin: 4px 0 0;
   }
   .warning {

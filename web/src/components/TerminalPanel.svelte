@@ -6,15 +6,15 @@
   import { shownTheme, viewport } from "../lib/state.svelte.ts";
 
   const FONT = "Atkinson Hyperlegible Mono Variable";
-  /** ANSI colors tuned to Pal's ink background: each normal color stays legible as text, bright ones step up. */
+  /** ANSI colors on Pal's graphite background: each normal color stays legible as text, bright ones step up. */
   const THEME = {
-    background: "#07090f",
-    foreground: "#dfe3ee",
-    cursor: "#52d6ff",
-    cursorAccent: "#07090f",
-    selectionBackground: "#1f4b66",
-    selectionInactiveBackground: "#1a2433",
-    black: "#1c2130",
+    background: "#08080a",
+    foreground: "#e4e4e7",
+    cursor: "#e4e4e7",
+    cursorAccent: "#08080a",
+    selectionBackground: "#3a3a41",
+    selectionInactiveBackground: "#26262a",
+    black: "#26262a",
     red: "#ff7b8a",
     green: "#7fd6a3",
     yellow: "#f1c46b",
@@ -22,7 +22,7 @@
     magenta: "#d38cff",
     cyan: "#5fd7ef",
     white: "#c9cfdc",
-    brightBlack: "#6b7590",
+    brightBlack: "#71717a",
     brightRed: "#ff9aa6",
     brightGreen: "#9de6b8",
     brightYellow: "#ffd88a",
@@ -33,13 +33,13 @@
   };
   /** The daylight counterpart: dark inks on paper, each at least 4.5:1 against it. */
   const LIGHT_THEME = {
-    background: "#fbfcfe",
-    foreground: "#1d2233",
-    cursor: "#2a4fd6",
-    cursorAccent: "#fbfcfe",
-    selectionBackground: "#c9d6ff",
-    selectionInactiveBackground: "#e1e7f5",
-    black: "#1d2233",
+    background: "#ffffff",
+    foreground: "#18181b",
+    cursor: "#18181b",
+    cursorAccent: "#ffffff",
+    selectionBackground: "#dcdce0",
+    selectionInactiveBackground: "#ececee",
+    black: "#18181b",
     red: "#c22d3f",
     green: "#17773f",
     yellow: "#8a5b00",
@@ -439,7 +439,7 @@
   .session.on {
     background: var(--bg2);
     color: var(--tx);
-    box-shadow: inset 0 2px 0 var(--glint);
+    box-shadow: inset 0 2px 0 var(--focus);
   }
   .tab {
     display: flex;

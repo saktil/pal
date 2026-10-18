@@ -1,88 +1,92 @@
-/* Pal's "Visor" system: ink-navy surfaces from the mascot's visor, its ribbon blue for actions and cyan for focus and
-   live state. The blue→cyan→magenta ribbon gradient is reserved for an agent run in progress. */
+/* Pal's "Graphite" system: neutral near-black surfaces, hierarchy from type weight and surface steps, and almost no
+   hue. The primary action is the only bright element; red, green and amber appear only for status and diffs. */
 :root {
   color-scheme: dark;
-  --bg0: #07090f;
-  --bg1: #0b0e16;
-  --bg2: #121624;
-  --bg3: #1a1f30;
-  --bg4: #242a3e;
-  --line: #1d2232;
-  --line2: #2b3247;
-  --tx: #e8eaf3;
-  --tx2: #a6acc0;
-  --tx3: #7c839c;
-  --ac: #8ba6ff;
-  --acbg: rgba(59, 102, 255, 0.14);
-  --acln: #3651b8;
-  --ribbon: #3b66ff;
-  --ribbon-hi: #5579ff;
-  --glint: #52d6ff;
-  --bloom: #e14bf5;
-  --ribbon-gradient: linear-gradient(90deg, var(--ribbon), var(--glint) 55%, var(--bloom));
-  --ok: #7fd6a3;
-  --okbg: rgba(127, 214, 163, 0.12);
-  --wa: #f1bb63;
-  --wabg: rgba(241, 187, 99, 0.11);
-  --waln: #5c4a2a;
-  --er: #ff8f9d;
-  --erbg: rgba(255, 143, 157, 0.11);
-  --erln: #66343c;
-  --addbg: rgba(127, 214, 163, 0.13);
-  --addtx: #a6e2bd;
-  --delbg: rgba(255, 143, 157, 0.13);
-  --deltx: #ffb2bc;
-  --line3: #3a4260;
-  --selection: rgba(82, 214, 255, 0.28);
-  --focus-ring: rgba(82, 214, 255, 0.16);
-  --bubble: rgba(59, 102, 255, 0.13);
-  --bubble-line: rgba(85, 121, 255, 0.24);
-  --shadow: 0 16px 40px rgba(2, 4, 12, 0.6), 0 2px 6px rgba(2, 4, 12, 0.4);
-  --scrim: rgba(3, 5, 10, 0.62);
+  --bg0: #08080a;
+  --bg1: #0e0e10;
+  --bg2: #141416;
+  --bg3: #1c1c1f;
+  --bg4: #26262a;
+  --line: #1f1f23;
+  --line2: #2a2a2f;
+  --line3: #3a3a41;
+  --tx: #ececee;
+  --tx2: #a3a3ab;
+  --tx3: #85858e;
+  --ac: #e4e4e7;
+  --acbg: rgba(255, 255, 255, 0.06);
+  --acln: #3f3f46;
+  --primary: #ececee;
+  --primary-hi: #ffffff;
+  --on-primary: #0e0e10;
+  --focus: #a1a1aa;
+  --ok: #86c29d;
+  --okbg: rgba(134, 194, 157, 0.1);
+  --wa: #d8b06c;
+  --wabg: rgba(216, 176, 108, 0.09);
+  --waln: #4d4130;
+  --er: #e6939c;
+  --erbg: rgba(230, 147, 156, 0.09);
+  --erln: #55313a;
+  --danger: #8f2f3b;
+  --danger-hi: #a13744;
+  --addbg: rgba(134, 194, 157, 0.1);
+  --addtx: #b0dbbf;
+  --delbg: rgba(230, 147, 156, 0.1);
+  --deltx: #f0b9c0;
+  --selection: rgba(255, 255, 255, 0.16);
+  --focus-ring: rgba(255, 255, 255, 0.07);
+  --bubble: #1c1c1f;
+  --bubble-line: #26262a;
+  --shadow: 0 14px 36px rgba(0, 0, 0, 0.55), 0 1px 3px rgba(0, 0, 0, 0.4);
+  --scrim: rgba(0, 0, 0, 0.6);
   --sans: "Atkinson Hyperlegible Next Variable", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
   --mono: "Atkinson Hyperlegible Mono Variable", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
   --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
   --fast: 120ms;
   --mid: 190ms;
 }
-/* Daylight Visor: the same roles on paper-white surfaces; every text/surface pair here is at least 4.5:1. */
+/* Light Graphite: the same roles in ink on white; every text/surface pair here is at least 4.5:1. */
 :root[data-theme="light"] {
   color-scheme: light;
-  --bg0: #eef1f7;
-  --bg1: #f7f8fc;
+  --bg0: #f4f4f5;
+  --bg1: #fafafa;
   --bg2: #ffffff;
-  --bg3: #eceff6;
-  --bg4: #e1e6f0;
-  --line: #e3e7ef;
-  --line2: #cfd6e4;
-  --line3: #b3bccf;
-  --tx: #141826;
-  --tx2: #444b61;
-  --tx3: #636a80;
-  --ac: #2a4fd6;
-  --acbg: rgba(59, 102, 255, 0.1);
-  --acln: #9fb3f6;
-  --ribbon-hi: #2f55e0;
-  --glint: #0a86b8;
-  --bloom: #c43be0;
-  --ok: #176b40;
-  --okbg: rgba(23, 107, 64, 0.1);
-  --wa: #8f5400;
-  --wabg: rgba(214, 140, 20, 0.12);
-  --waln: #e5c48a;
-  --er: #c42f40;
-  --erbg: rgba(196, 47, 64, 0.08);
-  --erln: #efb3ba;
-  --addbg: rgba(23, 107, 64, 0.1);
-  --addtx: #135a35;
-  --delbg: rgba(196, 47, 64, 0.09);
-  --deltx: #a42736;
-  --selection: rgba(59, 102, 255, 0.2);
-  --focus-ring: rgba(10, 134, 184, 0.18);
-  --bubble: rgba(59, 102, 255, 0.1);
-  --bubble-line: rgba(59, 102, 255, 0.22);
-  --shadow: 0 16px 40px rgba(20, 24, 38, 0.14), 0 2px 6px rgba(20, 24, 38, 0.08);
-  --scrim: rgba(20, 24, 38, 0.32);
+  --bg3: #f0f0f2;
+  --bg4: #e6e6e9;
+  --line: #ebebee;
+  --line2: #dcdce0;
+  --line3: #c4c4ca;
+  --tx: #111113;
+  --tx2: #4b4b53;
+  --tx3: #6b6b73;
+  --ac: #18181b;
+  --acbg: rgba(0, 0, 0, 0.05);
+  --acln: #c4c4ca;
+  --primary: #18181b;
+  --primary-hi: #000000;
+  --on-primary: #fafafa;
+  --focus: #52525b;
+  --ok: #1f7a4a;
+  --okbg: rgba(31, 122, 74, 0.08);
+  --wa: #8a5800;
+  --wabg: rgba(176, 116, 10, 0.09);
+  --waln: #e3cfa6;
+  --er: #b4232f;
+  --erbg: rgba(180, 35, 47, 0.06);
+  --erln: #efc2c6;
+  --danger: #b4232f;
+  --danger-hi: #9b1c27;
+  --addbg: rgba(31, 122, 74, 0.08);
+  --addtx: #165e38;
+  --delbg: rgba(180, 35, 47, 0.07);
+  --deltx: #9b1c27;
+  --selection: rgba(0, 0, 0, 0.12);
+  --focus-ring: rgba(0, 0, 0, 0.06);
+  --bubble: #f0f0f2;
+  --bubble-line: #e3e3e7;
+  --shadow: 0 14px 36px rgba(17, 17, 19, 0.12), 0 1px 3px rgba(17, 17, 19, 0.08);
+  --scrim: rgba(17, 17, 19, 0.3);
 }
 * {
   box-sizing: border-box;
@@ -116,7 +120,7 @@ button:disabled {
   cursor: not-allowed;
 }
 :focus-visible {
-  outline: 2px solid var(--glint);
+  outline: 2px solid var(--focus);
   outline-offset: 2px;
 }
 ::selection {
@@ -180,13 +184,13 @@ svg.i {
   opacity: 0.42;
 }
 .b.p {
-  background: var(--ribbon);
-  border-color: var(--ribbon);
-  color: #fff;
+  background: var(--primary);
+  border-color: var(--primary);
+  color: var(--on-primary);
 }
 .b.p:hover:not(:disabled) {
-  background: var(--ribbon-hi);
-  border-color: var(--ribbon-hi);
+  background: var(--primary-hi);
+  border-color: var(--primary-hi);
 }
 .b.q {
   background: transparent;
@@ -205,12 +209,12 @@ svg.i {
   color: var(--er);
 }
 .b.dz {
-  background: #8a2f3c;
-  border-color: #a23d4b;
+  background: var(--danger);
+  border-color: var(--danger);
   color: #fff;
 }
 .b.dz:hover:not(:disabled) {
-  background: #9a3644;
+  background: var(--danger-hi);
 }
 .b.i {
   width: 30px;
@@ -364,7 +368,7 @@ textarea::placeholder {
 }
 .f:focus {
   outline: none;
-  border-color: var(--glint);
+  border-color: var(--focus);
   box-shadow: 0 0 0 3px var(--focus-ring);
 }
 .f:disabled {
@@ -388,7 +392,7 @@ textarea::placeholder {
 }
 .tab[aria-selected="true"] {
   color: var(--tx);
-  border-bottom-color: var(--glint);
+  border-bottom-color: var(--tx);
 }
 .cnt {
   font: 500 11px var(--mono);
@@ -426,7 +430,7 @@ textarea::placeholder {
   color: var(--tx);
 }
 .mtab[aria-current="true"] svg {
-  color: var(--glint);
+  color: var(--tx);
 }
 .frow {
   display: flex;
@@ -577,7 +581,7 @@ textarea::placeholder {
 }
 .cbx:focus-within {
   border-color: var(--line3);
-  box-shadow: 0 0 0 4px rgba(59, 102, 255, 0.08);
+  box-shadow: 0 0 0 4px var(--focus-ring);
 }
 .cta {
   width: 100%;
@@ -624,7 +628,7 @@ textarea::placeholder {
   height: 14px;
   border-radius: 50%;
   border: 2px solid var(--line2);
-  border-top-color: var(--glint);
+  border-top-color: var(--tx2);
   flex: 0 0 auto;
   display: inline-block;
 }
@@ -763,6 +767,7 @@ dialog::backdrop {
 }
 .sub {
   margin: 0;
+  max-width: 72ch;
   font-size: 13px;
   color: var(--tx3);
 }
@@ -783,6 +788,7 @@ dialog::backdrop {
   gap: 8px;
 }
 .setd {
+  max-width: 72ch;
   font-size: 13px;
   color: var(--tx3);
   margin-top: 2px;
@@ -849,16 +855,16 @@ dialog::backdrop {
   transition: transform var(--mid) var(--ease);
 }
 .swi:checked {
-  background: var(--ribbon);
-  border-color: var(--ribbon);
+  background: var(--primary);
+  border-color: var(--primary);
 }
 .swi:checked::after {
   transform: translateX(14px);
-  background: #fff;
+  background: var(--on-primary);
 }
 input[type="radio"],
 input[type="checkbox"]:not(.swi) {
-  accent-color: var(--ribbon);
+  accent-color: var(--primary);
 }
 input[type="radio"] {
   width: 16px;

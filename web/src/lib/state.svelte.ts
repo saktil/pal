@@ -20,7 +20,7 @@ export const app = $state({
   extensions: undefined as ExtensionView | undefined,
   width: window.innerWidth,
   sendWithEnter: readSetting("pal.sendWithEnter") !== "false",
-  pet: { enabled: readSetting("pal.pet") !== "off", coat: readSetting("pal.petCoat") ?? "ginger" },
+  pet: { enabled: readSetting("pal.pet") !== "off", coat: readSetting("pal.petCoat") ?? "silver" },
   theme: themeSetting(readSetting("pal.theme")),
   systemLight: matchMedia("(prefers-color-scheme: light)").matches,
 });
