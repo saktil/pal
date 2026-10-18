@@ -159,6 +159,28 @@ describe("Pal in a browser", () => {
     await shoot("chat-1440");
   });
 
+  it("serves the mascot as small favicons and an in-app mark under the page's own CSP", async () => {
+    const icons = await page.evaluate(() =>
+      [...document.querySelectorAll<HTMLLinkElement>('link[rel="icon"], link[rel="apple-touch-icon"]')].map(
+        (link) => link.href,
+      ),
+    );
+    expect(icons.map((href) => new URL(href).pathname).sort()).toEqual([
+      "/apple-touch-icon.png",
+      "/favicon-16.png",
+      "/favicon-32.png",
+    ]);
+    for (const href of icons) {
+      const response = await fetch(href);
+      expect(response.headers.get("content-type")).toBe("image/png");
+      // Deliberate small derivatives, not the full-size source artwork.
+      expect((await response.arrayBuffer()).byteLength).toBeLessThan(16 * 1024);
+    }
+    const mark = page.getByRole("complementary", { name: "Projects and chats" }).locator("img").first();
+    await expect.poll(() => mark.evaluate((image: HTMLImageElement) => image.complete && image.naturalWidth)).toBe(128);
+    expect(await mark.getAttribute("alt")).toBe("");
+  });
+
   it("keeps reasoning effort for this chat across reload and sends it to the model", async () => {
     await page.getByRole("button", { name: "Choose model" }).click();
     const high = page

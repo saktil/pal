@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
+  import mark from "../assets/pal-mark.png";
   import { api } from "../lib/api.ts";
   import Icon from "../lib/Icon.svelte";
   import { app } from "../lib/state.svelte.ts";
@@ -25,7 +26,7 @@
 
 <section aria-label="Set up Pal">
   <div class="intro">
-    <h1>Welcome to Pal</h1>
+    <h1><img src={mark} alt="" width="40" height="40" />Welcome to Pal</h1>
     <ol aria-label="Setup steps">
       <li aria-current={step === 1 ? "step" : undefined}>ChatGPT</li>
       <li aria-current={step === 2 ? "step" : undefined}>Internet tools</li>
@@ -69,6 +70,9 @@
     padding: 24px 20px;
   }
   h1 {
+    display: flex;
+    align-items: center;
+    gap: 12px;
     font-size: 28px;
     font-weight: 750;
     letter-spacing: -0.025em;
