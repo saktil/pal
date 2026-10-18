@@ -4,6 +4,7 @@ import { open } from "node:fs/promises";
 import { dirname } from "node:path";
 import { setTimeout as sleep } from "node:timers/promises";
 import { readFileSnapshot } from "./files.ts";
+import { gnuTimeout } from "./timeout.ts";
 
 const GIT_FLAGS = [
   "--no-pager",
@@ -32,7 +33,7 @@ export function runGit(cwd: string, args: readonly string[], options: GitOptions
   return new Promise((resolve, reject) => {
     // The independent deadline also bounds a Git child orphaned by a killed Pal process.
     const child = execFile(
-      process.env.PAL_TIMEOUT ?? "timeout",
+      gnuTimeout(),
       ["--kill-after=1s", "5s", "git", ...GIT_FLAGS, ...args],
       {
         cwd,
@@ -43,7 +44,9 @@ export function runGit(cwd: string, args: readonly string[], options: GitOptions
         env: gitEnvironment(cwd),
       },
       (error, stdout) => {
-        if (error !== null && !(options.acceptOne && error.code === 1))
+        if (error !== null && error.code === "ENOENT")
+          reject(new Error("Git and GNU timeout from coreutils must be on PATH (gtimeout on macOS)"));
+        else if (error !== null && !(options.acceptOne && error.code === 1))
           reject(new Error("Git unavailable or exceeds its limits; no hooks, filters or network were allowed"));
         else resolve(stdout);
       },
@@ -113,17 +116,7 @@ export async function runGitEffect(
     await new Promise<void>((resolve, reject) => {
       const child = execFile(
         process.env.PAL_BASH ?? "bash",
-        [
-          "--noprofile",
-          "--norc",
-          "-c",
-          RECEIPT_WORKER,
-          "pal-git",
-          receipt,
-          process.env.PAL_TIMEOUT ?? "timeout",
-          ...GIT_FLAGS,
-          ...args,
-        ],
+        ["--noprofile", "--norc", "-c", RECEIPT_WORKER, "pal-git", receipt, gnuTimeout(), ...GIT_FLAGS, ...args],
         {
           cwd,
           timeout: 8000,

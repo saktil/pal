@@ -6,6 +6,7 @@ import { StringDecoder } from "node:string_decoder";
 import { defineExtension, defineTool, type ConversationId } from "@earendil-works/pi-durable";
 import type { CodemodeNamespace } from "@earendil-works/pi-durable/codemode";
 import { Type } from "typebox";
+import { gnuTimeout } from "./timeout.ts";
 
 const MAX_OUTPUT = 64 * 1024;
 export const SHELL_NAMESPACE: CodemodeNamespace = {
@@ -85,7 +86,7 @@ export class HostCommands {
       return await new Promise<ShellResult>((resolve, reject) => {
         // GNU timeout retains an independent deadline even if Pal is killed before it can cancel the process group.
         const child = spawn(
-          process.env.PAL_TIMEOUT ?? "timeout",
+          gnuTimeout(),
           ["--kill-after=1s", `${timeout}s`, process.env.PAL_BASH ?? "bash", "--noprofile", "--norc", "-c", command],
           {
             cwd,
@@ -144,9 +145,13 @@ export class HostCommands {
           signal.removeEventListener("abort", kill);
           kill();
         };
-        child.once("error", (error) => {
+        child.once("error", (error: NodeJS.ErrnoException) => {
           cleanup();
-          reject(error);
+          reject(
+            error.code === "ENOENT"
+              ? new Error("host commands need GNU timeout from coreutils on PATH (gtimeout on macOS); nothing was run")
+              : error,
+          );
         });
         child.once("exit", kill);
         child.once("close", (code) => {

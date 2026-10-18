@@ -10,6 +10,7 @@ import pkg from "../package.json" with { type: "json" };
 import type { Pal } from "./core/app.ts";
 import type { ReleaseRpc } from "./core/release-rpc.ts";
 import { parseCommand, USAGE, UsageError } from "./core/config.ts";
+import { gnuTimeout } from "./core/timeout.ts";
 
 // The build puts the frontend in dist/public next to this bundle; running from src has none.
 const webRoot = fileURLToPath(new URL("public", import.meta.url));
@@ -189,6 +190,11 @@ async function main(argv: readonly string[]): Promise<number> {
           const shown = address.family === "IPv6" ? `[${address.address}]` : address.address;
           const origin = publicOrigin ?? `http://${shown}:${address.port}`;
           process.stdout.write(`pal ${pkg.version} listening on ${origin} (data: ${dataRoot})\n`);
+          if (gnuTimeout() === "timeout") {
+            process.stderr.write(
+              "pal: GNU timeout was not found on PATH; agent shell commands and Git review will fail until coreutils is installed (gtimeout on macOS)\n",
+            );
+          }
           if (!(await current.owner.exists()))
             process.stdout.write(`Set up Pal by opening ${origin}/#setup=${current.owner.setupToken}\n`);
           if (!stopping) await rpc?.call("online", { port: address.port, release: current.extensions.release }, 5000);
