@@ -20,7 +20,17 @@ export const app = $state({
   extensions: undefined as ExtensionView | undefined,
   width: window.innerWidth,
   sendWithEnter: readSetting("pal.sendWithEnter") !== "false",
+  pet: { enabled: readSetting("pal.pet") !== "off", coat: readSetting("pal.petCoat") ?? "ginger" },
 });
+
+/** The composer pet is a per-browser choice: it changes nothing on the server or in any chat. */
+export type PetChoice = { enabled: boolean; coat: string };
+
+export function choosePet(choice: PetChoice): void {
+  app.pet = choice;
+  saveSetting("pal.pet", choice.enabled ? "on" : "off");
+  saveSetting("pal.petCoat", choice.coat);
+}
 
 addEventListener("hashchange", () => {
   app.hash = location.hash;

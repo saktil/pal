@@ -82,6 +82,7 @@
   let effort: Effort = $state("off");
   let choosing = $state(false);
   let draft = $state("");
+  let typing = $state(false);
   let composer: HTMLTextAreaElement | undefined = $state();
   /** Add text the owner chose elsewhere (a terminal selection, a file reference) to the draft; never sends it. */
   export function insertText(text: string) {
@@ -409,7 +410,11 @@
 
 <section aria-label="Chat">
   <div class="scroller">
-    <div class="transcript" style:padding-inline={phone ? "12px" : "20px"}>
+    <div
+      class="transcript"
+      style:padding-inline={phone ? "12px" : "20px"}
+      style:padding-bottom={app.pet.enabled ? "54px" : undefined}
+    >
       {#if stream?.loaded && items.length === 0}
         <div class="empty">
           <h2>Start the conversation</h2>
@@ -582,6 +587,11 @@
 
   <div class="dock" style:padding={phone ? "0 12px 10px" : "0 20px 16px"}>
     <div class="dockin">
+      {#if app.pet.enabled}
+        {#await import("./Pet.svelte") then { default: Pet }}
+          <Pet coat={app.pet.coat} running={stream?.running ?? false} active={typing || draft !== ""} />
+        {/await}
+      {/if}
       {#if !ready}
         <div class="callout wa" role="status">
           {workspace?.error ?? "Preparing this chat's working folder. Messages stay disabled until it is ready."}
@@ -664,6 +674,8 @@
           rows="3"
           placeholder={stream?.running ? "Steer the run or queue a follow-up" : "Message Pal"}
           bind:value={draft}
+          onfocus={() => (typing = true)}
+          onblur={() => (typing = false)}
           onkeydown={onKey}></textarea>
         <div class="tools">
           <AddMenu onFiles={upload} />

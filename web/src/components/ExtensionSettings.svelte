@@ -78,6 +78,10 @@
   </div>
   <p class="fine hash">Running implementation: <span class="mono">{app.extensions.release}</span></p>
 {:else if error === undefined}<p role="status">Loading extensions…</p>{/if}
+<h3 class="h3 interface">Interface</h3>
+{#await import("./PetSettings.svelte")}<p role="status">Loading interface extras…</p>
+{:then { default: PetSettings }}<PetSettings />
+{:catch failure}<p role="alert">Couldn't load interface extras: {String(failure)}</p>{/await}
 <ReleaseSettings />
 
 <style>
@@ -115,5 +119,8 @@
   }
   .hash {
     overflow-wrap: anywhere;
+  }
+  .interface {
+    margin-top: 18px;
   }
 </style>

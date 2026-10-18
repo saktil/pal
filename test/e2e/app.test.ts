@@ -244,6 +244,58 @@ describe("Pal in a browser", () => {
     }
   });
 
+  it("shows a small optional pet that never takes input and keeps the owner's choice in this browser", async () => {
+    const pet = page.locator(".pet");
+    await pet.waitFor();
+    expect(await pet.getAttribute("data-coat")).toBe("ginger");
+    expect(await pet.getAttribute("aria-hidden")).toBe("true");
+    const box = await pet.boundingBox();
+    if (box === null) throw new Error("the pet is not rendered");
+    expect(box.width).toBeLessThanOrEqual(48);
+    // Whatever is under the pet still gets the pointer.
+    const center = { x: box.x + box.width / 2, y: box.y + box.height / 2 };
+    expect(await page.evaluate(({ x, y }) => document.elementFromPoint(x, y)?.closest(".pet") ?? null, center)).toBe(
+      null,
+    );
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    try {
+      const blink = () =>
+        pet.locator(".open").evaluate((node) => Number.parseFloat(getComputedStyle(node).animationDuration));
+      expect(await blink()).toBeLessThan(0.001);
+    } finally {
+      await page.emulateMedia({ reducedMotion: null });
+    }
+    await page.goto(`${base}/#/settings/extensions`);
+    const settings = page.getByRole("region", { name: "Composer pet" });
+    await settings.getByRole("radio", { name: "Tuxedo" }).check();
+    for (const width of [1440, 768, 390]) {
+      await page.setViewportSize({ width, height: 900 });
+      await settings.scrollIntoViewIfNeeded();
+      expect(await page.evaluate("document.documentElement.scrollWidth <= innerWidth")).toBe(true);
+      await shoot(`pet-settings-${width}`);
+    }
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.goto(chatUrl);
+    await page.reload();
+    await expect.poll(() => pet.getAttribute("data-coat")).toBe("tuxedo");
+    await shoot("pet-1440");
+    await page.goto(`${base}/#/settings/extensions`);
+    await settings.getByRole("switch", { name: "Show the pet on the composer" }).uncheck();
+    await page.goto(chatUrl);
+    await page.reload();
+    await page.getByLabel("Message").waitFor();
+    expect(await pet.count()).toBe(0);
+    // Off means its code is never fetched, not merely hidden.
+    expect(
+      await page.evaluate(() =>
+        performance.getEntriesByType("resource").some((entry) => /\/assets\/Pet-[^/]+\.js$/.test(entry.name)),
+      ),
+    ).toBe(false);
+    await page.evaluate(() => ["pal.pet", "pal.petCoat"].forEach((key) => localStorage.removeItem(key)));
+    await page.reload();
+    await pet.waitFor();
+  });
+
   it("explains the usage limit instead of retrying", async () => {
     fixture.behavior.responses = "usage_limit";
     await page.getByLabel("Message").fill("again");
