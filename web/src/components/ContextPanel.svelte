@@ -6,6 +6,7 @@
     requestId,
     type ChatSummary,
     type ContextInfo,
+    type PromptInfo,
     type MemoryInput,
     type MemoryItem,
     type Project,
@@ -17,6 +18,12 @@
 
   let { project, chat, workspace }: { project: Project; chat: ChatSummary; workspace?: Workspace | null } = $props();
   let info: ContextInfo | undefined = $state.raw();
+  let pinDraft: { revision: number; text: string } | undefined = $state();
+  let pinStale = $state(false);
+  let prompt: PromptInfo | undefined = $state.raw();
+  let pages: number[] = $state.raw([]);
+  let inspecting = $state(false);
+  const pinBytes = $derived(new TextEncoder().encode(pinDraft?.text ?? "").byteLength);
   let items: MemoryItem[] = $state.raw([]);
   let folders: GrantedFolder[] = $state.raw([]);
   let error: string | undefined = $state();
@@ -65,11 +72,72 @@
     error = undefined;
     preview = undefined;
     previewId = undefined;
+    prompt = undefined;
+    pages = [];
     try {
       await load();
+      if (pinDraft !== undefined && pinDraft.revision !== info?.pinned.revision) pinStale = true;
     } catch (failure) {
       error = String(failure);
     }
+  }
+  function editPin() {
+    if (info === undefined) return;
+    pinDraft = { revision: info.pinned.revision, text: info.pinned.text };
+    pinStale = false;
+    error = undefined;
+  }
+  function rebasePin() {
+    if (pinDraft === undefined || info === undefined) return;
+    pinDraft.revision = info.pinned.revision;
+    pinStale = false;
+    error = undefined;
+  }
+  async function savePin() {
+    const selected = pinDraft;
+    if (selected === undefined || busy || pinStale) return;
+    busy = true;
+    error = undefined;
+    try {
+      await api.pinInstructions(chat.id, selected.revision, selected.text);
+      pinDraft = undefined;
+      await load();
+    } catch (failure) {
+      if (failure instanceof ApiError && failure.status === 409) {
+        await load();
+        pinStale = true;
+      }
+      error = String(failure);
+    } finally {
+      busy = false;
+    }
+  }
+  async function inspectPrompt(offset = 0, request?: string, previous: number[] = []) {
+    if (inspecting) return;
+    const current = generation;
+    const id = chat.id;
+    inspecting = true;
+    error = undefined;
+    try {
+      const value = await api.contextPrompt(id, offset, request);
+      if (current === generation && id === chat.id) {
+        prompt = value;
+        pages = previous;
+      }
+    } catch (failure) {
+      error = String(failure);
+    } finally {
+      inspecting = false;
+    }
+  }
+  function nextPrompt() {
+    if (prompt?.next == null) return;
+    void inspectPrompt(prompt.next, prompt.request.digest, [...pages, prompt.offset]);
+  }
+  function previousPrompt() {
+    const offset = pages.at(-1);
+    if (offset === undefined || prompt === undefined) return;
+    void inspectPrompt(offset, prompt.request.digest, pages.slice(0, -1));
   }
   function begin(item?: MemoryItem) {
     editing = item;
@@ -190,7 +258,9 @@
 <div class="context">
   <div class="toolbar">
     <span class="mono grow">{workspace?.root ?? project.root}</span>
-    <button class="b sm q" onclick={refresh} disabled={busy}><Icon name="refresh" />Refresh context</button>
+    <button class="b sm q" onclick={refresh} disabled={busy || inspecting}
+      ><Icon name="refresh" />Refresh context</button
+    >
   </div>
   {#if error !== undefined}<div class="callout er" role="alert">{error}</div>{/if}
   {#if info === undefined}<p class="sub" role="status">Loading context…</p>
@@ -205,6 +275,55 @@
         <summary>View stored instructions</summary>
         <pre class="mono">{info.instructions || "No stored instructions."}</pre>
       </details>
+      <div class="row">
+        <strong class="sub grow">Pinned for this chat · revision {info.pinned.revision}</strong>
+        <span class="sub"
+          >{info.pinned.estimatedTokens.toLocaleString()} estimated tokens · {info.pinned.bytes} bytes</span
+        >
+      </div>
+      {#if info.pinned.text !== ""}<pre class="mono" aria-label="Saved pinned instructions">{info.pinned
+            .text}</pre>{/if}
+      <p class="sub">
+        Limits: {info.budgets.pinnedTokens.toLocaleString()} estimated tokens and 6 KiB UTF-8. Pi estimates are not provider
+        measurements. Core policy and tool declarations are separate. Changes apply at the next preparation, not to an already-sent
+        request, and never grant tool permissions.
+      </p>
+      {#if pinDraft === undefined}<div>
+          <button class="b sm q" onclick={editPin} disabled={busy || inspecting}>Edit pinned instructions</button>
+        </div>
+      {:else}<form
+          class="editor"
+          onsubmit={(event) => {
+            event.preventDefault();
+            void savePin();
+          }}
+        >
+          <fieldset disabled={busy}>
+            <label class="fl"
+              >Instructions pinned for this chat<textarea class="f" rows="5" maxlength="6144" bind:value={pinDraft.text}
+              ></textarea></label
+            >
+            <span class="sub"
+              >Draft: {pinBytes.toLocaleString()} / {info.budgets.pinnedBytes.toLocaleString()} UTF-8 bytes</span
+            >
+            {#if pinStale}<p class="callout wa">
+                Your draft is retained. Review the current saved instructions above before choosing to replace them.
+              </p>
+              <button class="b sm" type="button" onclick={rebasePin}>Use current revision for my draft</button>{/if}
+            <div class="row end">
+              <button
+                class="b sm q"
+                type="button"
+                onclick={() => {
+                  pinDraft = undefined;
+                  pinStale = false;
+                }}>Cancel instruction edit</button
+              ><button class="b sm p" type="submit" disabled={pinStale || pinBytes > info.budgets.pinnedBytes}
+                >Save pinned instructions</button
+              >
+            </div>
+          </fieldset>
+        </form>{/if}
       <p class="sub">
         Model: {info.model?.modelId ?? "Not selected"}. {info.head === null
           ? "No context head marker."
@@ -363,6 +482,72 @@
         UTF-8 bytes.
       </p>
     </section>
+    <section aria-label="Last prepared context">
+      <div class="row">
+        <h3 class="h3 grow">Last prepared context</h3>
+        <button class="b sm q" onclick={() => inspectPrompt()} disabled={busy || inspecting || info.prepared === null}
+          >{inspecting ? "Inspecting…" : "Inspect prepared prompt"}</button
+        >
+      </div>
+      <p class="sub">
+        Native Pi context at its recorded preparation boundary, before provider serialization. Preparation is not proof
+        of transmission. This does not predict the next request. Image and reasoning bodies/signatures are omitted; text
+        previews are bounded. Inspection makes no model call.
+      </p>
+      {#if info.prepared === null}<p class="sub">No model request has been prepared yet.</p>{/if}
+      {#if prompt !== undefined}
+        <div class="lookup">
+          <strong>{prompt.request.model.modelId} · {prompt.request.thinkingLevel}</strong><time
+            datetime={new Date(prompt.request.at).toISOString()}>{new Date(prompt.request.at).toLocaleString()}</time
+          ><span class="sub"
+            >{prompt.request.estimatedTokens.toLocaleString()} estimated context tokens · {prompt.request.messages} messages
+            · cutoff #{prompt.request.cutoff}</span
+          ><span class="sub"
+            >Model context window: {prompt.request.contextWindow?.toLocaleString() ?? "Unknown"} tokens. Pi default compaction
+            reserve: {prompt.request.reserveTokens.toLocaleString()} tokens for output/tool space. Estimates may differ from
+            actual usage.</span
+          >
+        </div>
+        <h4>Effective named sections</h4>
+        {#each prompt.sections as section (section.name)}<details>
+            <summary class="mono">{section.name}{section.truncated ? " · preview limited" : ""}</summary>
+            <pre class="mono">{section.text}</pre>
+          </details>{/each}
+        {#if prompt.sectionsLimited}<p class="sub">Additional sections omitted by the preview budget.</p>{/if}
+        <h4>Message previews</h4>
+        {#each prompt.previews as message (message.index)}<details>
+            <summary>#{message.index + 1} · {message.role}{message.truncated ? " · preview limited" : ""}</summary>
+            <pre class="mono">{message.text}</pre>
+          </details>{/each}
+        <p class="sub">
+          Up to 20 messages per page, 4 KiB per preview and 64 KiB preview text per response. The original context is
+          not altered.
+        </p>
+        <div class="row">
+          <button class="b sm" onclick={previousPrompt} disabled={inspecting || pages.length === 0}
+            >Previous messages</button
+          ><button class="b sm" onclick={nextPrompt} disabled={inspecting || prompt.next === null}>Next messages</button
+          >
+        </div>
+      {/if}
+    </section>
+    <section aria-label="Attached files and selections">
+      <h3 class="h3">Attached files and selections</h3>
+      <p class="sub">
+        Uploaded attachments from the latest 20 transcript entries, up to 50 distinct files. Files/Terminal selections
+        are ordinary message text in the prepared context. Unsent composer files are not included.
+      </p>
+      {#if info.attachments.length === 0}<p class="sub">No uploaded attachment in these recent entries.</p>{/if}
+      {#each info.attachments as item (item.id)}<div class="folder">
+          <strong>{item.name}</strong><span class="mono sub">{item.mediaType} · {item.size.toLocaleString()} bytes</span
+          >
+        </div>{/each}
+      <p class="sub">
+        Retention: original history, uploads and instruction revisions are retained; compaction changes model context,
+        not stored history. Removing a chat/project or forgetting a note does not physically erase these records or
+        backups. There is no automatic retention purge or physical-erasure action.
+      </p>
+    </section>
     <section aria-label="Recent memory lookups">
       <h3 class="h3">Recent memory lookups</h3>
       <p class="sub">
@@ -459,6 +644,9 @@
     cursor: pointer;
     color: var(--tx2);
     font-size: 13px;
+    min-height: 30px;
+    align-content: center;
+    overflow-wrap: anywhere;
   }
   ul {
     list-style: none;
@@ -531,5 +719,10 @@
   }
   time {
     color: var(--tx3);
+  }
+  @media (max-width: 699px) {
+    summary {
+      min-height: 44px;
+    }
   }
 </style>

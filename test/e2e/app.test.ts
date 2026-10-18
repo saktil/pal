@@ -608,6 +608,111 @@ describe("Pal in a browser", () => {
     }
   });
 
+  it("pins bounded owner instructions, preserves stale drafts and inspects a prepared prompt without another model call", async () => {
+    const project = await pal.projects.create("prompt-browser-project", { name: "Prompt fixture" });
+    const chat = await pal.chats.createChat("prompt-browser-chat", { projectId: project.id }, context);
+    const errors: string[] = [];
+    const onError = (error: Error) => errors.push(error.message);
+    page.on("pageerror", onError);
+    const panel = page.getByRole("complementary", { name: "Workspace panel" });
+    const count = () => fixture.apiRequests.filter((call) => call.path === "/v1/responses").length;
+    try {
+      await page.goto(`${base}/#/chat/${chat.id}`);
+      await page.reload();
+      const before = count();
+      await page.getByRole("button", { name: "Context", exact: true }).click();
+      await panel.getByRole("button", { name: "Edit pinned instructions" }).click();
+      const field = panel.getByLabel("Instructions pinned for this chat");
+      await field.fill("x".repeat(5251));
+      await panel.getByRole("button", { name: "Save pinned instructions" }).click();
+      await panel
+        .getByRole("alert")
+        .filter({ hasText: /1,500 estimated tokens/ })
+        .waitFor();
+      expect(await field.inputValue()).toBe("x".repeat(5251));
+      await field.fill("Prefer jade fixture tests.");
+      await panel.getByRole("button", { name: "Save pinned instructions" }).click();
+      await panel.getByLabel("Saved pinned instructions").filter({ hasText: "Prefer jade fixture tests." }).waitFor();
+      expect(await panel.getByRole("button", { name: "Inspect prepared prompt" }).isDisabled()).toBe(true);
+      await page.reload();
+      await page.getByRole("button", { name: "Context", exact: true }).click();
+      await panel.getByLabel("Saved pinned instructions").waitFor();
+      await panel.getByRole("button", { name: "Edit pinned instructions" }).click();
+      await field.fill("My retained owner preference.");
+      await pal.context.pin(chat, { revision: 1, text: "Other owner's correction." }, context);
+      await panel.getByRole("button", { name: "Save pinned instructions" }).click();
+      await panel
+        .getByRole("alert")
+        .filter({ hasText: /changed elsewhere/ })
+        .waitFor();
+      expect(await field.inputValue()).toBe("My retained owner preference.");
+      expect(await panel.getByLabel("Saved pinned instructions").innerText()).toBe("Other owner's correction.");
+      expect(await panel.getByRole("button", { name: "Save pinned instructions" }).isDisabled()).toBe(true);
+      for (const width of [1440, 768, 390]) {
+        await page.setViewportSize({ width, height: 900 });
+        await field.scrollIntoViewIfNeeded();
+        expect(await page.evaluate("document.documentElement.scrollWidth <= innerWidth")).toBe(true);
+        expect(await field.inputValue()).toBe("My retained owner preference.");
+        await shoot(`context-pinned-stale-${width}`);
+      }
+      await panel.getByRole("button", { name: "Use current revision for my draft" }).click();
+      await panel.getByRole("button", { name: "Save pinned instructions" }).click();
+      await panel
+        .getByLabel("Saved pinned instructions")
+        .filter({ hasText: "My retained owner preference." })
+        .waitFor();
+      expect(count()).toBe(before);
+      await panel.getByRole("button", { name: "Close panel", exact: true }).click();
+      await page.locator('input[type="file"]').setInputFiles({
+        name: "prompt.txt",
+        mimeType: "text/plain",
+        buffer: Buffer.from("Attached jade fixture source."),
+      });
+      await page.getByRole("button", { name: "Remove prompt.txt" }).waitFor();
+      await page.getByLabel("Message").fill("prepare a context with my instructions");
+      const sent = page.waitForResponse(
+        (response) => response.url().endsWith(`/chats/${chat.id}/inputs`) && response.request().method() === "POST",
+      );
+      await page.getByRole("button", { name: "Send", exact: true }).click();
+      expect((await sent).status()).toBe(200);
+      await page.getByText("Hello", { exact: true }).waitFor();
+      await page.getByRole("status").filter({ hasText: "Running" }).waitFor({ state: "detached" });
+      expect(JSON.stringify(fixture.apiRequests.at(-1)?.body)).toContain("My retained owner preference.");
+      expect(JSON.stringify(fixture.apiRequests.at(-1)?.body)).toContain("Attached jade fixture source.");
+      const after = count();
+      await page.getByRole("button", { name: "Context", exact: true }).click();
+      await panel.getByRole("button", { name: "Inspect prepared prompt" }).click();
+      const prepared = panel.getByRole("region", { name: "Last prepared context" });
+      await prepared.getByText("pinned", { exact: true }).click();
+      await prepared.locator("pre").filter({ hasText: "My retained owner preference." }).waitFor();
+      await panel
+        .getByRole("region", { name: "Attached files and selections" })
+        .getByText("prompt.txt", { exact: true })
+        .waitFor();
+      const at = await prepared.locator("time").getAttribute("datetime");
+      for (const width of [1440, 768, 390]) {
+        await page.setViewportSize({ width, height: 900 });
+        await prepared.scrollIntoViewIfNeeded();
+        expect(await page.evaluate("document.documentElement.scrollWidth <= innerWidth")).toBe(true);
+        expect(await prepared.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true);
+        await shoot(`context-prepared-${width}`);
+      }
+      await page.reload();
+      await page.getByRole("button", { name: "Context", exact: true }).click();
+      await panel.getByRole("button", { name: "Inspect prepared prompt" }).click();
+      await prepared.locator("time").waitFor();
+      expect(await prepared.locator("time").getAttribute("datetime")).toBe(at);
+      expect(count()).toBe(after);
+      expect(errors).toEqual([]);
+    } finally {
+      page.off("pageerror", onError);
+      await pal.projects.remove(project.id);
+      await pal.chats.abortDeleted(context);
+      await page.setViewportSize({ width: 1440, height: 900 });
+      await page.goto(chatUrl);
+    }
+  });
+
   it("narrows project internet tools, rejects stale settings and fits every viewport", async () => {
     const project = (await pal.projects.list())[0];
     const server = (await pal.mcp.list()).find((candidate) => candidate.name === "Fixture");

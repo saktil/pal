@@ -105,6 +105,52 @@ async function putBytes(base: string, cookie: string, id: string, bytes: Uint8Ar
 }
 
 describe("API", () => {
+  it("protects pinned instructions and read-only prompt inspection with owner, origin, revision and budget checks", async () => {
+    const { api, base, cookie, pal, fixture } = await signedIn();
+    const project = await pal.projects.create("api-context-project", { name: "Context fixture" });
+    const chat = await pal.chats.createChat("api-context-chat", { projectId: project.id }, context);
+    const path = `chats/${chat.id}/context`;
+    const input = { revision: 0, text: "Prefer concise source-linked answers." };
+    expect((await fetch(`${base}/api/${path}/prompt`)).status).toBe(401);
+    expect(
+      (
+        await fetch(`${base}/api/${path}/instructions`, {
+          method: "PUT",
+          headers: { origin: base, "content-type": "application/json" },
+          body: JSON.stringify(input),
+        })
+      ).status,
+    ).toBe(401);
+    expect(
+      (
+        await fetch(`${base}/api/${path}/instructions`, {
+          method: "PUT",
+          headers: { cookie: cookie(), origin: "https://attacker.example", "content-type": "application/json" },
+          body: JSON.stringify(input),
+        })
+      ).status,
+    ).toBe(403);
+    expect((await api("GET", `${path}/prompt`)).body.error).toBe("context_missing");
+    expect((await api("GET", `${path}/prompt?offset=invalid`)).status).toBe(400);
+    expect((await api("GET", `${path}/prompt?request=invalid`)).status).toBe(400);
+    expect((await api("PUT", `${path}/instructions`, { ...input, trust: true })).status).toBe(400);
+    expect((await api("PUT", `${path}/instructions`, { ...input, text: "x".repeat(5251) })).body.error).toBe(
+      "context_budget",
+    );
+    const before = (await api("GET", path)).body;
+    expect(before.pinned).toMatchObject({ revision: 0, text: "", bytes: 0 });
+    expect((await api("PUT", `${path}/instructions`, input)).status).toBe(200);
+    expect((await api("PUT", `${path}/instructions`, input)).status).toBe(409);
+    const after = (await api("GET", path)).body;
+    expect(after.pinned).toMatchObject({ revision: 1, text: input.text });
+    expect(after.instructions).toBe(before.instructions);
+    expect(after.prepared).toBeNull();
+    expect(fixture.apiRequests).toEqual([]);
+    await pal.projects.remove(project.id);
+    expect((await api("GET", `${path}/prompt`)).status).toBe(404);
+    expect((await api("PUT", `${path}/instructions`, { revision: 1, text: "" })).status).toBe(404);
+  });
+
   it("manages source-linked memory and a bounded Context inspector with owner/origin/revision checks", async () => {
     const { api, base, cookie, pal } = await signedIn();
     const project = (await api("POST", "projects", { requestId: "api-memory-project", name: "Context" })).body.project;

@@ -13,7 +13,7 @@ export type { ProjectMcp, ProjectMcpServer } from "../../../src/core/mcp-grants.
 export type { GrantedFolder } from "../../../src/core/folders.ts";
 export type { Workspace, WorkspaceMode } from "../../../src/core/workspaces.ts";
 export type { MemoryItem, MemoryInput } from "../../../src/core/memory.ts";
-export type { ContextInfo } from "../../../src/core/context.ts";
+export type { ContextInfo, PromptInfo } from "../../../src/core/context.ts";
 
 export type Effort = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 export type ChatGPTModel = { slug: string; displayName: string; supported: boolean; efforts: Effort[] };
@@ -135,6 +135,13 @@ export const api = {
       inWorkspace(`projects/${id}/changes?scope=${scope}`, workspace),
     ),
   context: (id: string) => call<import("../../../src/core/context.ts").ContextInfo>("GET", `chats/${id}/context`),
+  pinInstructions: (id: string, revision: number, text: string) =>
+    call<{ saved: boolean }>("PUT", `chats/${id}/context/instructions`, { revision, text }),
+  contextPrompt: (id: string, offset = 0, request?: string) =>
+    call<import("../../../src/core/context.ts").PromptInfo>(
+      "GET",
+      `chats/${id}/context/prompt?offset=${offset}${request === undefined ? "" : `&request=${encodeURIComponent(request)}`}`,
+    ),
   memory: (id: string, workspace?: string) =>
     call<{ items: import("../../../src/core/memory.ts").MemoryItem[] }>(
       "GET",

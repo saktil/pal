@@ -24,7 +24,6 @@ import { InvalidRequest, RequestConflict, validate } from "./requests.ts";
 import { UploadBody, UploadError } from "./uploads.ts";
 import { TerminalSize } from "./terminals.ts";
 import { MemoryBody } from "./memory.ts";
-import { inspectContext } from "./context.ts";
 
 const WorkspaceId = Type.Optional(Type.String({ minLength: 1, maxLength: 64 }));
 const workspaceQuery = (url: URL) => {
@@ -582,7 +581,25 @@ export function createApi(pal: Pal, publicOrigin?: string) {
         });
       }
       if (action === "context" && path.length === 3 && method === "GET")
-        return send(200, await inspectContext(pal, chat, context));
+        return send(200, await pal.context.inspect(chat, context));
+      if (action === "context" && path.length === 4) {
+        if (path[3] === "instructions" && method === "PUT") {
+          await pal.context.pin(chat, await readJson(request), context);
+          return send(200, { saved: true });
+        }
+        if (path[3] === "prompt" && method === "GET")
+          return send(
+            200,
+            await pal.context.prompt(
+              chat,
+              {
+                offset: Number(url.searchParams.get("offset") ?? "0"),
+                ...(url.searchParams.has("request") ? { request: url.searchParams.get("request") } : {}),
+              },
+              context,
+            ),
+          );
+      }
       if (action === "inputs" && method === "POST") {
         const { requestId, ...body } = validate(Keyed, await readJson(request));
         return send(200, { admission: await pal.chats.submit(chat.id, requestId, body, context) });

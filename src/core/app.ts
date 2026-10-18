@@ -15,6 +15,7 @@ import { StdioPrograms } from "../pi/mcp-stdio.ts";
 import { loadMasterKey, SqliteCredentialStore } from "../storage/credentials.ts";
 import { openStore, type Store } from "../storage/store.ts";
 import { ChatService } from "./chats.ts";
+import { ChatContext } from "./context.ts";
 import { Changes } from "./changes.ts";
 import { FILES_NAMESPACE, fileTools, projectFiles } from "./files.ts";
 import { FolderGrants } from "./folders.ts";
@@ -43,6 +44,7 @@ export type Pal = {
   readonly folders: FolderGrants;
   readonly workspaces: Workspaces;
   readonly memory: ProjectMemory;
+  readonly context: ChatContext;
   readonly chats: ChatService;
   readonly chatgpt: ChatGPTConnection;
   readonly models: Models;
@@ -182,6 +184,16 @@ export async function openPal(options: PalOptions, context: Context): Promise<Pa
         codemode.withNamespaces([FILES_NAMESPACE, SHELL_NAMESPACE, MEMORY_NAMESPACE, ...namespaces]),
     });
     mcp = connections;
+    const chatContext = new ChatContext(
+      database,
+      () => {
+        if (harness === undefined) throw new Error("the harness is not open");
+        return harness;
+      },
+      models,
+      store.storage,
+    );
+    registry.install(chatContext.extension);
     const running = await Harness.open(store.storage, { models, registry }, context);
     harness = running;
 
@@ -223,6 +235,7 @@ export async function openPal(options: PalOptions, context: Context): Promise<Pa
       projects: openedProjects,
       folders,
       memory,
+      context: chatContext,
       workspaces: openedWorkspaces,
       chats: openedChats,
       chatgpt: new ChatGPTConnection(credentials, {
