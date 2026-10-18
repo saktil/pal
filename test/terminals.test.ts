@@ -206,16 +206,19 @@ describe("human host terminals", () => {
     const terminal = terminals[0];
     if (terminal === undefined) throw new Error("missing terminal");
     const client = await connect(terminal.id);
+    // Linux PTYs deliver big chunks, so a burst exceeds the 1 MiB/s flood rate. macOS delivers 1 KiB chunks that
+    // per-chunk backpressure holds near 0.75 MiB/s, below that rate, so there the 16 MiB lifetime cap ends it.
+    const darwin = process.platform === "darwin";
     client.send({
       type: "input",
       epoch: client.last("state")?.epoch,
-      data: "head -c 4194304 /dev/zero | tr '\\0' x\r",
+      data: `head -c ${darwin ? 17 * 1048576 : 4194304} /dev/zero | tr '\\0' x\r`,
     });
     await expect
       .poll(async () => (await pal.terminals.list(project.id)).find((value) => value.id === terminal.id)?.reason, {
-        timeout: 10_000,
+        timeout: darwin ? 40_000 : 10_000,
       })
-      .toMatch(/flood/);
+      .toMatch(darwin ? /Session output limit reached \(16 MiB\)/ : /flood/);
     const second = terminals[1];
     if (second === undefined) throw new Error("missing terminal");
     const bad = await connect(second.id);
@@ -227,7 +230,7 @@ describe("human host terminals", () => {
       await pal.store.database.get("SELECT root FROM pal_projects WHERE id = ? AND removed_at IS NULL", project.id),
     ).toBeUndefined();
     await expect(pal.terminals.list(project.id)).rejects.toMatchObject({ status: 404 });
-  });
+  }, 60_000);
 
   it("caps concurrent observers and shares one shutdown for an active shell", async () => {
     const { pal, project, create, socket, connect } = await setup();
