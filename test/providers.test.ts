@@ -10,7 +10,7 @@ import { openPal, type Pal } from "../src/core/app.ts";
 import { startServer } from "../src/core/server.ts";
 import { apiKeyProvider } from "../src/pi/providers.ts";
 import { startOpenAIFixture } from "./fixtures/openai-server.ts";
-import { startProviderFixture } from "./fixtures/provider-server.ts";
+import { GOOD_KEY as GOOD, startProviderFixture } from "./fixtures/provider-server.ts";
 
 const cleanups: (() => unknown)[] = [];
 afterEach(async () => {
@@ -18,7 +18,6 @@ afterEach(async () => {
 });
 
 const OPENROUTER_MODEL = "~deepseek/deepseek-flash-latest";
-const GOOD = "sk-or-fixture-good";
 
 async function setup() {
   const chatgpt = await startOpenAIFixture();
@@ -118,6 +117,9 @@ describe("API-key model providers", () => {
       "openrouter",
       "opencode",
       "opencode-go",
+      "openai-api",
+      "anthropic",
+      "compatible",
     ]);
     expect(
       view.body.providers.every((entry: { enabled: boolean; hasKey: boolean }) => !entry.enabled && !entry.hasKey),
@@ -223,6 +225,103 @@ describe("API-key model providers", () => {
       expect(request?.headers.authorization).toBe("Bearer sk-opencode-fixture");
       expect(request?.headers["x-opencode-session"]).toEqual(expect.any(String));
     }
+  });
+
+  it("routes OpenAI API and Anthropic API keys to their own endpoints, apart from the ChatGPT subscription", async () => {
+    const fixture = await setup();
+    const { api, send, provider, chatgpt } = fixture;
+    for (const [id, model, path] of [
+      ["openai-api", "gpt-4.1", "/v1/responses"],
+      ["anthropic", "claude-haiku-4-5", "/v1/messages"],
+    ] as const) {
+      await api("PUT", `providers/${id}/key`, { key: "sk-fixture-rejected" });
+      expect((await api("POST", `providers/${id}/check`)).body.check).toMatchObject({ ok: false });
+      await api("PUT", `providers/${id}/key`, { key: GOOD });
+      expect((await api("POST", `providers/${id}/check`)).body.check).toMatchObject({ ok: true });
+      await api("PUT", `providers/${id}/enabled`, { enabled: true });
+      const chatId = await fixture.chat(`api-key-chat-${id}`);
+      expect((await api("PUT", `chats/${chatId}/model`, { provider: id, model })).body).toMatchObject({
+        provider: id,
+        model,
+      });
+      const sent = await send(chatId);
+      expect(JSON.stringify(sent.message?.content)).toContain("Hello from the provider fixture");
+      const request = provider.requests.at(-1);
+      expect(request?.path).toBe(path);
+      if (id === "anthropic") expect(request?.headers["x-api-key"]).toBe(GOOD);
+      else expect(request?.headers.authorization).toBe(`Bearer ${GOOD}`);
+    }
+    // The OpenAI API key is its own provider: ChatGPT stays signed out and its fixture saw no model request.
+    expect(await fixture.pal.chatgpt.account()).toBeUndefined();
+    expect(
+      fixture.pal.models
+        .getProvider("openai-api")
+        ?.getModels()
+        .every((model) => model.provider === "openai-api"),
+    ).toBe(true);
+    expect(chatgpt.apiRequests.filter((request) => request.path === "/v1/responses")).toEqual([]);
+  });
+
+  it("describes an OpenAI-compatible endpoint, keyless or keyed, and refuses models it no longer offers", async () => {
+    const fixture = await setup();
+    const { api, send, provider } = fixture;
+    const endpoint = {
+      name: "Local models",
+      baseUrl: `${provider.origin}/compat/v1/`,
+      models: ["local-a", "local-b", "local-a"],
+      contextWindow: 32_768,
+      maxTokens: 4096,
+      images: false,
+      keyless: true,
+    };
+    for (const bad of [
+      { baseUrl: "ftp://models.example/v1" },
+      { baseUrl: "http://user:secret@models.example/v1" },
+      { baseUrl: "http://models.example/v1?key=secret" },
+      { maxTokens: 65_536 },
+    ]) {
+      expect((await api("PUT", "providers/compatible/config", { ...endpoint, ...bad })).body.error).toBe(
+        "provider_config",
+      );
+    }
+    expect((await api("PUT", "providers/compatible/enabled", { enabled: true })).body.error).toBe("provider_config");
+    const saved = await api("PUT", "providers/compatible/config", endpoint);
+    const compatible = () => saved.body.providers.find((entry: { id: string }) => entry.id === "compatible");
+    expect(compatible().config).toMatchObject({
+      baseUrl: `${provider.origin}/compat/v1`,
+      models: ["local-a", "local-b"],
+    });
+    const enabled = await api("PUT", "providers/compatible/enabled", { enabled: true });
+    expect(enabled.body.providers.at(-1)).toMatchObject({ name: "Local models", enabled: true });
+    expect(enabled.body.providers.at(-1).models.map((model: { id: string }) => model.id)).toEqual([
+      "local-a",
+      "local-b",
+    ]);
+    expect((await api("POST", "providers/compatible/check")).body.check).toMatchObject({ ok: true });
+    const chatId = await fixture.chat("compatible-chat");
+    expect((await api("PUT", `chats/${chatId}/model`, { provider: "compatible", model: "local-a" })).status).toBe(200);
+    expect((await send(chatId)).status).toBe(200);
+    expect(provider.requests.at(-1)?.path).toBe("/compat/v1/chat/completions");
+
+    // Requiring a key without one saved disables the endpoint until a key arrives.
+    const keyed = await api("PUT", "providers/compatible/config", { ...endpoint, keyless: false });
+    expect(keyed.body.providers.at(-1)).toMatchObject({ enabled: false, hasKey: false });
+    expect(await send(chatId)).toMatchObject({ status: 409, error: "provider_unavailable" });
+    await api("PUT", "providers/compatible/key", { key: GOOD });
+    await api("PUT", "providers/compatible/enabled", { enabled: true });
+    expect((await send(chatId)).status).toBe(200);
+    expect(provider.requests.at(-1)?.headers.authorization).toBe(`Bearer ${GOOD}`);
+
+    await api("PUT", "providers/compatible/config", { ...endpoint, keyless: false, models: ["local-b"] });
+    expect(await send(chatId)).toMatchObject({ status: 409, error: "model_unavailable" });
+
+    // A corrupt stored description leaves the endpoint unusable after restart instead of stopping Pal.
+    await fixture.pal.store.database.run(
+      "UPDATE pal_settings SET value = '{not json' WHERE key = 'provider:compatible:config'",
+    );
+    const reopened = await fixture.reopen();
+    expect((await reopened.providers.list()).at(-1)).toMatchObject({ enabled: false, config: null });
+    expect(await send(chatId)).toMatchObject({ status: 409, error: "provider_unavailable" });
   });
 
   it("starts new chats on the owner's chosen default provider model", async () => {

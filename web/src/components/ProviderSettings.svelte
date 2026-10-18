@@ -1,6 +1,7 @@
 <script lang="ts">
   import { api, ApiError, type KeyCheck, type ProvidersState } from "../lib/api.ts";
   import { app } from "../lib/state.svelte.ts";
+  import CompatibleEndpoint from "./CompatibleEndpoint.svelte";
 
   const providers = $derived(app.providers?.providers ?? []);
   let drafts: Record<string, string> = $state({});
@@ -39,35 +40,45 @@
 
 <h3 class="h3">Other model providers</h3>
 <p class="setd">
-  Optional, with your own API keys. Each stays off until you enable it, and Pal never switches a chat to it or falls
-  back to it on its own. Keys are stored encrypted on this server and never shown again.
+  Optional, with your own API keys or endpoint. Each stays off until you enable it, and Pal never switches a chat to it
+  or falls back to it on its own. Keys are stored encrypted on this server and never shown again.
 </p>
 {#each providers as provider (provider.id)}
-  <div class="fold" role="group" aria-label={provider.name}>
+  {@const custom = provider.id === "compatible"}
+  {@const keyless = provider.config?.keyless === true}
+  {@const ready = custom ? provider.config != null && (keyless || provider.hasKey) : provider.hasKey}
+  <div class="fold" role="group" aria-label={custom ? "OpenAI-compatible endpoint" : provider.name}>
     <div class="line">
-      <strong>{provider.name}</strong><span class="pill">API key</span>
+      <strong>{provider.name}</strong><span class="pill">{custom ? "Custom endpoint" : "API key"}</span>
       {#if provider.enabled}<span class="pill ok">Enabled</span>
-      {:else if provider.hasKey}<span class="pill">Key saved · off</span>
+      {:else if ready}<span class="pill">Ready · off</span>
       {:else}<span class="pill wa">Not set up</span>{/if}
     </div>
     <div class="setd">{provider.billing}</div>
-    <label class="fl key">
-      {provider.hasKey ? "Replace API key" : "API key"}
-      <input
-        class="f mono"
-        type="password"
-        autocomplete="off"
-        spellcheck="false"
-        placeholder={provider.hasKey ? "Saved key hidden" : "Paste your key"}
-        bind:value={drafts[provider.id]}
+    {#if custom}
+      <CompatibleEndpoint
+        config={provider.config ?? null}
+        busy={busy !== undefined}
+        onSave={(config) => act(provider.id, () => api.providerCompatible(config))}
       />
-    </label>
+    {/if}
+    {#if !keyless}<label class="fl key">
+        {provider.hasKey ? "Replace API key" : "API key"}
+        <input
+          class="f mono"
+          type="password"
+          autocomplete="off"
+          spellcheck="false"
+          placeholder={provider.hasKey ? "Saved key hidden" : "Paste your key"}
+          bind:value={drafts[provider.id]}
+        />
+      </label>{/if}
     <div class="buttons">
-      <button
-        class="b"
-        disabled={busy !== undefined || (drafts[provider.id] ?? "").trim() === ""}
-        onclick={() => save(provider.id)}>Save key</button
-      >
+      {#if !keyless}<button
+          class="b"
+          disabled={busy !== undefined || (drafts[provider.id] ?? "").trim() === ""}
+          onclick={() => save(provider.id)}>Save key</button
+        >{/if}
       {#if provider.hasKey}
         <button
           class="b q"
@@ -75,10 +86,14 @@
           onclick={() => act(provider.id, () => api.providerKey(provider.id, null))}>Remove key</button
         >
       {/if}
-      {#if provider.hasKey && provider.id === "openrouter"}
-        <button class="b q" disabled={busy !== undefined} onclick={() => check(provider.id)}>Check key</button>
+      {#if provider.checkable && ready}
+        <button class="b q" disabled={busy !== undefined} onclick={() => check(provider.id)}
+          >{keyless ? "Check endpoint" : "Check key"}</button
+        >
       {/if}
-      <a class="b q" href={provider.keys} target="_blank" rel="noopener noreferrer">Get a key</a>
+      {#if provider.keys !== null}<a class="b q" href={provider.keys} target="_blank" rel="noopener noreferrer"
+          >Get a key</a
+        >{/if}
     </div>
     <div class="setrow">
       <label for={`provider-${provider.id}`}>
@@ -86,9 +101,11 @@
         <div class="setd">
           {provider.enabled
             ? `${provider.models.length} models in the chat model picker.`
-            : provider.hasKey
+            : ready
               ? "Off. Chats can't send to it."
-              : "Save a key first."}
+              : custom
+                ? "Describe the endpoint, and save a key unless it needs none."
+                : "Save a key first."}
         </div>
       </label>
       <input
@@ -97,7 +114,7 @@
         type="checkbox"
         role="switch"
         checked={provider.enabled}
-        disabled={!provider.hasKey || busy !== undefined}
+        disabled={!ready || busy !== undefined}
         onchange={(event) => act(provider.id, () => api.providerEnabled(provider.id, event.currentTarget.checked))}
       />
     </div>

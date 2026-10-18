@@ -1782,11 +1782,11 @@ describe("Pal in a browser", () => {
     await page.goto(`${base}/#/settings/models`);
     const card = page.getByRole("group", { name: "OpenRouter" });
     await card.getByText("Not set up").waitFor();
-    await card.getByLabel("API key").fill("sk-or-fixture-good");
+    await card.getByLabel("API key").fill("sk-fixture-good");
     await card.getByRole("button", { name: "Save key" }).click();
-    await card.getByText("Key saved · off").waitFor();
+    await card.getByText("Ready · off").waitFor();
     expect(await card.getByLabel("Replace API key").inputValue()).toBe("");
-    expect(await page.content()).not.toContain("sk-or-fixture-good");
+    expect(await page.content()).not.toContain("sk-fixture-good");
     await card.getByRole("switch", { name: /Use OpenRouter in chats/ }).check();
     await card.getByText("Enabled", { exact: true }).waitFor();
     await card.getByRole("button", { name: "Check key" }).click();
@@ -1818,7 +1818,7 @@ describe("Pal in a browser", () => {
     await page.getByRole("button", { name: "Send" }).click();
     await page.getByText("Hello from the provider fixture").waitFor();
     expect(provider.requests.at(-1)).toMatchObject({ path: "/api/v1/chat/completions" });
-    expect(provider.requests.at(-1)?.headers.authorization).toBe("Bearer sk-or-fixture-good");
+    expect(provider.requests.at(-1)?.headers.authorization).toBe("Bearer sk-fixture-good");
     expect(chatgptRequests()).toBe(before);
     await shoot("provider-chat-1440");
 
@@ -1828,6 +1828,42 @@ describe("Pal in a browser", () => {
     await page.getByLabel("Message").fill("never sent elsewhere");
     expect(await page.getByRole("button", { name: "Send" }).isDisabled()).toBe(true);
     expect(chatgptRequests()).toBe(before);
+    await pal.chats.remove(chat.id, context);
+  });
+
+  it("describes a keyless OpenAI-compatible endpoint and chats on one of its models", async () => {
+    await page.goto(`${base}/#/settings/models`);
+    const card = page.getByRole("group", { name: "OpenAI-compatible endpoint" });
+    await card.getByText("Not set up").waitFor();
+    await card.getByLabel("Name", { exact: true }).fill("Local models");
+    await card.getByLabel("Base URL").fill(`${provider.origin}/compat/v1`);
+    await card.getByLabel("Model IDs, one per line").fill("local-a\nlocal-b");
+    await card.getByLabel("This endpoint needs no key").check();
+    await card.getByRole("button", { name: "Save endpoint" }).click();
+    await card.getByText("Ready · off").waitFor();
+    expect(await card.getByLabel("API key").count()).toBe(0);
+    await card.getByRole("switch").check();
+    await card.getByText("Enabled", { exact: true }).waitFor();
+    await card.getByRole("button", { name: "Check endpoint" }).click();
+    await card.getByRole("status").filter({ hasText: "Local models answered." }).waitFor();
+    await shoot("compatible-endpoint-1440");
+
+    const project = (await pal.projects.list())[0];
+    if (project === undefined) throw new Error("missing project");
+    const chat = await pal.chats.createChat("e2e-compatible-chat", { projectId: project.id }, context);
+    await page.goto(`${base}/#/chat/${chat.id}`);
+    await page.reload();
+    await page.getByRole("button", { name: "Choose model" }).click();
+    await page
+      .getByRole("radiogroup", { name: "Local models models" })
+      .getByRole("radio", { name: /local-b/ })
+      .click();
+    await page.getByLabel("Message").fill("hello from the local endpoint");
+    await page.getByRole("button", { name: "Send" }).click();
+    await page.getByText("Hello from the provider fixture").waitFor();
+    expect(provider.requests.at(-1)?.path).toBe("/compat/v1/chat/completions");
+    expect(provider.requests.at(-1)?.body.model).toBe("local-b");
+    await pal.providers.setEnabled("compatible", false);
     await pal.chats.remove(chat.id, context);
   });
 

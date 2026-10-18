@@ -15,7 +15,7 @@ export type { Workspace, WorkspaceMode } from "../../../src/core/workspaces.ts";
 export type { MemoryItem, MemoryInput } from "../../../src/core/memory.ts";
 export type { ContextInfo, PromptInfo } from "../../../src/core/context.ts";
 export type { ApprovalView, CommandApproval, CommandMode } from "../../../src/core/approvals.ts";
-export type { KeyCheck, ProviderModel, ProviderView } from "../../../src/pi/providers.ts";
+export type { CompatibleConfig, KeyCheck, ProviderModel, ProviderView } from "../../../src/pi/providers.ts";
 export type ModelRef = { provider: string; modelId: string };
 export type ProvidersState = {
   providers: import("../../../src/pi/providers.ts").ProviderView[];
@@ -131,6 +131,8 @@ export const api = {
       : call<ProvidersState>("PUT", `providers/${id}/key`, { key }),
   providerEnabled: (id: string, enabled: boolean) =>
     call<ProvidersState>("PUT", `providers/${id}/enabled`, { enabled }),
+  providerCompatible: (config: import("../../../src/pi/providers.ts").CompatibleConfig) =>
+    call<ProvidersState>("PUT", "providers/compatible/config", config),
   providerCheck: (id: string) =>
     call<{ check: import("../../../src/pi/providers.ts").KeyCheck }>("POST", `providers/${id}/check`),
   setDefault: (provider: string, model: string) => call<ProvidersState>("PUT", "default-model", { provider, model }),

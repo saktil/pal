@@ -11,7 +11,7 @@ import {
   listChatGPTModels,
 } from "../pi/chatgpt.ts";
 import { McpConfigError } from "../pi/mcp.ts";
-import { API_PROVIDERS, isApiProvider, ProviderConfigError } from "../pi/providers.ts";
+import { API_PROVIDERS, CompatibleBody, isApiProvider, ProviderConfigError } from "../pi/providers.ts";
 import { StdioConfigError, StdioServerBody } from "../pi/mcp-stdio.ts";
 import type { Pal } from "./app.ts";
 import { ApprovalDecision, CommandModeBody } from "./approvals.ts";
@@ -355,6 +355,10 @@ export function createApi(pal: Pal, publicOrigin?: string) {
           return send(200, await providersView());
         }
         if (action === "check" && method === "POST") return send(200, { check: await pal.providers.check(id) });
+        if (id === "compatible" && action === "config" && method === "PUT") {
+          await pal.providers.setCompatible(validate(CompatibleBody, await readJson(request)));
+          return send(200, await providersView());
+        }
       }
     }
     if (resource === "default-model" && path.length === 1 && method === "PUT") {
@@ -666,14 +670,23 @@ export function createApi(pal: Pal, publicOrigin?: string) {
       }
       if (action === "inputs" && method === "POST") {
         const { requestId, ...body } = validate(Keyed, await readJson(request));
-        // A chat on a disabled provider stops here; it is never sent to ChatGPT or any other provider instead.
-        const provider = (await conversation.agent(context)).model?.provider;
-        if (provider !== undefined && isApiProvider(provider) && !(await pal.providers.usable(provider))) {
-          throw new HttpError(
-            409,
-            "provider_unavailable",
-            `${API_PROVIDERS[provider].name} isn't enabled. Enable it in Settings → Models or choose another model.`,
-          );
+        // A chat on a disabled provider or a removed model stops here; it is never sent anywhere else instead.
+        const chosen = (await conversation.agent(context)).model;
+        if (chosen !== undefined && isApiProvider(chosen.provider)) {
+          if (!(await pal.providers.usable(chosen.provider))) {
+            throw new HttpError(
+              409,
+              "provider_unavailable",
+              `${API_PROVIDERS[chosen.provider].name} isn't enabled. Enable it in Settings → Models or choose another model.`,
+            );
+          }
+          if (pal.models.getModel(chosen.provider, chosen.modelId) === undefined) {
+            throw new HttpError(
+              409,
+              "model_unavailable",
+              `${chosen.modelId} is no longer offered; choose another model.`,
+            );
+          }
         }
         return send(200, { admission: await pal.chats.submit(chat.id, requestId, body, context) });
       }
