@@ -3,8 +3,8 @@
 
   export type Choice = { provider: string; id: string; name: string; efforts: readonly Effort[] };
   export type Group = { provider: string; name: string; billing: string; choices: Choice[] };
-  /** The levels Pal's chat API accepts, in order; a model's steps are the ones it also supports. */
-  const LEVELS = ["off", "low", "medium", "high"] as const;
+  /** Pi's thinking levels in order; a model's steps are the ones it supports. */
+  const LEVELS = ["off", "minimal", "low", "medium", "high", "xhigh", "max"] as const;
   export const LABELS: Record<Effort, string> = {
     off: "Off",
     minimal: "Minimal",
@@ -183,10 +183,10 @@
             />
           </div>
           {#if adjustable}
+            <!-- The header names the current level; the ends say what the scale runs between. -->
             <div class="ticks" aria-hidden="true">
-              {#each steps as level, at (level)}<span
-                  class:on={at === (preview ?? index)}
-                  style:--at={at / (steps.length - 1)}>{LABELS[level]}</span
+              {#each [steps[0], steps.at(-1)] as level, end (end)}<span class:on={level === shown}
+                  >{level === undefined ? "" : LABELS[level]}</span
                 >{/each}
             </div>
           {/if}
@@ -400,17 +400,11 @@
     transform: scale(0.92);
   }
   .ticks {
-    position: relative;
-    height: 18px;
-    margin: 6px calc(var(--thumb, 28px) / 2) 0;
+    display: flex;
+    justify-content: space-between;
+    margin: 6px 2px 0;
     font-size: 11.5px;
     color: var(--tx3);
-  }
-  .ticks span {
-    position: absolute;
-    left: calc(100% * var(--at));
-    transform: translateX(calc(-100% * var(--at)));
-    white-space: nowrap;
   }
   .ticks .on {
     color: var(--tx);

@@ -200,7 +200,11 @@ describe("Pal in a browser", () => {
     expect(await slider.getAttribute("aria-valuetext")).toBe("Off");
     await page.keyboard.press("ArrowRight");
     await expect.poll(() => trigger.getAttribute("aria-label")).toContain("reasoning low");
+    // The model's own top level is reachable, not just Pal's former four.
     await page.keyboard.press("End");
+    await expect.poll(() => slider.getAttribute("aria-valuetext")).toBe("Extra high");
+    await expect.poll(() => trigger.getAttribute("aria-label")).toContain("reasoning extra high");
+    await page.keyboard.press("ArrowLeft");
     await expect.poll(() => slider.getAttribute("aria-valuetext")).toBe("High");
     await expect.poll(() => trigger.getAttribute("aria-label")).toContain("reasoning high");
     await page.reload();

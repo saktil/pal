@@ -915,6 +915,15 @@ describe("API", () => {
       effort: "high",
     });
     expect((await api("GET", `chats/${chat.id}`)).body.effort).toBe("high");
+    // Levels beyond high are accepted where the model supports them, and clamped where it does not.
+    expect((await api("PUT", `chats/${chat.id}/model`, { model: "gpt-5.5", effort: "xhigh" })).body.effort).toBe(
+      "xhigh",
+    );
+    expect((await api("PUT", `chats/${chat.id}/model`, { model: "gpt-5.5", effort: "max" })).body.effort).toBe("xhigh");
+    expect((await api("PUT", `chats/${chat.id}/model`, { model: "gpt-5.5", effort: "minimal" })).body.effort).toBe(
+      "low",
+    );
+    await api("PUT", `chats/${chat.id}/model`, { model: "gpt-5.5", effort: "high" });
     expect((await api("PUT", `chats/${chat.id}/model`, { model: "gpt-4.1" })).body.effort).toBe("off");
     expect((await api("PUT", `chats/${chat.id}/model`, { model: "gpt-4.1", effort: "high" })).body.effort).toBe("off");
     for (const body of [

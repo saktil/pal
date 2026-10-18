@@ -68,7 +68,8 @@ const ChatModelChoice = Type.Object(
   {
     ...ModelChoice.properties,
     provider: Type.Optional(ProviderId),
-    effort: Type.Optional(Type.Enum(["off", "low", "medium", "high"])),
+    // Every Pi thinking level; the chosen model's own support is enforced by clamping below.
+    effort: Type.Optional(Type.Enum(["off", "minimal", "low", "medium", "high", "xhigh", "max"])),
   },
   { additionalProperties: false },
 );
