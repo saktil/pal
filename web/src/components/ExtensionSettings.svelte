@@ -2,6 +2,7 @@
   import { onMount } from "svelte";
   import { api, ApiError, type ExtensionScope } from "../lib/api.ts";
   import { app, refreshExtensions } from "../lib/state.svelte.ts";
+  import ReleaseSettings from "./ReleaseSettings.svelte";
 
   let busy = $state(false);
   let error: string | undefined = $state();
@@ -77,6 +78,7 @@
   </div>
   <p class="fine hash">Running implementation: <span class="mono">{app.extensions.release}</span></p>
 {:else if error === undefined}<p role="status">Loading extensions…</p>{/if}
+<ReleaseSettings />
 
 <style>
   .extension {

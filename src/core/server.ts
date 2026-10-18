@@ -6,6 +6,9 @@ import { isOwnHost, sendJson } from "./http.ts";
 
 export type ServerOptions = {
   version: string;
+  /** Probation/drain blocks all observation and admission except the public health probe. */
+  available?: (() => boolean) | undefined;
+  health?: (() => Record<string, unknown>) | undefined;
   upgrade?: ((request: IncomingMessage, socket: Duplex, head: Buffer) => Promise<void>) | undefined;
   publicOrigin?: string | undefined;
   /** Built frontend directory; absent in development, where Vite serves the UI. */
@@ -23,7 +26,14 @@ const BASE_HEADERS = {
     "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'",
 };
 
-export function createRequestListener({ version, webRoot, api, publicOrigin }: ServerOptions): RequestListener {
+export function createRequestListener({
+  version,
+  webRoot,
+  api,
+  publicOrigin,
+  available,
+  health,
+}: ServerOptions): RequestListener {
   const external = publicOrigin === undefined ? undefined : new URL(publicOrigin);
   const assets = webRoot === undefined ? undefined : sirv(webRoot, { single: true });
 
@@ -43,8 +53,13 @@ export function createRequestListener({ version, webRoot, api, publicOrigin }: S
 
     if (pathname === "/api/health") {
       if (!readOnly) return methodNotAllowed(response);
-      return sendJson(request, response, 200, { status: "ok", name: "pal", version });
+      return sendJson(request, response, 200, health?.() ?? { status: "ok", name: "pal", version });
     }
+    if (available?.() === false)
+      return sendJson(request, response, 503, {
+        error: "restarting",
+        message: "Pal is checking a release or draining for restart. Reconnect shortly.",
+      });
     if (pathname === "/api" || pathname.startsWith("/api/")) {
       if (api !== undefined) return void api(request, response, url);
       return sendJson(request, response, 404, { error: "not_found" });
@@ -62,7 +77,7 @@ export async function startServer(options: ServerOptions & { host: string; port:
   const server = createServer(createRequestListener(options));
   server.on("upgrade", (request, socket, head) => {
     socket.on("error", () => socket.destroy());
-    if (options.upgrade === undefined) {
+    if (options.upgrade === undefined || options.available?.() === false) {
       socket.destroy();
       return;
     }

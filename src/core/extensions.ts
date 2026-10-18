@@ -17,6 +17,7 @@ import type { SqliteDatabase } from "@earendil-works/pi-durable/storage/sqlite";
 import { type Static, Type } from "typebox";
 import { HttpError } from "./http.ts";
 import { validate } from "./requests.ts";
+import { unfinishedWork } from "./release-state.ts";
 
 /** Only compiled, exercised contributions. A manifest is not a sandbox or permission to load code. */
 export const BUILTINS = [
@@ -174,17 +175,7 @@ export class BuiltinExtensions {
       "SELECT value FROM pal_settings WHERE key = 'extensions:release'",
     );
     if (previous?.value !== release) {
-      const busy = await database.get<{ n: number }>(
-        "SELECT (SELECT count(*) FROM pi_tasks WHERE status <> 'terminal')" +
-          " + (SELECT count(*) FROM pi_submissions WHERE status IN ('queued', 'placed'))" +
-          " + (SELECT count(*) FROM pal_admissions WHERE state = 'admitting')" +
-          " + (SELECT count(*) FROM pal_chats WHERE state = 'provisioning')" +
-          " + (SELECT count(*) FROM pal_projects WHERE state = 'provisioning')" +
-          " + (SELECT count(*) FROM pal_workspaces WHERE state = 'provisioning')" +
-          " + (SELECT count(*) FROM pal_workspace_purges WHERE completed_at IS NULL)" +
-          " + (SELECT count(*) FROM pal_command_approvals WHERE state = 'pending') AS n",
-      );
-      if ((busy?.n ?? 0) > 0)
+      if ((await unfinishedWork(database)) > 0)
         throw new Error("unfinished work needs its retained Pal release; refusing to change extension implementations");
       await database.run(
         "INSERT INTO pal_settings (key, value) VALUES ('extensions:release', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value",

@@ -8,10 +8,10 @@ import { runGit } from "./git.ts";
 import { validate } from "./requests.ts";
 import { privateReleaseDirectory, readReleaseJson, releaseLock, writeReleaseJson } from "./release-files.ts";
 import {
+  candidateFiles,
   checkCandidate,
   hash,
   readSource,
-  sourcePath,
   type ReleaseManifest,
   type SourceSnapshot,
 } from "./release-policy.ts";
@@ -87,19 +87,10 @@ async function worktree(candidate: string, base: ReleaseManifest, signal: AbortS
   const own = await realpath(resolve(root, await git("rev-parse", "--git-dir")));
   if (common === own) throw new Error("use an isolated Git worktree, not the primary checkout");
   const listed = (await runGit(root, ["ls-files", "--stage", "-z"], { signal, maxBytes: 512 * 1024 })).toString("utf8");
-  if (listed.includes("\ufffd")) throw new Error("candidate source paths must be UTF-8");
-  const paths = listed.split("\0").flatMap((entry) => {
-    if (entry === "") return [];
-    const match = /^(100644|100755) [a-f0-9]+ 0\t(.+)$/.exec(entry);
-    if (match?.[2] === undefined || !sourcePath(match[2]))
-      throw new Error("candidate contains a linked, private, conflicted or unsupported source path");
-    return [match[2]];
-  });
-  const expected = new Set(base.source.files.map((file) => file.path));
-  // A repository may also track public docs; they are not build inputs and never enter the snapshot.
-  const actual = paths.filter((path) => expected.has(path));
-  const extraBuild = paths.some((path) => !expected.has(path) && /^(?:src|web|test|nix|scripts)\//.test(path));
-  if (extraBuild || actual.length !== expected.size) throw new Error("candidate changes the fixed build file set");
+  const actual = candidateFiles(
+    listed,
+    base.source.files.map((file) => file.path),
+  );
   const snapshot = await readSource(root, actual);
   checkCandidate(base, snapshot);
   return snapshot;
@@ -127,6 +118,7 @@ async function fixedChecks(
   snapshot: string,
   roots: string,
   log?: FileHandle,
+  signal?: AbortSignal,
 ): Promise<string[]> {
   const nix = process.env.PAL_NIX ?? "/run/current-system/sw/bin/nix";
   const { stdout, stderr } = await exec(
@@ -154,6 +146,7 @@ async function fixedChecks(
     {
       timeout: 15 * 60_000,
       killSignal: "SIGTERM",
+      signal,
       maxBuffer: 8 * 1024 * 1024,
       env: {
         PATH: `${dirname(nix)}:/run/current-system/sw/bin`,
@@ -204,7 +197,7 @@ export async function evaluateRelease(
       (item) => item.base === base.package && item.candidate === candidate && item.source === source.digest,
     );
     if (existing !== undefined) {
-      await verifyRelease(installRoot, dataRoot, existing);
+      await verifyRelease(installRoot, dataRoot, existing, signal);
       return existing;
     }
     if ((await readdir(root)).filter((name) => /^attempt-[a-f0-9-]{36}\.log$/.test(name)).length >= 8)
@@ -225,7 +218,7 @@ export async function evaluateRelease(
     }
     const roots = join(root, "roots");
     await privateReleaseDirectory(roots);
-    const outputs = await fixedChecks(base, snapshotDir, join(roots, source.digest), log);
+    const outputs = await fixedChecks(base, snapshotDir, join(roots, source.digest), log, signal);
     let tested: ReleaseManifest | undefined;
     for (const output of outputs) {
       try {
@@ -286,11 +279,17 @@ export async function evaluateRelease(
 }
 
 /** Recheck source and all fixed gates before approval/selection; a JSON receipt is not authority by itself. */
-export async function verifyRelease(installRoot: string, dataRoot: string, receipt: CheckedRelease): Promise<void> {
+export async function verifyRelease(
+  installRoot: string,
+  dataRoot: string,
+  receipt: CheckedRelease,
+  signal = AbortSignal.timeout(15 * 60_000),
+): Promise<void> {
+  signal.throwIfAborted();
   const base = await releaseManifest(installRoot);
   if (receipt.base !== base.package || receipt.compatibility !== base.source.compatibility)
     throw new Error("candidate was checked under a different evaluator; check it again with this release");
-  const source = await worktree(receipt.candidate, base, AbortSignal.timeout(15_000));
+  const source = await worktree(receipt.candidate, base, signal);
   if (source.digest !== receipt.source) throw new Error("candidate changed; its approval is invalid");
   const snapshot = join(dataRoot, "release-checks", "sources", receipt.snapshot);
   if (
@@ -302,7 +301,13 @@ export async function verifyRelease(installRoot: string, dataRoot: string, recei
     ).digest !== receipt.source
   )
     throw new Error("the frozen candidate changed; its approval is invalid");
-  const outputs = await fixedChecks(base, snapshot, join(dataRoot, "release-checks", "roots", receipt.source));
+  const outputs = await fixedChecks(
+    base,
+    snapshot,
+    join(dataRoot, "release-checks", "roots", receipt.source),
+    undefined,
+    signal,
+  );
   if (JSON.stringify(outputs) !== JSON.stringify(receipt.outputs) || !outputs.includes(receipt.package))
     throw new Error("fixed check artifacts changed");
   const tested = await releaseManifest(`${receipt.package}/lib/pal`);

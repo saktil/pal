@@ -14,13 +14,15 @@ import { createApi } from "../src/core/api.ts";
 import { openPal } from "../src/core/app.ts";
 import { startServer } from "../src/core/server.ts";
 import { browse, startOpenAIFixture } from "./fixtures/openai-server.ts";
+import { fakeReleaseControl } from "./fixtures/releases.ts";
+import type { ReleaseRpc } from "../src/core/release-rpc.ts";
 
 const cleanups: (() => Promise<unknown>)[] = [];
 afterEach(async () => {
   for (const cleanup of cleanups.splice(0).reverse()) await cleanup();
 });
 
-async function start(publicOrigin?: string) {
+async function start(publicOrigin?: string, releases?: Pick<ReleaseRpc, "call">) {
   const fixture = await startOpenAIFixture();
   cleanups.push(fixture.close);
   const dataRoot = await realpath(await mkdtemp(join(tmpdir(), "pal-api-test-")));
@@ -32,7 +34,7 @@ async function start(publicOrigin?: string) {
     port: 0,
     version: "test",
     publicOrigin,
-    api: createApi(pal, publicOrigin),
+    api: createApi(pal, publicOrigin, releases),
   });
   cleanups.push(() => {
     server.closeAllConnections();
@@ -105,6 +107,50 @@ async function putBytes(base: string, cookie: string, id: string, bytes: Uint8Ar
 }
 
 describe("API", () => {
+  it("keeps release observation and exact-digest consent owner-only and validates before forwarding private IPC", async () => {
+    const control = fakeReleaseControl();
+    const { api, pal, base, cookie } = await start(undefined, control.access);
+    const path = `releases/${control.digest}`;
+    expect((await fetch(`${base}/api/releases`)).status).toBe(401);
+    expect((await api("POST", `${path}/approve`, { acceptCodeTrust: true })).status).toBe(401);
+    expect(control.calls).toEqual([]);
+    await api("POST", "setup", { token: pal.owner.setupToken, passphrase: "correct horse battery" });
+    expect((await api("GET", "releases")).body).toEqual({ available: false });
+    control.enable();
+    expect((await api("GET", "releases")).body.available).toBe(true);
+    control.calls.length = 0;
+    expect(
+      (
+        await fetch(`${base}/api/${path}/approve`, {
+          method: "POST",
+          headers: { cookie: cookie(), origin: "https://attacker.example", "content-type": "application/json" },
+          body: JSON.stringify({ acceptCodeTrust: true }),
+        })
+      ).status,
+    ).toBe(403);
+    expect((await api("POST", `${path}/approve`, { acceptCodeTrust: false })).status).toBe(400);
+    expect((await api("POST", `${path}/approve`, { acceptCodeTrust: true, digest: "0".repeat(64) })).status).toBe(400);
+    expect((await api("POST", `${path}/activate`, { package: "/tmp/untrusted" })).status).toBe(400);
+    expect((await api("POST", "releases/invalid/activate", {})).status).toBe(400);
+    expect((await api("GET", `${path}/review`)).status).toBe(400);
+    expect(control.calls).toEqual([]);
+    const preview = await api("GET", `${path}/review?path=web%2Fsrc%2Fapp.css`);
+    expect(preview.status).toBe(200);
+    expect(preview.body.after.text).toContain("<img src=x");
+    expect((await api("POST", `${path}/approve`, { acceptCodeTrust: true })).body.approved).toBe(control.digest);
+    expect(control.calls.at(-1)).toEqual({ op: "approve", args: { digest: control.digest, acceptCodeTrust: true } });
+    expect((await api("POST", `${path}/activate`, {})).status).toBe(202);
+    expect(control.calls.at(-1)).toEqual({ op: "activate", args: { digest: control.digest } });
+    expect((await api("POST", `releases/${control.previous}/rollback`, {})).status).toBe(202);
+    expect(control.calls.at(-1)).toEqual({ op: "rollback", args: { digest: control.previous } });
+  });
+
+  it("does not offer activation authority from plain serve", async () => {
+    const { api } = await signedIn();
+    expect((await api("GET", "releases")).body).toEqual({ available: false });
+    expect((await api("POST", `releases/${"0".repeat(64)}/activate`, {})).status).toBe(409);
+  });
+
   it("protects pinned instructions and read-only prompt inspection with owner, origin, revision and budget checks", async () => {
     const { api, base, cookie, pal, fixture } = await signedIn();
     const project = await pal.projects.create("api-context-project", { name: "Context fixture" });

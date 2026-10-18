@@ -1,9 +1,9 @@
 // Real Nix evaluation is a host gate, not a recursive build inside the unit-test sandbox. Uses isolated public source.
 import assert from "node:assert/strict";
 import { execFile } from "node:child_process";
-import { cp, mkdir, mkdtemp, readFile, readdir, realpath, writeFile } from "node:fs/promises";
+import { cp, mkdir, mkdtemp, readFile, readdir, realpath, symlink, writeFile } from "node:fs/promises";
 import { join } from "node:path";
-import { promisify } from "node:util";
+import { promisify, stripVTControlCharacters } from "node:util";
 import { checkedReleases, releaseManifest, verifyRelease } from "../../src/core/release-check.ts";
 
 const exec = promisify(execFile);
@@ -32,7 +32,9 @@ const git = async (...args: string[]) =>
     maxBuffer: 1024 * 1024,
   });
 await git("init", "-q");
-await git("--literal-pathspecs", "add", "--", ...base.source.files.map((file) => file.path));
+await mkdir(join(repo, ".claude/skills"), { recursive: true, mode: 0o700 });
+await symlink("missing-outside-build-source", join(repo, ".claude/skills/fixture"));
+await git("--literal-pathspecs", "add", "--", ...base.source.files.map((file) => file.path), ".claude/skills/fixture");
 await git(
   "-c",
   "user.name=Fixture",
@@ -78,8 +80,27 @@ const diagnostics = await Promise.all(
     .filter((name) => name.startsWith("attempt-"))
     .map((name) => readFile(join(data, "release-checks", name), "utf8")),
 );
+const failedBuild = diagnostics.join("\n").match(/Cannot build '(\/nix\/store\/[a-z0-9]{32}-pal-e2e-[^/'\s]+\.drv)'/);
+assert(failedBuild?.[1], "the fixed UI regression build must fail");
+// Nix's last 25 lines can omit the first failure when later UI tests also fail.
+const { stdout: buildLog } = await exec(
+  process.env.PAL_NIX ?? "/run/current-system/sw/bin/nix",
+  ["--extra-experimental-features", "nix-command", "log", failedBuild[1]],
+  {
+    timeout: 30_000,
+    maxBuffer: 2 * 1024 * 1024,
+    env: {
+      PATH: "/run/current-system/sw/bin",
+      HOME: "/nonexistent",
+      NIX_USER_CONF_FILES: "/dev/null",
+      NIX_REMOTE: "daemon",
+      LC_ALL: "C",
+    },
+  },
+);
+const regression = stripVTControlCharacters(buildLog);
 assert(
-  diagnostics.some((log) => /FAIL\s+test\/e2e\/app\.test\.ts/.test(log) && log.includes("Recent native request pins")),
+  /FAIL\s+test\/e2e\/app\.test\.ts/.test(regression) && regression.includes("Recent native request pins"),
   "the fixed UI regression gate must run and fail",
 );
 await writeFile(panelPath, panel);

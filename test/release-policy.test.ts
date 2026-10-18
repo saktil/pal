@@ -3,7 +3,14 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { privateReleaseDirectory, readReleaseJson, releaseLock, writeReleaseJson } from "../src/core/release-files.ts";
-import { checkCandidate, manifest, readSource, sourcePath, sourcePaths } from "../src/core/release-policy.ts";
+import {
+  candidateFiles,
+  checkCandidate,
+  manifest,
+  readSource,
+  sourcePath,
+  sourcePaths,
+} from "../src/core/release-policy.ts";
 
 const roots: string[] = [];
 afterEach(async () => {
@@ -33,6 +40,27 @@ async function source() {
 }
 
 describe.skipIf(process.platform !== "linux")("controlled release policy", () => {
+  it("ignores tracked non-build skill links but refuses linked, missing, private or conflicted build inputs", () => {
+    const expected = ["package.json", "web/src/app.css"];
+    const entry = (path: string, mode = "100644", stage = "0") => `${mode} ${"0".repeat(40)} ${stage}\t${path}\0`;
+    const index = expected.map((path) => entry(path)).join("");
+    expect(candidateFiles(index + entry(".claude/skills/fixture", "120000") + entry("README.md"), expected)).toEqual(
+      expected,
+    );
+    for (const invalid of [
+      entry("package.json") + entry("web/src/app.css", "120000"),
+      entry("package.json") + entry("web/src/app.css", "100644", "1"),
+      index + entry("web/extra.ts"),
+      entry("package.json"),
+      index + entry("PLAN.md"),
+      index + entry(".design/raw.html"),
+      index + entry("../private"),
+      index + entry("package.json"),
+      index + "\ufffd",
+    ])
+      expect(() => candidateFiles(invalid, expected)).toThrow();
+  });
+
   it("hashes exact public bytes and permits only exercised contribution changes", async () => {
     const { root, snapshot, base } = await source();
     expect(snapshot.files.map((file) => file.path)).toEqual([
@@ -56,6 +84,17 @@ describe.skipIf(process.platform !== "linux")("controlled release policy", () =>
       snapshot.files.map((file) => file.path),
     );
     expect(() => checkCandidate(base, changed)).toThrow(/protected/);
+  });
+
+  it("refuses permission-only changes, so the review is always about contribution contents", async () => {
+    const { root, snapshot, base } = await source();
+    await chmod(join(root, "web/src/app.css"), 0o755);
+    const changed = await readSource(
+      root,
+      snapshot.files.map((file) => file.path),
+    );
+    expect(changed.digest).not.toBe(snapshot.digest);
+    expect(() => checkCandidate(base, changed)).toThrow(/executable permissions/);
   });
 
   it("refuses protected test replacement, schema drift and private/source-set changes", async () => {

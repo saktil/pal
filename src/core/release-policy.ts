@@ -37,6 +37,30 @@ export function sourcePath(path: string): boolean {
   );
 }
 
+/** Ignore non-build entries (including repository skill links), without reading or copying their targets. */
+export function candidateFiles(index: string, expectedPaths: readonly string[]): string[] {
+  if (index.includes("\ufffd")) throw new Error("candidate source paths must be UTF-8");
+  const expected = new Set(expectedPaths);
+  const paths = index.split("\0").flatMap((entry) => {
+    if (entry === "") return [];
+    const match = /^([0-9]{6}) [a-f0-9]+ ([0-3])\t(.+)$/.exec(entry);
+    const path = match?.[3];
+    if (path === undefined || !sourcePath(path))
+      throw new Error("candidate contains a private or unsupported source path");
+    if (!expected.has(path)) {
+      if (/^(?:src|web|test|nix|scripts)(?:\/|$)/.test(path))
+        throw new Error("candidate changes the fixed build file set");
+      return [];
+    }
+    if (!["100644", "100755"].includes(match?.[1] ?? "") || match?.[2] !== "0")
+      throw new Error("candidate contains a linked or conflicted build source");
+    return [path];
+  });
+  if (paths.length !== expected.size || new Set(paths).size !== paths.length)
+    throw new Error("candidate changes the fixed build file set");
+  return paths;
+}
+
 /** Public, whitelisted build source only. Runtime data and Git metadata are never part of the manifest. */
 export async function sourcePaths(root: string): Promise<string[]> {
   const paths: string[] = [];
@@ -122,6 +146,8 @@ export function checkCandidate(base: ReleaseManifest, candidate: SourceSnapshot)
     JSON.stringify(candidate.files.map((file) => file.path))
   )
     throw new Error("candidate changes the fixed release file set");
+  if (base.source.files.some((file, index) => file.executable !== candidate.files[index]?.executable))
+    throw new Error("candidate changes executable permissions; only contribution contents may change");
 }
 export function manifest(snapshot: SourceSnapshot, packagePath: string, nixpkgs: string): ReleaseManifest {
   const source = { files: snapshot.files, digest: snapshot.digest, compatibility: snapshot.compatibility };

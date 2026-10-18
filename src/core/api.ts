@@ -27,6 +27,8 @@ import { InvalidRequest, RequestConflict, validate } from "./requests.ts";
 import { UploadBody, UploadError } from "./uploads.ts";
 import { TerminalSize } from "./terminals.ts";
 import { MemoryBody } from "./memory.ts";
+import type { ReleaseRpc } from "./release-rpc.ts";
+import { ReleaseDigest } from "./release-state.ts";
 
 const WorkspaceId = Type.Optional(Type.String({ minLength: 1, maxLength: 64 }));
 const workspaceQuery = (url: URL) => {
@@ -205,7 +207,7 @@ class SignInAttempt {
  * Pal's JSON API. Everything except health, session state, setup and sign-in requires the owner's session; every
  * state-changing request must come from Pal's own origin.
  */
-export function createApi(pal: Pal, publicOrigin?: string) {
+export function createApi(pal: Pal, publicOrigin?: string, releases?: Pick<ReleaseRpc, "call">) {
   const external = publicOrigin === undefined ? undefined : new URL(publicOrigin);
   let attempt: SignInAttempt | undefined;
   let listing: { models: ChatGPTModel[] } | { error: string } | undefined;
@@ -301,6 +303,40 @@ export function createApi(pal: Pal, publicOrigin?: string) {
       await pal.owner.signOut(cookie(request, SESSION_COOKIE));
       response.setHeader("set-cookie", `${SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0`);
       return send(200, { signedIn: false });
+    }
+
+    if (resource === "releases") {
+      if (path.length === 1 && method === "GET")
+        return send(200, releases === undefined ? { available: false } : await releases.call("view"));
+      if (releases === undefined)
+        throw new HttpError(
+          409,
+          "release_unavailable",
+          "Controlled activation requires the host's pal supervise launcher.",
+        );
+      const digest = validate(ReleaseDigest, id);
+      if (path.length === 3 && action === "review" && method === "GET")
+        return send(
+          200,
+          await releases.call("review", {
+            digest,
+            path: validate(Type.String({ minLength: 1, maxLength: 4096 }), url.searchParams.get("path")),
+          }),
+        );
+      if (path.length === 3 && action === "approve" && method === "POST") {
+        const body = validate(
+          Type.Object({ acceptCodeTrust: Type.Literal(true) }, { additionalProperties: false }),
+          await readJson(request, 4096),
+        );
+        return send(200, await releases.call("approve", { digest, ...body }));
+      }
+      if (path.length === 3 && (action === "activate" || action === "rollback") && method === "POST") {
+        validate(Type.Object({}, { additionalProperties: false }), await readJson(request, 4096));
+        if (attempt?.active)
+          throw new HttpError(409, "release_busy", "Finish or cancel ChatGPT sign-in before restarting.");
+        return send(202, await releases.call(action, { digest }));
+      }
+      throw new HttpError(404, "not_found", "no such release operation");
     }
 
     if (resource === "extensions" && path.length === 1) {

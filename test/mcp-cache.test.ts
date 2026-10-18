@@ -68,10 +68,11 @@ describe("bounded MCP query cache", () => {
     const store = await openStore(root);
     cleanups.push(() => store.close());
     expect(await store.database.get("PRAGMA integrity_check")).toEqual({ integrity_check: "ok" });
-    const cache = new McpQueryCache(store.database);
+    const now = Date.now();
+    const cache = new McpQueryCache(store.database, () => now);
     const key = scope("recovery-cache-key", "fixture-project", "fixture-server");
     expect((await cache.get(key))?.result).toEqual(phase === "committed" ? value("committed source") : undefined);
-    await cache.put(key, value("new response"), Date.now(), 1000);
+    await cache.put(key, value("new response"), now, 1000);
     expect((await cache.get(key))?.result).toEqual(value("new response"));
   });
 

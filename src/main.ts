@@ -1,15 +1,15 @@
-import { existsSync } from "node:fs";
+import { once } from "node:events";
+import { existsSync, fstatSync } from "node:fs";
+import type { Server } from "node:http";
 import type { AddressInfo } from "node:net";
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
-import { BACKGROUND_CONTEXT } from "@earendil-works/chord/context";
+import { setTimeout as sleep } from "node:timers/promises";
 import pkg from "../package.json" with { type: "json" };
-import { createApi } from "./core/api.ts";
-import { openPal } from "./core/app.ts";
+import type { Pal } from "./core/app.ts";
+import type { ReleaseRpc } from "./core/release-rpc.ts";
 import { parseCommand, USAGE, UsageError } from "./core/config.ts";
-import { startServer } from "./core/server.ts";
-import { DatabaseOwnedError } from "./storage/sqlite.ts";
 
 // The build puts the frontend in dist/public next to this bundle; running from src has none.
 const webRoot = fileURLToPath(new URL("public", import.meta.url));
@@ -51,51 +51,165 @@ async function main(argv: readonly string[]): Promise<number> {
         return 1;
       }
     }
-    case "serve": {
-      const { host, port, dataRoot, publicOrigin } = command.config;
-      let pal;
+    case "supervise": {
+      const { supervise } = await import("./core/supervise.ts");
       try {
-        pal = await openPal({ dataRoot, installRoot }, BACKGROUND_CONTEXT);
+        return await supervise(installRoot, command.config);
       } catch (error) {
-        if (!(error instanceof DatabaseOwnedError)) throw error;
-        process.stderr.write(`pal: ${dataRoot} is in use by another Pal process\n`);
+        process.stderr.write(`pal: ${error instanceof Error ? error.message.slice(0, 1000) : "supervisor failed"}\n`);
         return 1;
       }
-      let server;
+    }
+    case "serve": {
+      const { host, port, dataRoot, publicOrigin } = command.config;
+      const supervised = process.env.PAL_SUPERVISED === "1";
+      let admitting = !supervised,
+        stopping = false,
+        closingServer = false,
+        inFlight = 0;
+      let pal: Pal | undefined, server: Server | undefined, closed: Promise<unknown> | undefined;
+      let rpc: ReleaseRpc | undefined;
+      const stop = () => {
+        stopping = true;
+        admitting = false;
+        void pal?.terminals.close().catch(() => {});
+        void pal?.browsers.close().catch(() => {});
+        if (server !== undefined && !closingServer) {
+          closingServer = true;
+          const active = server;
+          active.close();
+          active.closeIdleConnections();
+          setTimeout(() => active.closeAllConnections(), 5000).unref();
+        }
+      };
+      process.once("SIGINT", stop);
+      process.once("SIGTERM", stop);
+      if (supervised) process.once("disconnect", stop);
       try {
+        if (supervised) {
+          const send = process.send?.bind(process);
+          if (send === undefined || !process.connected || !fstatSync(4).isFile())
+            throw new Error("supervised child requires its inherited private IPC and lifetime lock");
+          const { ReleaseRpc } = await import("./core/release-rpc.ts");
+          const { HttpError } = await import("./core/http.ts");
+          rpc = new ReleaseRpc(
+            process,
+            (message) =>
+              send(message, (error) => {
+                if (error) rpc?.close();
+              }),
+            async (op, args) => {
+              if (args === null || typeof args !== "object" || Array.isArray(args) || Object.keys(args).length !== 0)
+                throw new HttpError(400, "release_operation", "Expected an empty lifecycle command.");
+              if (stopping || !process.connected)
+                throw new HttpError(503, "release_disconnected", "Supervisor disconnected.");
+              if (op === "promote" || op === "resume") {
+                admitting = true;
+                return { ready: true };
+              }
+              if (op !== "prepare") throw new HttpError(400, "release_operation", "Unsupported child operation.");
+              admitting = false;
+              try {
+                const deadline = Date.now() + 5000;
+                while (inFlight > 0) {
+                  if (Date.now() >= deadline || stopping)
+                    throw new HttpError(409, "release_busy", "Requests are still in flight; retry when idle.");
+                  await sleep(25);
+                }
+                const current = pal;
+                if (current === undefined) throw new HttpError(503, "release_starting", "Pal is still starting.");
+                const { unfinishedWork } = await import("./core/release-state.ts");
+                if (
+                  current.terminals.releaseBusy ||
+                  current.browsers.releaseBusy ||
+                  (await unfinishedWork(current.store.database))
+                )
+                  throw new HttpError(
+                    409,
+                    "release_busy",
+                    "Finish or stop pending work, and close all Terminal and Browser sessions before restarting.",
+                  );
+                return { prepared: true };
+              } catch (error) {
+                if (!stopping && process.connected) admitting = true;
+                throw error;
+              }
+            },
+          );
+        }
+        const [{ openPal }, { createApi }, { startServer }, { BACKGROUND_CONTEXT }] = await Promise.all([
+          import("./core/app.ts"),
+          import("./core/api.ts"),
+          import("./core/server.ts"),
+          import("@earendil-works/chord/context"),
+        ]);
+        if (stopping) return 0;
+        pal = await openPal({ dataRoot, installRoot }, BACKGROUND_CONTEXT);
+        if (stopping) return 0;
+        const current = pal,
+          api = createApi(current, publicOrigin, rpc);
         server = await startServer({
           host,
           port,
           version: pkg.version,
           publicOrigin,
           webRoot: existsSync(join(webRoot, "index.html")) ? webRoot : undefined,
-          api: createApi(pal, publicOrigin),
-          upgrade: (request, socket, head) => pal.upgrade(request, socket, head, publicOrigin),
+          available: () => admitting && !stopping,
+          health: supervised
+            ? () => ({
+                status: "ok",
+                name: "pal",
+                version: pkg.version,
+                release: current.extensions.release,
+                admitting,
+              })
+            : undefined,
+          api: async (request, response, url) => {
+            const counted = !/^\/api\/releases(?:\/|$)/.test(url.pathname);
+            if (counted) inFlight++;
+            try {
+              await api(request, response, url);
+            } finally {
+              if (counted) inFlight--;
+            }
+          },
+          upgrade: async (request, socket, head) => {
+            inFlight++;
+            try {
+              await current.upgrade(request, socket, head, publicOrigin);
+            } finally {
+              inFlight--;
+            }
+          },
         });
+        closed = once(server, "close");
+        if (stopping) stop();
+        else {
+          const address = server.address() as AddressInfo;
+          const shown = address.family === "IPv6" ? `[${address.address}]` : address.address;
+          const origin = publicOrigin ?? `http://${shown}:${address.port}`;
+          process.stdout.write(`pal ${pkg.version} listening on ${origin} (data: ${dataRoot})\n`);
+          if (!(await current.owner.exists()))
+            process.stdout.write(`Set up Pal by opening ${origin}/#setup=${current.owner.setupToken}\n`);
+          if (!stopping) await rpc?.call("online", { port: address.port, release: current.extensions.release }, 5000);
+        }
+        await closed;
+        return 0;
       } catch (error) {
-        await pal.close();
-        throw error;
+        if (stopping) return 0;
+        const { DatabaseOwnedError } = await import("./storage/sqlite.ts");
+        if (!(error instanceof DatabaseOwnedError)) throw error;
+        process.stderr.write(`pal: ${dataRoot} is in use by another Pal process\n`);
+        return 1;
+      } finally {
+        stop();
+        rpc?.close();
+        process.off("SIGINT", stop);
+        process.off("SIGTERM", stop);
+        process.off("disconnect", stop);
+        if (closed !== undefined) await closed;
+        await pal?.close();
       }
-      const address = server.address() as AddressInfo;
-      const shown = address.family === "IPv6" ? `[${address.address}]` : address.address;
-      const origin = publicOrigin ?? `http://${shown}:${address.port}`;
-      process.stdout.write(`pal ${pkg.version} listening on ${origin} (data: ${dataRoot})\n`);
-      if (!(await pal.owner.exists())) {
-        // Only someone who can read this terminal can claim the installation.
-        process.stdout.write(`Set up Pal by opening ${origin}/#setup=${pal.owner.setupToken}\n`);
-      }
-
-      const stop = () => {
-        void pal.terminals.close();
-        server.close();
-        server.closeIdleConnections();
-        setTimeout(() => server.closeAllConnections(), 5_000).unref();
-      };
-      process.once("SIGINT", stop);
-      process.once("SIGTERM", stop);
-      await new Promise((done) => server.once("close", done));
-      await pal.close();
-      return 0;
     }
   }
 }

@@ -83,6 +83,10 @@ export class Terminals {
   #closing: Promise<void> | undefined;
   #wss: WebSocketServer | undefined;
 
+  get releaseBusy(): boolean {
+    return this.#creating > 0 || this.#upgrades > 0 || this.#sessions.size > 0;
+  }
+
   constructor(projects: Projects, owner: Owner, capture: (root: string) => Promise<void>, workspaces?: Workspaces) {
     this.#projects = projects;
     this.#owner = owner;

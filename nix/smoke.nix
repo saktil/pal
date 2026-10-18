@@ -47,6 +47,8 @@ runCommand "pal-smoke-${pal.version}"
     kill -TERM "$server"
     wait "$server"
     test "$(stat -c %a "$TMPDIR/data")" = 700
+    ${nodejs_24}/bin/node ${pal}/lib/pal/release-source/test/fixtures/supervised-serve.ts \
+      ${pal}/lib/pal/dist/main.js "$TMPDIR/supervised"
 
     mkdir -p $out
     cp probe.jsonl health.json $out/

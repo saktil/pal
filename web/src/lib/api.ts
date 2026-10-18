@@ -3,6 +3,8 @@ import type { ReviewScope } from "../../../src/core/changes.ts";
 import type { WorkspaceMode } from "../../../src/core/workspaces.ts";
 import type { ExtensionScope, ExtensionView, ExtensionRequestPin } from "../../../src/core/extensions.ts";
 export type { ExtensionScope, ExtensionView };
+import type { ReleaseView, ReleaseReview } from "../../../src/core/supervise.ts";
+export type { ReleaseView, ReleaseReview };
 import type { McpServerInput, McpServerView as McpServer } from "../../../src/pi/mcp.ts";
 export type { McpAuth, McpState } from "../../../src/pi/mcp.ts";
 export type { McpServer, McpServerInput };
@@ -116,6 +118,13 @@ export const requestId = (): string =>
   Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) => byte.toString(16).padStart(2, "0")).join("");
 
 export const api = {
+  releases: () => call<ReleaseView>("GET", "releases"),
+  releaseReview: (digest: string, path: string) =>
+    call<ReleaseReview>("GET", `releases/${digest}/review?path=${encodeURIComponent(path)}`),
+  approveRelease: (digest: string) =>
+    call<{ approved: string }>("POST", `releases/${digest}/approve`, { acceptCodeTrust: true }),
+  activateRelease: (digest: string) => call<{ restarting: true }>("POST", `releases/${digest}/activate`, {}),
+  rollbackRelease: (digest: string) => call<{ restarting: true }>("POST", `releases/${digest}/rollback`, {}),
   extensions: () => call<ExtensionView>("GET", "extensions"),
   chatExtensions: (id: string) =>
     call<{ release: string; selected: ExtensionScope["selected"]; requests: ExtensionRequestPin[] }>(

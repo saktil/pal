@@ -210,6 +210,10 @@ export class ProjectBrowsers {
   #wss: WebSocketServer | undefined;
   #closed = false;
 
+  get releaseBusy(): boolean {
+    return this.#instances.size > 0 || this.#starting.size > 0 || this.#retiring.size > 0;
+  }
+
   constructor(options: {
     dataRoot: string;
     projects: Projects;

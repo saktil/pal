@@ -71,6 +71,17 @@ describe("parseCommand", () => {
       expect(() => parseCommand(argv, linux)).toThrow(UsageError);
   });
 
+  it("parses the Linux supervisor with the same binding rules, but no direct activation flags", () => {
+    expect(parseCommand(["supervise", "--port", "0", "--data-dir", "/data/pal"], linux)).toEqual({
+      kind: "supervise",
+      config: { host: "127.0.0.1", port: 0, dataRoot: "/data/pal" },
+    });
+    expect(() => parseCommand(["supervise"], { ...linux, platform: "darwin" })).toThrow(/requires Linux/);
+    expect(() => parseCommand(["supervise", "--host", "0.0.0.0"], linux)).toThrow(/public-origin/);
+    expect(() => parseCommand(["supervise", "--candidate", "/tmp/candidate"], linux)).toThrow(/does not accept/);
+    expect(() => parseCommand(["supervise", "--activate", "digest"], linux)).toThrow(UsageError);
+  });
+
   it("requires explicit canonical public origins for remote binding", () => {
     expect(serve(["--host", "100.64.0.10", "--public-origin", "http://100.64.0.10:7337/"])).toMatchObject({
       host: "100.64.0.10",

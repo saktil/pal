@@ -76,8 +76,9 @@ function messages(response: ServerResponse, reply: string) {
 }
 
 export async function startProviderFixture() {
-  const behavior = { reply: "Hello from the provider fixture", reject: false };
+  const behavior = { reply: "Hello from the provider fixture", reject: false, hold: false };
   const requests: ProviderRequest[] = [];
+  const holding = new Set<ServerResponse>();
   const server = createServer(async (request, response) => {
     let text = "";
     for await (const chunk of request) text += chunk;
@@ -96,6 +97,15 @@ export async function startProviderFixture() {
       response.end(JSON.stringify({ error: { message: `invalid key ${request.headers.authorization ?? ""}` } }));
       return;
     }
+    if (COMPLETIONS.includes(path) && behavior.hold) {
+      holding.add(response);
+      response.once("close", () => holding.delete(response));
+      response.writeHead(200, { "content-type": "text/event-stream" });
+      response.write(
+        `data: ${JSON.stringify({ id: "held-fixture", object: "chat.completion.chunk", created: 1, model: "fixture", choices: [{ index: 0, delta: { role: "assistant", content: "Held fixture request" }, finish_reason: null }] })}\n\n`,
+      );
+      return;
+    }
     if (COMPLETIONS.includes(path)) completions(response, behavior.reply);
     else if (path === "/v1/responses") responses(response, behavior.reply);
     else if (path === "/v1/messages") messages(response, behavior.reply);
@@ -107,6 +117,13 @@ export async function startProviderFixture() {
     origin: `http://127.0.0.1:${(server.address() as AddressInfo).port}`,
     behavior,
     requests,
-    close: () => new Promise<void>((resolve) => server.close(() => resolve())),
+    get holding() {
+      return holding.size;
+    },
+    close: () => {
+      for (const response of holding) response.destroy();
+      server.closeAllConnections();
+      return new Promise<void>((resolve) => server.close(() => resolve()));
+    },
   };
 }

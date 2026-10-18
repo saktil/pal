@@ -11,7 +11,7 @@ export type Command =
   | { kind: "help" }
   | { kind: "version" }
   | { kind: "probe" }
-  | { kind: "serve"; config: ServeConfig }
+  | { kind: "serve" | "supervise"; config: ServeConfig }
   | { kind: "check-release"; dataRoot: string; candidate: string };
 
 /** Process facts that decide defaults, passed in so tests do not depend on the machine. */
@@ -27,11 +27,13 @@ export class UsageError extends Error {}
 
 export const USAGE = `Usage: pal [serve] [--host <address>] [--port <number>] [--data-dir <path>]
                  [--public-origin <url>]
+       pal supervise [serve options]
        pal probe
        pal check-release --candidate <worktree> [--data-dir <path>]
 
 Commands:
   serve              Run the Pal server (default)
+  supervise          Run the owner-approved Nix release with guarded health/recovery (Linux)
   probe              Check SQLite FTS5, fff, Code Mode and PTY support on this host, then exit
   check-release      Run protected offline candidate tests/evals; never approve or activate
 
@@ -88,12 +90,13 @@ export function parseCommand(argv: readonly string[], host: HostFacts): Command 
       dataRoot: resolveDataRoot(values["data-dir"], host),
     };
   }
-  if (name !== "serve") throw new UsageError(`unknown command '${name}'`);
-  if (values.candidate !== undefined) throw new UsageError("serve does not accept --candidate");
+  if (name !== "serve" && name !== "supervise") throw new UsageError(`unknown command '${name}'`);
+  if (name === "supervise" && host.platform !== "linux") throw new UsageError("supervise currently requires Linux");
+  if (values.candidate !== undefined) throw new UsageError(`${name} does not accept --candidate`);
 
   const publicOrigin = parsePublicOrigin(values["public-origin"]);
   return {
-    kind: "serve",
+    kind: name,
     config: {
       host: parseHost(values.host ?? DEFAULT_HOST, publicOrigin),
       port: parsePort(values.port ?? String(DEFAULT_PORT)),

@@ -19,6 +19,7 @@ import { startCachedMcp } from "../fixtures/cached-mcp.ts";
 import { STDIO_FIXTURE } from "../fixtures/stdio-server.ts";
 import { browse, startOpenAIFixture } from "../fixtures/openai-server.ts";
 import { startProviderFixture } from "../fixtures/provider-server.ts";
+import { fakeReleaseControl } from "../fixtures/releases.ts";
 
 const webRoot = join(import.meta.dirname, "..", "..", "dist", "public");
 const exec = promisify(execFile);
@@ -38,6 +39,7 @@ let browser: Browser;
 let page: Page;
 let chatUrl: string;
 const cleanups: (() => Promise<unknown>)[] = [];
+const releases = fakeReleaseControl();
 
 beforeAll(async () => {
   fixture = await startOpenAIFixture();
@@ -82,7 +84,7 @@ beforeAll(async () => {
     port: 0,
     version: "e2e",
     webRoot,
-    api: createApi(pal),
+    api: createApi(pal, undefined, releases.access),
     upgrade: (request, socket, head) => pal.upgrade(request, socket, head),
   });
   cleanups.push(() => {
@@ -1950,6 +1952,97 @@ describe("Pal in a browser", () => {
       await pal.extensions.select({ selected: before.selected, digest: current.digest });
       if (chatId !== undefined) await pal.chats.remove(chatId, context);
       await page.setViewportSize({ width: 1440, height: 900 });
+    }
+  });
+
+  it("reviews inert exact source, requires code-trust consent and confirms activation across desktop and phone", async () => {
+    releases.enable();
+    try {
+      await page.setViewportSize({ width: 1440, height: 900 });
+      await page.goto(`${base}/#/settings/extensions`);
+      await page.reload();
+      const control = page.getByRole("region", { name: "Controlled releases", exact: true });
+      await control.getByRole("button", { name: `Review candidate ${releases.digest.slice(0, 12)}` }).click();
+      await control.getByRole("heading", { name: "Exact tested source" }).waitFor();
+      const approve = control.getByRole("button", { name: "Approve exact digest", exact: true });
+      expect(await approve.isDisabled()).toBe(true);
+      await control.locator("summary").filter({ hasText: "web/src/app.css" }).click();
+      await control.locator("pre").filter({ hasText: '<img src=x onerror="window.releaseInjected=true">' }).waitFor();
+      expect(await page.evaluate("window.releaseInjected === undefined")).toBe(true);
+      expect(releases.calls.filter((call) => call.op === "approve")).toHaveLength(0);
+      const trust = control.getByRole("checkbox", { name: /I reviewed all changes/ });
+      await trust.focus();
+      await page.keyboard.press("Space");
+      await approve.click();
+      await control.getByText(/Approval recorded for this digest/).waitFor();
+      expect(releases.calls.find((call) => call.op === "approve")?.args).toEqual({
+        digest: releases.digest,
+        acceptCodeTrust: true,
+      });
+      for (const width of [1440, 768, 390]) {
+        await page.setViewportSize({ width, height: 900 });
+        await control.getByRole("heading", { name: "Exact tested source" }).scrollIntoViewIfNeeded();
+        expect(await page.evaluate("document.documentElement.scrollWidth <= innerWidth")).toBe(true);
+        await shoot(`release-source-${width}`);
+      }
+      await control.getByRole("button", { name: "Activate approved release…", exact: true }).click();
+      const dialog = page.getByRole("alertdialog", { name: "Activate this approved release?" });
+      expect(
+        await dialog
+          .getByRole("button", { name: "Cancel", exact: true })
+          .evaluate((element) => element === document.activeElement),
+      ).toBe(true);
+      await page.keyboard.press("Escape");
+      await dialog.waitFor({ state: "detached" });
+      expect(releases.calls.filter((call) => call.op === "activate")).toHaveLength(0);
+      await control.getByRole("button", { name: "Activate approved release…", exact: true }).click();
+      await dialog.getByRole("button", { name: "Activate release", exact: true }).click();
+      await control.getByText(/Pal is restarting/).waitFor();
+      expect(releases.calls.filter((call) => call.op === "activate")).toEqual([
+        { op: "activate", args: { digest: releases.digest } },
+      ]);
+    } finally {
+      releases.disable();
+      await page.setViewportSize({ width: 1440, height: 900 });
+      await page.reload();
+    }
+  });
+
+  it("shows invalidated approval without activating and confirms only the retained previous digest for rollback", async () => {
+    releases.enable();
+    try {
+      await page.goto(`${base}/#/settings/extensions`);
+      await page.reload();
+      const control = page.getByRole("region", { name: "Controlled releases", exact: true });
+      await control.getByRole("button", { name: `Review candidate ${releases.digest.slice(0, 12)}` }).click();
+      await control.getByRole("checkbox", { name: /I reviewed all changes/ }).check();
+      await control.getByRole("button", { name: "Approve exact digest", exact: true }).click();
+      await control.getByText(/Approval recorded for this digest/).waitFor();
+      releases.rejectActivation();
+      await control.getByRole("button", { name: "Activate approved release…", exact: true }).click();
+      const activate = page.getByRole("alertdialog", { name: "Activate this approved release?" });
+      await activate.getByRole("button", { name: "Activate release", exact: true }).click();
+      await activate.getByRole("alert").getByText("Candidate changed; its approval is invalid.").waitFor();
+      await shoot("release-stale-1440");
+      await activate.getByRole("button", { name: "Cancel", exact: true }).click();
+      expect(await control.getByRole("button", { name: "Activate approved release…", exact: true }).isDisabled()).toBe(
+        true,
+      );
+      await control.getByRole("button", { name: "Roll back previous release…", exact: true }).click();
+      const rollback = page.getByRole("alertdialog", { name: "Roll back to the retained release?" });
+      await rollback.getByText(releases.previous, { exact: true }).waitFor();
+      await page.keyboard.press("Escape");
+      await rollback.waitFor({ state: "detached" });
+      expect(releases.calls.filter((call) => call.op === "rollback")).toHaveLength(0);
+      await control.getByRole("button", { name: "Roll back previous release…", exact: true }).click();
+      await rollback.getByRole("button", { name: "Roll back release", exact: true }).click();
+      await control.getByText(/Pal is restarting/).waitFor();
+      expect(releases.calls.filter((call) => call.op === "rollback")).toEqual([
+        { op: "rollback", args: { digest: releases.previous } },
+      ]);
+    } finally {
+      releases.disable();
+      await page.reload();
     }
   });
 
