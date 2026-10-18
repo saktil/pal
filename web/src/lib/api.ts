@@ -14,6 +14,7 @@ export type { GrantedFolder } from "../../../src/core/folders.ts";
 export type { Workspace, WorkspaceMode } from "../../../src/core/workspaces.ts";
 export type { MemoryItem, MemoryInput } from "../../../src/core/memory.ts";
 export type { ContextInfo, PromptInfo } from "../../../src/core/context.ts";
+export type { ApprovalView, CommandApproval, CommandMode } from "../../../src/core/approvals.ts";
 
 export type Effort = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 export type ChatGPTModel = { slug: string; displayName: string; supported: boolean; efforts: Effort[] };
@@ -33,6 +34,7 @@ export type ChatSummary = {
   title: string | null;
   createdAt: number;
   workspace?: import("../../../src/core/workspaces.ts").Workspace | null;
+  commandMode?: import("../../../src/core/approvals.ts").CommandMode;
 };
 
 const inWorkspace = (path: string, id?: string) => {
@@ -286,6 +288,13 @@ export const api = {
   stop: (id: string) => call<{ stopped: true }>("POST", `chats/${id}/stop`),
   renameChat: (id: string, title: string, expectedTitle: string | null) =>
     call<{ chat: ChatSummary }>("PUT", `chats/${id}/title`, { title, expectedTitle }),
+  setCommandMode: (id: string, mode: import("../../../src/core/approvals.ts").CommandMode) =>
+    call<{ chat: ChatSummary }>("PUT", `chats/${id}/command-mode`, { mode }),
+  decideCommand: (id: string, approval: string, decision: "approve" | "deny", digest: string) =>
+    call<import("../../../src/core/approvals.ts").ApprovalView>("POST", `chats/${id}/approvals/${approval}`, {
+      decision,
+      digest,
+    }),
   setChatModel: (id: string, model: string, effort?: Effort) =>
     call<{ model: string; effort: Effort }>("PUT", `chats/${id}/model`, { model, effort }),
 

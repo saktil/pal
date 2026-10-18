@@ -19,6 +19,7 @@ await login;
 await pal.settings.setModel("gpt-5.5");
 const project = await pal.projects.create("recovery-project", { name: "Fixture" });
 const chat = await pal.chats.createChat("recovery-chat", { projectId: project.id }, context);
+await pal.approvals.setMode(chat.id, "full");
 console.log(JSON.stringify({ root: project.root, chatId: chat.id }));
 await pal.chats.submit(chat.id, "recovery-input", { text: "run the fixture" }, context);
 setInterval(() => {}, 1000);

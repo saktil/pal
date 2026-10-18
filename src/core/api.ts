@@ -13,6 +13,7 @@ import {
 import { McpConfigError } from "../pi/mcp.ts";
 import { StdioConfigError, StdioServerBody } from "../pi/mcp-stdio.ts";
 import type { Pal } from "./app.ts";
+import { ApprovalDecision, CommandModeBody } from "./approvals.ts";
 import { AdmissionStopped, ChatNotFound, ProjectUnavailable, type ChatSummary } from "./chats.ts";
 import { cookie, HttpError, isOwnOrigin, readJson, sendJson } from "./http.ts";
 import { OwnerError, SESSION_COOKIE, SESSION_MAX_AGE_SECONDS } from "./owner.ts";
@@ -228,7 +229,11 @@ export function createApi(pal: Pal, publicOrigin?: string) {
   }
 
   async function describeChat(chat: ChatSummary) {
-    return { ...chat, workspace: (await pal.workspaces.info(chat.id)) ?? null };
+    return {
+      ...chat,
+      workspace: (await pal.workspaces.info(chat.id)) ?? null,
+      commandMode: await pal.approvals.mode(chat.id),
+    };
   }
 
   async function signedIn(request: IncomingMessage): Promise<boolean> {
@@ -564,6 +569,17 @@ export function createApi(pal: Pal, publicOrigin?: string) {
       if (chat === undefined) throw new HttpError(404, "not_found", "no such chat");
       if (action === "title" && path.length === 3 && method === "PUT")
         return send(200, { chat: await describeChat(await pal.chats.rename(chat.id, await readJson(request))) });
+      if (action === "command-mode" && path.length === 3 && method === "PUT") {
+        await pal.approvals.setMode(chat.id, validate(CommandModeBody, await readJson(request)).mode);
+        return send(200, { chat: await describeChat(chat) });
+      }
+      if (action === "approvals" && path.length === 3 && method === "GET")
+        return send(200, await pal.approvals.view(chat.id));
+      if (action === "approvals" && path.length === 4 && path[3] !== undefined && method === "POST") {
+        const body = validate(ApprovalDecision, await readJson(request));
+        await pal.approvals.decide(chat.id, path[3], body.decision, body.digest);
+        return send(200, await pal.approvals.view(chat.id));
+      }
       if (action === "workspace" && path.length === 3 && method === "POST") {
         await pal.workspaces.provision(chat.id);
         return send(200, { chat: await describeChat(chat) });
@@ -620,15 +636,19 @@ export function createApi(pal: Pal, publicOrigin?: string) {
         );
         return send(200, { chat: await describeChat(chat), model, effort });
       }
-      if (action === "events" && method === "GET") return observe(request, response, chat.conversationId);
+      if (action === "events" && method === "GET") return observe(request, response, chat.id, chat.conversationId);
     }
     throw new HttpError(404, "not_found", "no such API route");
   }
 
-  /** Server-sent events: the conversation's snapshot, then one event batch per commit until the client leaves. */
+  /**
+   * Server-sent events: the conversation's snapshot, then one event batch per commit until the client leaves. The
+   * chat's command approvals arrive as whole `approvals` views, first with the snapshot and again on every change.
+   */
   async function observe(
     request: IncomingMessage,
     response: ServerResponse,
+    chatId: string,
     conversationId: Parameters<typeof watchEvents>[1],
   ): Promise<void> {
     const stream = await watchEvents(pal.harness, conversationId, context);
@@ -643,6 +663,23 @@ export function createApi(pal: Pal, publicOrigin?: string) {
       }
     };
     await write("snapshot", stream.snapshot);
+    // Views are written in order; a change during a write is folded into the next one.
+    let approvals: Promise<void> = Promise.resolve();
+    let dirty = false;
+    const sendApprovals = () => {
+      if (dirty) return;
+      dirty = true;
+      approvals = approvals.then(async () => {
+        dirty = false;
+        try {
+          if (!response.writableEnded) await write("approvals", await pal.approvals.view(chatId));
+        } catch {
+          // A removed chat or a closed response ends the view; the event stream closes on its own.
+        }
+      });
+    };
+    const unwatch = pal.approvals.watch(chatId, sendApprovals);
+    sendApprovals();
     const heartbeat = setInterval(() => response.write(": keep-alive\n\n"), HEARTBEAT_MS);
     stream.start(async (events: readonly AgentEvent[]) => {
       // An overflowed watch replaces its undelivered batches with a snapshot, which the client applies as a reset.
@@ -650,6 +687,7 @@ export function createApi(pal: Pal, publicOrigin?: string) {
     });
     const end = () => {
       clearInterval(heartbeat);
+      unwatch();
       void stream.stop();
     };
     request.once("close", end);

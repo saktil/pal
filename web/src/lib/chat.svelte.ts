@@ -1,7 +1,8 @@
 // One chat's live state from its server-sent events: a snapshot, then Pi's agent event batches.
 // Every snapshot, including the one after a reconnect, replaces the state; nothing is replayed from an offset.
+import type { ApprovalView, CommandApproval, CommandMode } from "../../../src/core/approvals.ts";
 import type { McpReceipt } from "../../../src/pi/mcp-source.ts";
-export type { McpReceipt };
+export type { CommandApproval, McpReceipt };
 
 export type Block =
   | { type: "text"; text: string }
@@ -84,6 +85,9 @@ export class ChatStream {
   retry: { at: number; error: string } | undefined = $state();
   connected = $state(false);
   loaded = $state(false);
+  /** The chat's command approval mode and recent requests, replaced whole on every change. */
+  mode: CommandMode | undefined = $state();
+  approvals: readonly CommandApproval[] = $state([]);
   #source: EventSource | undefined;
 
   constructor(chatId: string) {
@@ -91,12 +95,27 @@ export class ChatStream {
     this.#source = source;
     source.addEventListener("snapshot", (event) => this.#reset(JSON.parse((event as MessageEvent).data)));
     source.addEventListener("event", (event) => this.#apply(JSON.parse((event as MessageEvent).data)));
+    source.addEventListener("approvals", (event) => {
+      let view: ApprovalView;
+      try {
+        view = JSON.parse((event as MessageEvent).data) as ApprovalView;
+      } catch {
+        // Each view replaces the last whole, so a malformed one is skipped until the next change.
+        return;
+      }
+      this.showApprovals(view);
+    });
     source.addEventListener("open", () => (this.connected = true));
     source.addEventListener("error", () => (this.connected = false));
   }
 
   close(): void {
     this.#source?.close();
+  }
+
+  showApprovals(view: ApprovalView): void {
+    this.mode = view.mode;
+    this.approvals = view.approvals;
   }
 
   #reset(snapshot: Snapshot): void {

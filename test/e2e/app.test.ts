@@ -830,7 +830,16 @@ describe("Pal in a browser", () => {
       'await tools.files_write({ path: "host.txt", content: "before\\n", expectedHash: null }); return await tools.shell_run({ command: "printf after >> host.txt; printf host-output", timeout: 2 });';
     await page.getByLabel("Message").fill("write and test the file");
     await page.getByRole("button", { name: "Send" }).click();
+    // New chats ask first: the exact command waits for the owner, and nothing runs before approval.
+    const request = page.getByRole("group", { name: "Approval request" });
+    await request.getByText("printf after >> host.txt; printf host-output", { exact: true }).waitFor();
+    await request.getByText("timeout 2 s", { exact: false }).waitFor();
+    await page.getByRole("status").filter({ hasText: "Waiting for your approval" }).waitFor();
+    expect(await readFile(join(projectBefore.root, "host.txt"), "utf8")).toBe("before\n");
+    await shoot("approval-pending-1440");
+    await request.getByRole("button", { name: "Approve once" }).click();
     await page.getByText("Exit 0", { exact: true }).waitFor();
+    await request.getByText(/Approved once by you at/).waitFor();
     await page.locator("summary").filter({ hasText: "Host command" }).click();
     await page.getByText("host-output", { exact: true }).waitFor();
     await page.getByRole("status").filter({ hasText: "Running" }).waitFor({ state: "detached" });
@@ -847,6 +856,78 @@ describe("Pal in a browser", () => {
         callers: ["tools"],
       });
     await shoot("host-command-1440");
+    fixture.behavior.responses = "ok";
+  });
+
+  it("chooses Ask or Full access from the composer, denies and resumes requests across reload", async () => {
+    const project = (await pal.projects.list())[0];
+    if (project === undefined) throw new Error("missing project");
+    const pill = page.getByRole("button", { name: /^Command approval:/ });
+    await expect.poll(() => pill.textContent()).toContain("Ask");
+    await pill.click();
+    const popover = page.getByRole("dialog", { name: "Command approval" });
+    await popover.getByText("How should Pal actions be approved?").waitFor();
+    const rows = popover.getByRole("radio");
+    expect(await rows.count()).toBe(2);
+    const ask = popover.getByRole("radio", { name: /Ask for approval/ });
+    const full = popover.getByRole("radio", { name: /Full access \(YOLO\)/ });
+    expect(await ask.getAttribute("aria-checked")).toBe("true");
+    expect(await full.getAttribute("aria-checked")).toBe("false");
+    expect(await ask.evaluate((node) => node === document.activeElement)).toBe(true);
+    await page.keyboard.press("ArrowDown");
+    expect(await full.evaluate((node) => node === document.activeElement)).toBe(true);
+    await shoot("command-mode-1440");
+    await page.keyboard.press("Escape");
+    await popover.waitFor({ state: "detached" });
+    expect(await pill.evaluate((node) => node === document.activeElement)).toBe(true);
+
+    fixture.behavior.responses = "script";
+    fixture.behavior.script = 'return await tools.shell_run({ command: "printf denied >> denied.txt", timeout: 2 });';
+    await page.getByLabel("Message").fill("try a command I will deny");
+    await page.getByRole("button", { name: "Send" }).click();
+    const denied = page.getByRole("group", { name: "Approval request" }).filter({ hasText: "denied.txt" });
+    await denied.getByRole("button", { name: "Deny" }).click();
+    await denied.getByText(/Denied by you at .*Nothing was run/).waitFor();
+    await page.getByRole("status").filter({ hasText: "Running" }).waitFor({ state: "detached" });
+    await expect(readFile(join(project.root, "denied.txt"))).rejects.toMatchObject({ code: "ENOENT" });
+
+    // A browser reload neither answers nor loses a waiting request.
+    fixture.behavior.script = 'return await tools.shell_run({ command: "printf reload >> reload.txt", timeout: 2 });';
+    await page.getByLabel("Message").fill("run after a reload");
+    await page.getByRole("button", { name: "Send" }).click();
+    await page.getByRole("group", { name: "Approval request" }).filter({ hasText: "reload.txt" }).waitFor();
+    await page.reload();
+    const reloaded = page.getByRole("group", { name: "Approval request" }).filter({ hasText: "reload.txt" });
+    await reloaded.getByRole("button", { name: "Approve once" }).click();
+    await reloaded.getByText(/Approved once by you at/).waitFor();
+    await expect.poll(() => readFile(join(project.root, "reload.txt"), "utf8").catch(() => "")).toBe("reload");
+    await page.getByRole("status").filter({ hasText: "Running" }).waitFor({ state: "detached" });
+
+    await pill.click();
+    await full.click();
+    await popover.waitFor({ state: "detached" });
+    await expect.poll(() => pill.textContent()).toContain("Full access");
+    await page.reload();
+    await expect.poll(() => pill.textContent()).toContain("Full access");
+    const before = await page.getByRole("group", { name: "Approval request" }).count();
+    fixture.behavior.script = 'return await tools.shell_run({ command: "printf full >> full.txt", timeout: 2 });';
+    await page.getByLabel("Message").fill("run without asking");
+    await page.getByRole("button", { name: "Send" }).click();
+    await expect.poll(() => readFile(join(project.root, "full.txt"), "utf8").catch(() => "")).toBe("full");
+    await page.getByRole("status").filter({ hasText: "Running" }).waitFor({ state: "detached" });
+    expect(await page.getByRole("group", { name: "Approval request" }).count()).toBe(before);
+    for (const width of [1440, 768, 390]) {
+      await page.setViewportSize({ width, height: 900 });
+      await pill.click();
+      await popover.waitFor();
+      expect(await page.evaluate("document.documentElement.scrollWidth <= innerWidth")).toBe(true);
+      await shoot(`command-mode-full-${width}`);
+      await page.keyboard.press("Escape");
+    }
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await pill.click();
+    await ask.click();
+    await expect.poll(() => pill.textContent()).toContain("Ask");
     fixture.behavior.responses = "ok";
   });
 

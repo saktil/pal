@@ -132,6 +132,7 @@ describe("immutable per-chat workspaces", () => {
     const { pal, project, source, chat } = await setup();
     const created = await chat("worktree");
     const { workspace } = created;
+    await pal.approvals.setMode(created.chat.id, "full");
     const output = await run(pal, created.chat, [
       'await tools.files_write({path:"new.txt",content:"worktree-only needle",expectedHash:null}); return await tools.shell_run({command:"pwd",timeout:2});',
       "return await tools.files_folders({});",

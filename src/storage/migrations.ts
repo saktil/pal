@@ -311,6 +311,24 @@ export const MIGRATIONS: readonly Migration[] = [
       ) STRICT`);
     },
   },
+  {
+    version: 19,
+    name: "command_approvals",
+    // Existing chats start in Ask too: the owner chose per-chat modes with Ask as the default.
+    up: async (transaction) => {
+      await transaction.exec(
+        "ALTER TABLE pal_chats ADD COLUMN command_mode TEXT NOT NULL DEFAULT 'ask' CHECK (command_mode IN ('ask', 'full'))",
+      );
+      await transaction.exec(`CREATE TABLE pal_command_approvals (
+        id TEXT PRIMARY KEY, chat_id TEXT NOT NULL, task_id INTEGER NOT NULL UNIQUE, call_id TEXT NOT NULL,
+        assistant INTEGER, command TEXT NOT NULL, cwd TEXT NOT NULL, timeout REAL NOT NULL,
+        digest TEXT NOT NULL,
+        state TEXT NOT NULL CHECK (state IN ('pending', 'approved', 'denied', 'expired', 'stopped')),
+        created_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, decided_at INTEGER
+      ) STRICT`);
+      await transaction.exec("CREATE INDEX pal_command_approvals_chat ON pal_command_approvals (chat_id, created_at)");
+    },
+  },
 ];
 
 /**

@@ -14,6 +14,7 @@ import { McpManager } from "../pi/mcp.ts";
 import { StdioPrograms } from "../pi/mcp-stdio.ts";
 import { loadMasterKey, SqliteCredentialStore } from "../storage/credentials.ts";
 import { openStore, type Store } from "../storage/store.ts";
+import { CommandApprovals } from "./approvals.ts";
 import { ChatService } from "./chats.ts";
 import { ChatContext } from "./context.ts";
 import { Changes } from "./changes.ts";
@@ -34,6 +35,8 @@ export type PalOptions = {
   readonly installRoot: string;
   /** OpenAI's by default; tests point these at a loopback fixture. */
   readonly endpoints?: ChatGPTEndpoints;
+  /** How long a command waits for the owner's answer; tests shorten it. */
+  readonly approvalTtlMs?: number;
 };
 
 /** One running installation: the store's single owner and every service built on it. */
@@ -46,6 +49,7 @@ export type Pal = {
   readonly memory: ProjectMemory;
   readonly context: ChatContext;
   readonly chats: ChatService;
+  readonly approvals: CommandApprovals;
   readonly chatgpt: ChatGPTConnection;
   readonly models: Models;
   readonly harness: Harness;
@@ -84,12 +88,14 @@ export async function openPal(options: PalOptions, context: Context): Promise<Pa
   let mcp: McpManager | undefined;
   let terminals: Terminals | undefined;
   let workspaces: Workspaces | undefined;
+  let approvals: CommandApprovals | undefined;
   // The Harness, once open, owns the storage and closes it; scripts stop before their sandbox and connections do.
   let closing: Promise<void> | undefined;
   const close = () =>
     (closing ??= (async () => {
       try {
         await workspaces?.close();
+        approvals?.close();
         await (harness === undefined ? store.close() : harness.close(context));
       } finally {
         search.close();
@@ -168,6 +174,15 @@ export async function openPal(options: PalOptions, context: Context): Promise<Pa
       }),
     );
     registry.install(shellTools({ root: (conversation) => workspaceRoot(conversation, true), commands, locks }));
+    const commandApprovals = new CommandApprovals({
+      database,
+      root: (conversation) => workspaceRoot(conversation, true),
+      task: async (id, ctx) => harness?.getTask(id, ctx),
+      ...(options.approvalTtlMs === undefined ? {} : { ttlMs: options.approvalTtlMs }),
+    });
+    approvals = commandApprovals;
+    // After the grant policy, so a refused call is never offered for approval.
+    registry.install(commandApprovals.extension);
     registry.install(
       memory.tools(async (conversation) => {
         const workspace = await openedWorkspaces.forConversation(conversation);
@@ -238,6 +253,7 @@ export async function openPal(options: PalOptions, context: Context): Promise<Pa
       context: chatContext,
       workspaces: openedWorkspaces,
       chats: openedChats,
+      approvals: commandApprovals,
       chatgpt: new ChatGPTConnection(credentials, {
         endpoints,
         installationId: store.installationId,

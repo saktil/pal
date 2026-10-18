@@ -3,6 +3,7 @@
     api,
     ApiError,
     type ChatSummary,
+    type CommandMode as Approval,
     type Effort,
     type Project,
     requestId,
@@ -13,6 +14,7 @@
     type Attachment,
     type Block,
     ChatStream,
+    type CommandApproval,
     type Entry,
     type Message,
     type McpReceipt,
@@ -21,6 +23,7 @@
     textOf,
   } from "../lib/chat.svelte.ts";
   import Icon from "../lib/Icon.svelte";
+  import CommandMode from "./CommandMode.svelte";
   import InternetSources from "./InternetSources.svelte";
   import WorkspaceMode from "./WorkspaceMode.svelte";
   import { renderMarkdown } from "../lib/markdown.ts";
@@ -64,7 +67,8 @@
       }
     | { kind: "note"; id: string; text: string }
     | { kind: "shell"; id: string; receipt: ShellReceipt }
-    | { kind: "mcp"; id: string; receipt: McpReceipt };
+    | { kind: "mcp"; id: string; receipt: McpReceipt }
+    | { kind: "approval"; id: string; approval: CommandApproval };
 
   const USAGE_URL = "https://chatgpt.com/settings/usage";
 
@@ -103,7 +107,8 @@
     return () => current.close();
   });
 
-  const items = $derived.by(() => build(stream?.entries ?? [], stream?.partial));
+  const items = $derived.by(() => build(stream?.entries ?? [], stream?.partial, stream?.approvals ?? []));
+  const awaiting = $derived((stream?.approvals ?? []).some((approval) => approval.state === "pending"));
   const connected = $derived(app.chatgpt?.account != null);
   const choices = $derived((app.chatgpt?.models ?? []).filter((choice) => choice.supported));
   const effectiveModel = $derived(model ?? app.chatgpt?.model ?? null);
@@ -115,7 +120,7 @@
     ready && !sending && !choosing && uploading === 0 && draft.trim() !== "" && connected && effectiveModel !== null,
   );
 
-  function build(entries: Entry[], partial: Message | undefined): Item[] {
+  function build(entries: Entry[], partial: Message | undefined, approvals: readonly CommandApproval[]): Item[] {
     // A result belongs to the call of that ID in the latest assistant message before it; IDs may repeat across turns.
     const results: Record<string, { text: string; isError: boolean; calls: NestedCall[] }> = {};
     const caller: Record<string, number> = {};
@@ -166,6 +171,12 @@
         entry.kind === "pal.mcp" && entry.data?.mcp ? [[entry.data.mcp.callId, entry.id] as const] : [],
       ),
     );
+    // Each command request sits under the assistant turn whose script asked; others close the transcript.
+    const placed = new Set(entries.map((entry) => entry.id));
+    const asked = (assistant: number | null) =>
+      approvals.flatMap((approval): Item[] =>
+        approval.assistant === assistant ? [{ kind: "approval", id: `approval-${approval.id}`, approval }] : [],
+      );
     const built: Item[] = [];
     for (const entry of entries) {
       if (entry.kind === "pal.mcp" && entry.data?.mcp !== undefined) {
@@ -194,7 +205,7 @@
           attachments: entry.data?.attachments ?? [],
         });
       } else if (entry.kind === "pi.assistant" && message !== undefined) {
-        built.push(assistant(String(entry.id), message, false));
+        built.push(assistant(String(entry.id), message, false), ...asked(entry.id));
       } else if (entry.kind === "pi.compaction") {
         built.push({
           kind: "note",
@@ -202,6 +213,10 @@
           text: "Earlier messages were summarized to keep the chat within the model's context.",
         });
       }
+    }
+    for (const approval of approvals) {
+      if (approval.assistant === null || !placed.has(approval.assistant))
+        built.push({ kind: "approval", id: `approval-${approval.id}`, approval });
     }
     if (partial !== undefined) built.push(assistant("live", partial, true));
     return built;
@@ -243,6 +258,49 @@
     } finally {
       choosing = false;
     }
+  }
+
+  async function chooseMode(next: Approval) {
+    try {
+      const { chat: changed } = await api.setCommandMode(chat.id, next);
+      if (stream !== undefined && changed.commandMode !== undefined) stream.mode = changed.commandMode;
+    } catch (failure) {
+      error = failure instanceof ApiError ? failure.message : String(failure);
+    }
+  }
+
+  let deciding: string | undefined = $state();
+  async function decide(approval: CommandApproval, decision: "approve" | "deny") {
+    if (deciding !== undefined) return;
+    deciding = approval.id;
+    error = undefined;
+    try {
+      stream?.showApprovals(await api.decideCommand(chat.id, approval.id, decision, approval.digest));
+    } catch (failure) {
+      error =
+        failure instanceof ApiError && failure.code === "approval_stale"
+          ? "That request is no longer waiting for an answer. Nothing changed."
+          : failure instanceof ApiError
+            ? failure.message
+            : String(failure);
+    } finally {
+      deciding = undefined;
+    }
+  }
+
+  const heads = {
+    pending: "Approval needed to run a command",
+    approved: "Command approved",
+    denied: "Command denied",
+    expired: "Approval expired",
+    stopped: "Approval request ended",
+  } as const;
+  function outcome(approval: CommandApproval): string {
+    const at = time(approval.decidedAt ?? undefined);
+    if (approval.state === "approved") return `Approved once by you at ${at}. Later commands ask again.`;
+    if (approval.state === "denied") return `Denied by you at ${at}. Nothing was run.`;
+    if (approval.state === "expired") return "No answer before it expired. Nothing was run.";
+    return "The run stopped before you answered. Nothing was run.";
   }
 
   async function upload(files: FileList | null) {
@@ -329,6 +387,33 @@
           <div class="note"><Icon name="info" /><span>{item.text}</span></div>
         {:else if item.kind === "mcp"}
           <InternetSources receipt={item.receipt} />
+        {:else if item.kind === "approval"}
+          {@const approval = item.approval}
+          <div class="appr" class:settled={approval.state !== "pending"} role="group" aria-label="Approval request">
+            <div class="apph">
+              <Icon name={approval.state === "pending" ? "warn" : "term"} />{heads[approval.state]}
+            </div>
+            <code class="mono cmd">{approval.command}</code>
+            <p class="why">
+              In <span class="mono">{approval.cwd}</span> · timeout {approval.timeout} s · runs as the Pal host user, not
+              in a sandbox.
+            </p>
+            {#if approval.state === "pending"}
+              <p class="why">
+                Waits until {time(approval.expiresAt)} at most; Stop ends it. Nothing runs until you approve.
+              </p>
+              <div class="acts">
+                <button class="b p" disabled={deciding !== undefined} onclick={() => decide(approval, "approve")}
+                  >Approve once</button
+                >
+                <button class="b" disabled={deciding !== undefined} onclick={() => decide(approval, "deny")}
+                  >Deny</button
+                >
+              </div>
+            {:else}
+              <div class="why">{outcome(approval)}</div>
+            {/if}
+          </div>
         {:else if item.kind === "shell"}
           <details class="activity">
             <summary class="acth"
@@ -491,7 +576,9 @@
       {#if stream?.running}
         <div class="running" role="status">
           <span class="ring spin" aria-hidden="true"></span>
-          <span class="grow ellipsis">Running <span class="dim">· {modelName}</span></span>
+          <span class="grow ellipsis"
+            >{awaiting ? "Waiting for your approval" : "Running"} <span class="dim">· {modelName}</span></span
+          >
           <button class="b sm" onclick={() => api.stop(chat.id)}><Icon name="stop" />Stop</button>
         </div>
       {/if}
@@ -553,6 +640,7 @@
             <Icon name="model" />{modelName}<Icon name="chevD" />
           </button>
           <WorkspaceMode {workspace} {onNewChat} />
+          {#if workspace?.mode !== "read-only"}<CommandMode mode={stream?.mode} onChoose={chooseMode} />{/if}
           <span class="grow"></span>
           {#if stream?.running}
             <div class="seg" role="radiogroup" aria-label="While the agent is running">
@@ -577,6 +665,51 @@
 </section>
 
 <style>
+  .appr {
+    border: 1px solid #5a4a2c;
+    background: var(--wabg);
+    border-radius: 8px;
+    padding: 12px 14px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  .appr.settled {
+    border-color: var(--line2);
+    background: var(--bg1);
+  }
+  .apph {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    font-weight: 600;
+    color: var(--wa);
+    font-size: 13px;
+  }
+  .settled .apph {
+    color: var(--tx2);
+  }
+  .cmd {
+    display: block;
+    background: var(--bg1);
+    border: 1px solid var(--line2);
+    border-radius: 6px;
+    padding: 8px 10px;
+    font-size: 12.5px;
+    overflow-x: auto;
+    white-space: pre;
+  }
+  .why {
+    margin: 0;
+    font-size: 13px;
+    color: var(--tx2);
+    overflow-wrap: anywhere;
+  }
+  .acts {
+    display: flex;
+    gap: 8px;
+    flex-wrap: wrap;
+  }
   .reasoning {
     display: flex;
     flex-direction: column;
