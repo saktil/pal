@@ -1,6 +1,9 @@
 // Typed calls to Pal's API. Shapes mirror src/core/api.ts responses.
 import type { ReviewScope } from "../../../src/core/changes.ts";
 import type { WorkspaceMode } from "../../../src/core/workspaces.ts";
+import type { McpServerInput, McpServerView as McpServer } from "../../../src/pi/mcp.ts";
+export type { McpAuth, McpState } from "../../../src/pi/mcp.ts";
+export type { McpServer, McpServerInput };
 
 export type Session = { owner: boolean; signedIn: boolean };
 export type { Change, ChangeComment, ChangeSet } from "../../../src/core/changes.ts";
@@ -53,33 +56,6 @@ export type FolderListing = {
   problem?: "denied" | "missing" | "not_directory";
 };
 
-export type McpAuth = { kind: "none" } | { kind: "header"; header: string } | { kind: "bearer" };
-export type McpState =
-  | "disabled"
-  | "idle"
-  | "connecting"
-  | "ready"
-  | "key_required"
-  | "rate_limited"
-  | "unreachable"
-  | "blocked"
-  | "changed"
-  | "error";
-export type McpServer = {
-  id: string;
-  name: string;
-  preset: string | null;
-  url: string;
-  auth: McpAuth;
-  private: boolean;
-  fakeIp: boolean;
-  enabled: boolean;
-  keyConfigured: boolean;
-  state: McpState;
-  detail: string | null;
-  tools: { name: string; description: string; approved: boolean; changed: boolean }[];
-};
-export type McpServerInput = { name: string; url: string; auth: McpAuth; private: boolean };
 export type McpListing = { review: boolean; servers: McpServer[] };
 
 /** One folder of a project, as the Files panel shows it. */
@@ -284,6 +260,9 @@ export const api = {
   mcp: () => call<McpListing>("GET", "mcp"),
   mcpReview: (enable: boolean) => call<McpListing>("POST", "mcp/review", { enable }),
   mcpAdd: (input: McpServerInput) => call<{ server: McpServer }>("POST", "mcp/servers", input),
+  mcpUpdate: (id: string, input: McpServerInput) => call<{ server: McpServer }>("PUT", `mcp/servers/${id}`, input),
+  mcpProgram: (id: string, digest: string, approved: boolean) =>
+    call<{ server: McpServer }>("PUT", `mcp/servers/${id}/program`, { digest, approved }),
   mcpRemove: (id: string) => call<McpListing>("DELETE", `mcp/servers/${id}`),
   mcpKey: (id: string, key: string | null) =>
     call<{ server: McpServer }>(

@@ -66,6 +66,8 @@
   dialog {
     width: 470px;
     max-width: calc(100% - 32px);
+    max-height: calc(100dvh - 32px);
+    overflow: auto;
     background: var(--bg2);
     color: var(--tx);
     border: 1px solid var(--line2);
@@ -89,6 +91,7 @@
   .detail {
     color: var(--tx);
     font-size: 12px;
+    white-space: pre-wrap;
     overflow-wrap: anywhere;
   }
   .buttons {

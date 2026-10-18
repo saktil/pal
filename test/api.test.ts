@@ -9,6 +9,7 @@ import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import { watchEvents } from "@earendil-works/pi-durable";
 import { afterEach, describe, expect, it } from "vitest";
 import { startMcpFixture } from "./fixtures/mcp-server.ts";
+import { STDIO_FIXTURE } from "./fixtures/stdio-server.ts";
 import { createApi } from "../src/core/api.ts";
 import { openPal } from "../src/core/app.ts";
 import { startServer } from "../src/core/server.ts";
@@ -104,6 +105,62 @@ async function putBytes(base: string, cookie: string, id: string, bytes: Uint8Ar
 }
 
 describe("API", () => {
+  it("requires owner/origin and exact local-program consent without executing on save, approval or missing key", async () => {
+    const { api, base, cookie } = await signedIn();
+    const cwd = await realpath(await mkdtemp(join(tmpdir(), "pal-api-program-")));
+    cleanups.push(() => rm(cwd, { recursive: true, force: true }));
+    const marker = join(cwd, "starts");
+    const code = `require("node:fs").appendFileSync(${JSON.stringify(marker)}, "start\\n");\n${STDIO_FIXTURE}`;
+    const input = {
+      transport: "stdio",
+      name: "Local API fixture",
+      command: process.execPath,
+      args: ["-e", code],
+      cwd,
+      auth: { kind: "env", variable: "LOCAL_API_TOKEN" },
+    };
+    expect((await api("POST", "mcp/servers", { ...input, approved: true })).status).toBe(400);
+    const saved = await api("POST", "mcp/servers", input);
+    expect(saved.status).toBe(200);
+    expect(saved.body.server).toMatchObject({ enabled: false, state: "approval_required" });
+    const server = saved.body.server;
+    const path = `mcp/servers/${server.id}`;
+    expect((await api("POST", `${path}/test`)).body.server.state).toBe("approval_required");
+    expect((await api("PUT", `${path}/enabled`, { enabled: true })).status).toBe(400);
+    await expect(readFile(marker)).rejects.toThrow();
+    expect((await api("PUT", `${path}/program`, { digest: "0".repeat(64), approved: true })).status).toBe(409);
+    const approval = { digest: server.stdio.digest, approved: true };
+    expect(
+      (
+        await fetch(`${base}/api/${path}/program`, {
+          method: "PUT",
+          headers: { origin: base, "content-type": "application/json" },
+          body: JSON.stringify(approval),
+        })
+      ).status,
+    ).toBe(401);
+    expect(
+      (await raw(base, `/api/${path}/program`, { cookie: cookie(), origin: "https://attacker.example" }, approval))
+        .status,
+    ).toBe(403);
+    expect((await api("PUT", `${path}/program`, approval)).body.server.state).toBe("key_required");
+    expect((await api("POST", `${path}/test`)).body.server.state).toBe("key_required");
+    await expect(readFile(marker)).rejects.toThrow();
+    const key = "fixture-local-api-key";
+    expect((await api("PUT", `${path}/key`, { key })).status).toBe(200);
+    const tested = await api("POST", `${path}/test`);
+    expect(tested.body.server).toMatchObject({ state: "ready", tools: [{ name: "inspect", approved: false }] });
+    expect(await readFile(marker, "utf8")).toBe("start\n");
+    expect(JSON.stringify((await api("GET", "mcp")).body)).not.toContain(key);
+    expect((await api("PUT", `${path}/tools`, { tools: ["inspect"] })).status).toBe(200);
+    expect((await api("PUT", `${path}/enabled`, { enabled: true })).status).toBe(200);
+    const revoked = await api("PUT", `${path}/program`, { ...approval, approved: false });
+    expect(revoked.body.server).toMatchObject({ enabled: false, state: "approval_required", tools: [] });
+    expect((await api("DELETE", path)).status).toBe(200);
+    expect((await api("PUT", `${path}/program`, approval)).status).toBe(400);
+    expect(await readFile(marker, "utf8")).toBe("start\n");
+  });
+
   it("creates immutable worktree/read-only chats and scopes every owner panel to the authenticated working directory", async () => {
     const { api, pal, base, cookie } = await signedIn();
     const project = (await api("POST", "projects", { requestId: "worktree-project", name: "Worktrees" })).body.project;

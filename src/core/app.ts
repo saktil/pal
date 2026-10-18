@@ -11,6 +11,7 @@ import {
 } from "../pi/chatgpt.ts";
 import { createPalCodemode } from "../pi/codemode.ts";
 import { McpManager } from "../pi/mcp.ts";
+import { StdioPrograms } from "../pi/mcp-stdio.ts";
 import { loadMasterKey, SqliteCredentialStore } from "../storage/credentials.ts";
 import { openStore, type Store } from "../storage/store.ts";
 import { ChatService } from "./chats.ts";
@@ -164,6 +165,7 @@ export async function openPal(options: PalOptions, context: Context): Promise<Pa
       database: store.database,
       credentials,
       registry,
+      stdio: new StdioPrograms([options.dataRoot, options.installRoot, "/nix/store"]),
       projectId: async (conversation) => (await projectFor(conversation))?.id,
       codemode: (namespaces) => codemode.withNamespaces([FILES_NAMESPACE, SHELL_NAMESPACE, ...namespaces]),
     });

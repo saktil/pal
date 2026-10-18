@@ -12,6 +12,7 @@ import { createApi } from "../../src/core/api.ts";
 import { openPal, type Pal } from "../../src/core/app.ts";
 import { startServer } from "../../src/core/server.ts";
 import { startMcpFixture } from "../fixtures/mcp-server.ts";
+import { STDIO_FIXTURE } from "../fixtures/stdio-server.ts";
 import { browse, startOpenAIFixture } from "../fixtures/openai-server.ts";
 
 const webRoot = join(import.meta.dirname, "..", "..", "dist", "public");
@@ -183,6 +184,128 @@ describe("Pal in a browser", () => {
     expect(mcp.calls.map((call) => call.name)).toEqual(["search"]);
     await shoot("chat-mcp-1440");
     fixture.behavior.responses = "ok";
+  });
+
+  it("saves local MCP without executing, reviews exact intent, and invalidates changed or stale approvals", async () => {
+    const cwd = await realpath(await mkdtemp(join(tmpdir(), "pal-browser-program-")));
+    const marker = join(cwd, "starts");
+    const code = `require("node:fs").appendFileSync(${JSON.stringify(marker)}, "start\\n");\n${STDIO_FIXTURE}`;
+    const key = "fixture-browser-local-key";
+    let id: string | undefined;
+    const errors: string[] = [];
+    const onError = (error: Error) => errors.push(error.message);
+    page.on("pageerror", onError);
+    try {
+      await page.goto(`${base}/#/settings/mcp`);
+      await page.getByRole("button", { name: "Add server" }).click();
+      await page.getByRole("radio", { name: "Local stdio", exact: true }).click();
+      await page.getByLabel("Name", { exact: true }).fill("Local browser fixture");
+      await page.getByLabel("Command", { exact: true }).fill(process.execPath);
+      await page.getByLabel("Working folder on this server").fill(cwd);
+      await page.getByRole("button", { name: "Add argument", exact: true }).click();
+      await page.getByLabel("Argument 1", { exact: true }).fill("-e");
+      await page.getByRole("button", { name: "Add argument", exact: true }).click();
+      await page.getByLabel("Argument 2", { exact: true }).fill(code);
+      await page.getByRole("combobox", { name: /^Authentication/ }).selectOption("env");
+      await page.getByLabel("Key variable", { exact: true }).fill("BROWSER_LOCAL_TOKEN");
+      await page.getByLabel("Key", { exact: true }).fill(key);
+      const saved = page.waitForResponse(
+        (r) => r.url() === `${base}/api/mcp/servers` && r.request().method() === "POST",
+      );
+      await page.getByRole("button", { name: "Save local program", exact: true }).click();
+      const body = (await (await saved).json()) as { server: { id: string } };
+      id = body.server.id;
+      const card = page.locator(".card").filter({ has: page.getByRole("button", { name: /^Local browser fixture/ }) });
+      await card.getByRole("button", { name: "Review local program…" }).waitFor();
+      expect(await card.getByRole("switch").isDisabled()).toBe(true);
+      expect(await card.getByRole("button", { name: "Test connection", exact: true }).isDisabled()).toBe(true);
+      await expect(readFile(marker)).rejects.toThrow();
+      const dialog = page.getByRole("alertdialog", { name: "Approve this local MCP program?" });
+      await card.getByRole("button", { name: "Review local program…" }).click();
+      expect(
+        await dialog
+          .getByRole("button", { name: "Cancel", exact: true })
+          .evaluate((el) => el === document.activeElement),
+      ).toBe(true);
+      expect(await dialog.innerText()).toContain("unsandboxed");
+      expect(await dialog.innerText()).toContain("BROWSER_LOCAL_TOKEN");
+      expect(await dialog.innerText()).not.toContain(key);
+      for (const width of [1440, 768, 390]) {
+        await page.setViewportSize({ width, height: 900 });
+        await dialog.evaluate((el) => {
+          el.scrollTop = 0;
+        });
+        expect(await page.evaluate("document.documentElement.scrollWidth <= innerWidth")).toBe(true);
+        expect(await dialog.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true);
+        await shoot(`mcp-program-review-${width}`);
+      }
+      await page.keyboard.press("Escape");
+      await dialog.waitFor({ state: "detached" });
+      await expect(readFile(marker)).rejects.toThrow();
+      await card.getByRole("button", { name: "Review local program…" }).click();
+      await dialog.getByRole("button", { name: "Approve program", exact: true }).click();
+      await dialog.waitFor({ state: "detached" });
+      await expect(readFile(marker)).rejects.toThrow();
+      await card.getByRole("button", { name: "Test connection", exact: true }).click();
+      await card.getByRole("checkbox", { name: /^inspect/ }).check();
+      await card.getByRole("button", { name: "Approve selected tools" }).click();
+      await expect.poll(async () => (await pal.mcp.get(id ?? "")).tools[0]?.approved).toBe(true);
+      await card.getByRole("switch").check();
+      await expect.poll(async () => (await pal.mcp.get(id ?? "")).enabled).toBe(true);
+      expect(await readFile(marker, "utf8")).toBe("start\n");
+      await page.reload();
+      await page.getByRole("button", { name: /^Local browser fixture/ }).click();
+      expect(await card.getByLabel("Replace key", { exact: true }).inputValue()).toBe("");
+      expect(await page.locator("body").innerText()).not.toContain(key);
+      await shoot("mcp-program-connected-390");
+      await card.getByRole("button", { name: "Edit connection" }).click();
+      expect(await page.getByRole("radio", { name: "Streamable HTTP", exact: true }).isDisabled()).toBe(true);
+      await page.getByRole("button", { name: "Add argument", exact: true }).click();
+      await page.getByLabel("Argument 3", { exact: true }).fill("changed");
+      await page.getByRole("button", { name: "Save local program", exact: true }).click();
+      await card.getByRole("button", { name: "Review local program…" }).waitFor();
+      expect(await pal.mcp.get(id)).toMatchObject({
+        enabled: false,
+        keyConfigured: false,
+        stdio: { approved: false },
+        tools: [],
+      });
+      expect(await readFile(marker, "utf8")).toBe("start\n");
+      await card.getByRole("button", { name: "Review local program…" }).click();
+      const current = await pal.mcp.get(id);
+      if (current.stdio === null) throw new Error("missing local configuration");
+      await pal.mcp.update(id, {
+        transport: "stdio",
+        name: current.name,
+        command: current.stdio.command,
+        args: [...current.stdio.args, "external-edit"],
+        cwd,
+        auth: { kind: "env", variable: "BROWSER_LOCAL_TOKEN" },
+      });
+      await dialog.getByRole("button", { name: "Approve program", exact: true }).click();
+      await dialog
+        .getByRole("alert")
+        .filter({ hasText: /changed/ })
+        .waitFor();
+      expect((await pal.mcp.get(id)).stdio?.approved).toBe(false);
+      expect(await dialog.innerText()).not.toContain("external-edit");
+      await dialog.getByRole("button", { name: "Cancel", exact: true }).click();
+      await card.getByRole("button", { name: "Review local program…" }).click();
+      expect(await dialog.innerText()).toContain("external-edit");
+      await dialog.getByRole("button", { name: "Approve program", exact: true }).click();
+      await dialog.waitFor({ state: "detached" });
+      expect(await card.getByRole("button", { name: "Test connection", exact: true }).isDisabled()).toBe(true);
+      await card.getByRole("button", { name: "Revoke program approval" }).click();
+      await card.getByRole("button", { name: "Review local program…" }).waitFor();
+      expect(await readFile(marker, "utf8")).toBe("start\n");
+      expect(errors).toEqual([]);
+    } finally {
+      page.off("pageerror", onError);
+      if (id !== undefined) await pal.mcp.remove(id);
+      await rm(cwd, { recursive: true, force: true });
+      await page.setViewportSize({ width: 1440, height: 900 });
+      await page.goto(chatUrl);
+    }
   });
 
   it("persists source receipts, keeps links inert until clicked and labels failed retrieval", async () => {

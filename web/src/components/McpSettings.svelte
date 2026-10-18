@@ -1,7 +1,8 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { api, ApiError, type McpServer, type McpState } from "../lib/api.ts";
+  import { api, ApiError, requestId, type McpServer, type McpServerInput, type McpState } from "../lib/api.ts";
   import Icon from "../lib/Icon.svelte";
+  import ConfirmRemoval from "./ConfirmRemoval.svelte";
 
   let { onReviewed }: { onReviewed?: () => void } = $props();
 
@@ -15,14 +16,51 @@
   let confirmRemove: string | undefined = $state();
   let error: string | undefined = $state();
   let adding = $state(false);
-  let draft = $state({
+  let editing: string | undefined = $state();
+  let programReview: McpServer | undefined = $state.raw();
+  const emptyDraft = () => ({
     name: "",
     url: "",
-    auth: "none" as "none" | "header" | "bearer",
+    transport: "http" as "http" | "stdio",
+    command: "",
+    cwd: "",
+    args: [] as { id: string; value: string }[],
+    auth: "none" as "none" | "header" | "bearer" | "env",
     header: "x-api-key",
+    variable: "SERVICE_API_KEY",
     key: "",
     private: false,
   });
+  let draft = $state(emptyDraft());
+  let saveLabel = $derived.by(() => {
+    if (busy.save) return "Saving…";
+    if (draft.transport === "stdio") return "Save local program";
+    return editing === undefined ? "Add and test" : "Save and test";
+  });
+  function begin(server?: McpServer) {
+    editing = server?.id;
+    draft = emptyDraft();
+    if (server !== undefined) {
+      draft.name = server.name;
+      draft.url = server.url;
+      draft.private = server.private;
+      draft.auth = server.auth.kind;
+      if (server.auth.kind === "header") draft.header = server.auth.header;
+      if (server.auth.kind === "env") draft.variable = server.auth.variable;
+      if (server.stdio != null) {
+        draft.transport = "stdio";
+        draft.command = server.stdio.command;
+        draft.cwd = server.stdio.cwd;
+        draft.args = server.stdio.args.map((value) => ({ id: requestId(), value }));
+      }
+    }
+    adding = true;
+  }
+  function transport(value: "http" | "stdio") {
+    draft.transport = value;
+    draft.auth = "none";
+    draft.key = "";
+  }
 
   const STATES: Record<McpState, { label: string; cls: string }> = {
     disabled: { label: "Disabled", cls: "" },
@@ -34,6 +72,7 @@
     unreachable: { label: "Unreachable", cls: "er" },
     blocked: { label: "Blocked by network policy", cls: "er" },
     changed: { label: "Tools changed", cls: "wa" },
+    approval_required: { label: "Program approval needed", cls: "wa" },
     error: { label: "Error", cls: "er" },
   };
 
@@ -80,24 +119,81 @@
   }
 
   async function add() {
+    if (busy.save) return;
+    busy.save = true;
     error = undefined;
     try {
-      const auth = draft.auth === "header" ? { kind: "header" as const, header: draft.header } : { kind: draft.auth };
-      const { server } = await api.mcpAdd({
-        name: draft.name.trim(),
-        url: draft.url.trim(),
-        auth,
-        private: draft.private,
-      });
-      servers = [...servers, server];
+      let input: McpServerInput;
+      if (draft.transport === "stdio") {
+        if (draft.auth !== "none" && draft.auth !== "env")
+          throw new Error("Local programs use a dedicated key variable or no key.");
+        input = {
+          transport: "stdio",
+          name: draft.name.trim(),
+          command: draft.command.trim(),
+          args: draft.args.map((arg) => arg.value),
+          cwd: draft.cwd.trim(),
+          auth: draft.auth === "env" ? { kind: "env", variable: draft.variable } : { kind: "none" },
+        };
+      } else {
+        if (draft.auth === "env") throw new Error("Environment keys are only for local programs.");
+        const auth = draft.auth === "header" ? { kind: "header" as const, header: draft.header } : { kind: draft.auth };
+        input = { name: draft.name.trim(), url: draft.url.trim(), auth, private: draft.private };
+      }
+      const { server } = editing === undefined ? await api.mcpAdd(input) : await api.mcpUpdate(editing, input);
+      if (editing === undefined) servers = [...servers, server];
+      else replace(server);
       if (draft.key !== "" && draft.auth !== "none") replace((await api.mcpKey(server.id, draft.key)).server);
-      replace((await api.mcpTest(server.id)).server);
+      if (draft.transport === "http") replace((await api.mcpTest(server.id)).server);
       open[server.id] = true;
       adding = false;
-      draft = { name: "", url: "", auth: "none", header: "x-api-key", key: "", private: false };
+      editing = undefined;
+      draft = emptyDraft();
     } catch (failure) {
       error = failure instanceof ApiError ? failure.message : String(failure);
+    } finally {
+      busy.save = false;
     }
+  }
+
+  async function approveProgram() {
+    const server = programReview;
+    if (server?.stdio == null) return;
+    try {
+      replace((await api.mcpProgram(server.id, server.stdio.digest, true)).server);
+      programReview = undefined;
+    } catch (failure) {
+      if (failure instanceof ApiError && failure.status === 409) accept(await api.mcp());
+      throw failure;
+    }
+  }
+
+  function programDetails(server: McpServer): string {
+    return JSON.stringify(
+      {
+        command: server.stdio?.command,
+        arguments: server.stdio?.args,
+        cwd: server.stdio?.cwd,
+        environment: [
+          "PATH: executable directory",
+          "HOME/TMPDIR: private temporary folder",
+          "LANG: C.UTF-8",
+          ...(server.auth.kind === "env"
+            ? [`${server.auth.variable}: this server's encrypted key (value not shown)`]
+            : []),
+        ],
+        lifetime: "90-second independent maximum; no inherited host environment",
+        digest: server.stdio?.digest,
+      },
+      null,
+      2,
+    );
+  }
+
+  function connectionLabel(server: McpServer): string {
+    if (server.preset !== null) return "Preset";
+    if (server.stdio != null) return "Local program";
+    return server.private ? "Private endpoint" : "HTTPS";
   }
 
   async function remove(id: string) {
@@ -116,14 +212,16 @@
 
   function authLabel(server: McpServer): string {
     if (server.auth.kind === "none") return "No key";
-    const kind = server.auth.kind === "bearer" ? "Bearer key" : `Key in ${server.auth.header}`;
+    let kind = "Bearer key";
+    if (server.auth.kind === "header") kind = `Key in ${server.auth.header}`;
+    if (server.auth.kind === "env") kind = `Key in ${server.auth.variable}`;
     return `${kind} · ${server.keyConfigured ? "configured" : "not configured"}`;
   }
 </script>
 
 <div class="head">
   <h2 class="h2 grow">MCP servers</h2>
-  <button class="b p" onclick={() => (adding = true)} disabled={adding}><Icon name="plus" />Add server</button>
+  <button class="b p" onclick={() => begin()} disabled={adding}><Icon name="plus" />Add server</button>
 </div>
 <p class="sub">
   MCP servers give Pal's scripts more tools. Pal calls a tool only while its server is enabled and only after you
@@ -150,53 +248,166 @@
 {#if adding}
   <div class="fold accent">
     <div class="line">
-      <strong class="grow">Add MCP server</strong>
-      <button class="b i q" aria-label="Cancel adding server" onclick={() => (adding = false)}><Icon name="x" /></button
+      <strong class="grow">{editing === undefined ? "Add MCP server" : "Edit MCP server"}</strong>
+      <button
+        class="b i q"
+        aria-label="Cancel adding server"
+        disabled={busy.save}
+        onclick={() => {
+          adding = false;
+          draft = emptyDraft();
+        }}><Icon name="x" /></button
       >
     </div>
-    <p class="sub">Streamable HTTP servers. Local command servers need Pal's executor, which isn't available yet.</p>
     <div class="fields">
+      <label class="fl">Name<input class="f" bind:value={draft.name} maxlength="80" autocomplete="off" /></label>
+      <div class="fl">
+        <span>Transport</span>
+        <div class="seg" role="radiogroup" aria-label="Transport">
+          <button
+            class="segb"
+            role="radio"
+            aria-checked={draft.transport === "http"}
+            disabled={editing !== undefined || busy.save}
+            onclick={() => transport("http")}>Streamable HTTP</button
+          >
+          <button
+            class="segb"
+            role="radio"
+            aria-checked={draft.transport === "stdio"}
+            disabled={editing !== undefined || busy.save}
+            onclick={() => transport("stdio")}>Local stdio</button
+          >
+        </div>
+      </div>
+    </div>
+    {#if draft.transport === "stdio"}
+      <p class="callout wa">
+        Local programs run as the Pal host user, not in a sandbox. They can access files and network beyond their
+        working folder. Save first, inspect and approve the exact program, then test and select its tools.
+      </p>
       <label class="fl"
-        >Name<input class="f" bind:value={draft.name} placeholder="e.g. Issue tracker" autocomplete="off" /></label
+        >Command<input
+          class="f mono"
+          bind:value={draft.command}
+          maxlength="4096"
+          placeholder="/nix/store/…-server/bin/server"
+          autocomplete="off"
+          spellcheck="false"
+        /></label
       >
+      <p class="sub">
+        Use an executable already provided by Nix. Pal never installs a package, evaluates a flake, loads .envrc or
+        imports repository MCP configuration automatically.
+      </p>
+      <label class="fl"
+        >Working folder on this server<input
+          class="f mono"
+          bind:value={draft.cwd}
+          maxlength="4096"
+          autocomplete="off"
+          spellcheck="false"
+        /></label
+      >
+      <p class="sub">
+        Choose an existing folder outside Pal's private data and installation. This is separate from device uploads or a
+        chat's working folder.
+      </p>
+      {#each draft.args as arg, index (arg.id)}
+        <div class="fields">
+          <label class="fl wide"
+            >Argument {index + 1}<textarea
+              class="f mono"
+              rows="2"
+              maxlength="4096"
+              bind:value={arg.value}
+              spellcheck="false"></textarea></label
+          >
+          <button
+            class="b sm q"
+            aria-label={`Remove argument ${index + 1}`}
+            onclick={() => (draft.args = draft.args.filter((item) => item.id !== arg.id))}
+            ><Icon name="x" />Remove</button
+          >
+        </div>
+      {/each}
+      <div>
+        <button
+          class="b sm q"
+          disabled={draft.args.length >= 32}
+          onclick={() => (draft.args = [...draft.args, { id: requestId(), value: "" }])}
+          ><Icon name="plus" />Add argument</button
+        >
+      </div>
+      <p class="sub">
+        Each row is one exact argument; no shell splitting or expansion. Arguments may name mutable data or code you
+        also trust. Do not put keys in arguments.
+      </p>
+    {:else}
       <label class="fl wide"
         >URL<input
           class="f mono"
           bind:value={draft.url}
           placeholder="https://tools.example.com/mcp"
+          maxlength="2048"
           autocomplete="off"
           spellcheck="false"
         /></label
       >
-    </div>
+    {/if}
     <div class="fields">
       <label class="fl">
-        Key
+        {draft.transport === "stdio" ? "Authentication" : "Key"}
         <select class="f" bind:value={draft.auth}>
           <option value="none">None</option>
-          <option value="header">API key header</option>
-          <option value="bearer">Bearer token</option>
+          {#if draft.transport === "stdio"}<option value="env">Encrypted key in environment</option>
+          {:else}<option value="header">API key header</option><option value="bearer">Bearer token</option>{/if}
         </select>
       </label>
-      {#if draft.auth === "header"}
-        <label class="fl"
+      {#if draft.auth === "header"}<label class="fl"
           >Header name<input class="f mono" bind:value={draft.header} autocomplete="off" spellcheck="false" /></label
-        >
-      {/if}
-      {#if draft.auth !== "none"}
-        <label class="fl wide"
-          >Key<input class="f mono" type="password" bind:value={draft.key} autocomplete="off" /></label
-        >
-      {/if}
+        >{/if}
+      {#if draft.auth === "env"}<label class="fl"
+          >Key variable<input
+            class="f mono"
+            bind:value={draft.variable}
+            maxlength="64"
+            autocomplete="off"
+            spellcheck="false"
+          /></label
+        >{/if}
+      {#if draft.auth !== "none"}<label class="fl wide"
+          >Key<input class="f mono" type="password" bind:value={draft.key} maxlength="4096" autocomplete="off" /></label
+        >{/if}
     </div>
-    <label class="flr">
-      <input type="checkbox" bind:checked={draft.private} />
-      Private endpoint: allow a local or private-network address (and plain HTTP). Only for servers you run.
-    </label>
-    <div class="row-buttons end">
-      <button class="b p" onclick={add} disabled={draft.name.trim() === "" || draft.url.trim() === ""}
-        >Add and test</button
+    {#if draft.transport === "http"}
+      <label class="flr"
+        ><input type="checkbox" bind:checked={draft.private} />Private endpoint: allow a local or private-network
+        address (and plain HTTP). Only for servers you run.</label
       >
+    {:else}
+      <p class="sub">
+        Only the dedicated key variable is injected; the host's environment, ChatGPT tokens and other servers' keys are
+        never inherited. Use a variable ending in KEY, TOKEN, SECRET or PASSWORD, such as SERVICE_API_KEY. Startup or
+        configuration variables are not accepted.
+      </p>
+    {/if}
+    {#if editing !== undefined}<p class="sub">
+        Changing the endpoint, program, folder or authentication identity disables the connection, clears approvals and
+        deletes its old key. Re-enter a key if needed.
+      </p>{/if}
+    <div class="row-buttons end">
+      <button
+        class="b p"
+        onclick={add}
+        disabled={busy.save ||
+          draft.name.trim() === "" ||
+          (draft.transport === "http"
+            ? draft.url.trim() === ""
+            : draft.command.trim() === "" || draft.cwd.trim() === "")}
+      >
+        {saveLabel}
+      </button>
     </div>
   </div>
 {/if}
@@ -211,11 +422,7 @@
         <button class="b q name" aria-expanded={expanded} onclick={() => (open[server.id] = !expanded)}>
           <Icon name={expanded ? "chevD" : "chevR"} />
           <span>{server.name}</span>
-          <span class="cmeta"
-            >{server.preset !== null ? "Preset" : server.private ? "Private endpoint" : "HTTPS"} · {authLabel(
-              server,
-            )}</span
-          >
+          <span class="cmeta">{connectionLabel(server)} · {authLabel(server)}</span>
         </button>
         <span class="pill {status.cls}">{status.label}</span>
         <label class="switch">
@@ -224,34 +431,70 @@
             type="checkbox"
             role="switch"
             checked={server.enabled}
-            disabled={busy[server.id]}
+            disabled={busy[server.id] ||
+              (server.stdio != null &&
+                (!server.stdio.approved || (server.auth.kind === "env" && !server.keyConfigured)))}
             aria-label={`Enable ${server.name}`}
             onchange={(event) => act(server.id, () => api.mcpEnabled(server.id, event.currentTarget.checked))}
           />
           {server.enabled ? "On" : "Off"}
         </label>
       </div>
-      <div class="mono url">{server.url}</div>
+      <div class="mono url">{server.stdio?.command ?? server.url}</div>
       {#if busy[server.id]}
         <div class="status" role="status">
           <span class="ring spin" aria-hidden="true"></span>Talking to {server.name}…
+        </div>
+      {:else if server.state === "approval_required"}
+        <div class="callout wa" role="status">
+          Inspect and approve this exact local program before it can start. Saving or enabling a configuration never
+          grants execution consent.
         </div>
       {:else if server.state === "key_required" || server.state === "rate_limited" || server.state === "changed"}
         <div class="callout wa" role="status">
           <strong>{status.label}.</strong>
           {server.state === "changed"
             ? "Review the tools below; changed ones stay off until approved again."
-            : server.detail}
+            : (server.detail ?? "Configure this local program’s dedicated key before testing.")}
         </div>
       {:else if server.state === "unreachable" || server.state === "blocked" || server.state === "error"}
         <div class="callout er" role="alert">
           <span><strong>{status.label}.</strong> {server.detail}</span>
-          <div><button class="b sm" onclick={() => act(server.id, () => api.mcpTest(server.id))}>Retry</button></div>
+          <div>
+            <button
+              class="b sm"
+              disabled={busy[server.id] || (server.stdio != null && !server.stdio.approved)}
+              onclick={() => act(server.id, () => api.mcpTest(server.id))}>Retry</button
+            >
+          </div>
         </div>
       {/if}
       {#if expanded}
         <div class="details">
           <div class="h3">Connection</div>
+          {#if server.stdio != null}
+            <p class="callout wa">
+              Trusted host execution, not a sandbox. Pal starts this program for discovery or one tool call, then stops
+              it; no local server is kept running between requests. Program startup itself can have external effects.
+            </p>
+            <pre class="program mono">{programDetails(server)}</pre>
+            <div class="row-buttons">
+              {#if server.stdio.approved}<button
+                  class="b sm"
+                  disabled={busy[server.id]}
+                  onclick={() => act(server.id, () => api.mcpProgram(server.id, server.stdio?.digest ?? "", false))}
+                  >Revoke program approval</button
+                >
+              {:else}<button class="b sm" disabled={busy[server.id]} onclick={() => (programReview = server)}
+                  >Review local program…</button
+                >{/if}
+            </div>
+          {/if}
+          {#if server.preset === null}<div>
+              <button class="b sm q" disabled={busy[server.id] || adding} onclick={() => begin(server)}
+                >Edit connection</button
+              >
+            </div>{/if}
           {#if server.auth.kind !== "none"}
             <div class="fields">
               <label class="fl wide">
@@ -260,9 +503,7 @@
                   class="f mono"
                   type="password"
                   bind:value={keys[server.id]}
-                  placeholder={server.keyConfigured
-                    ? "Saved; type to replace"
-                    : "Optional for presets: raises rate limits"}
+                  placeholder={server.keyConfigured ? "Saved; type to replace" : "Enter this server’s key"}
                   autocomplete="off"
                 />
               </label>
@@ -286,10 +527,19 @@
             </div>
           {/if}
           <div>
-            <button class="b sm" onclick={() => act(server.id, () => api.mcpTest(server.id))}>Test connection</button>
+            <button
+              class="b sm"
+              disabled={busy[server.id] ||
+                (server.stdio != null &&
+                  (!server.stdio.approved || (server.auth.kind === "env" && !server.keyConfigured)))}
+              onclick={() => act(server.id, () => api.mcpTest(server.id))}>Test connection</button
+            >
           </div>
-          <p class="sub">Testing connects and lists tools. It never calls one.</p>
-          {#if !server.private}
+          <p class="sub">
+            Testing connects and lists tools. It never calls one. Local tests start the approved program; startup
+            effects are not undone.
+          </p>
+          {#if server.stdio == null && !server.private}
             <label class="flr">
               <input
                 type="checkbox"
@@ -361,7 +611,31 @@
   {/each}
 </div>
 
+{#if programReview?.stdio}
+  <ConfirmRemoval
+    title="Approve this local MCP program?"
+    description="This program runs unsandboxed as the Pal host user, with filesystem and network authority beyond its working folder. Only its Nix executable is pinned; arguments may refer to mutable code or data. Approval persists for this exact command, arguments, folder identity and key variable. Saving approval does not start it: test and select tools separately. Do not approve code you do not trust."
+    detail={programDetails(programReview)}
+    confirmLabel="Approve program"
+    busyLabel="Approving…"
+    onCancel={() => (programReview = undefined)}
+    onConfirm={approveProgram}
+  />
+{/if}
+
 <style>
+  .program {
+    margin: 0;
+    padding: 10px;
+    background: var(--bg0);
+    border: 1px solid var(--line);
+    border-radius: 6px;
+    white-space: pre-wrap;
+    overflow-wrap: anywhere;
+    max-height: 240px;
+    overflow: auto;
+    font-size: 12px;
+  }
   .head,
   .line {
     display: flex;

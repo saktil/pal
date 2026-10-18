@@ -271,6 +271,13 @@ export const MIGRATIONS: readonly Migration[] = [
       await transaction.exec("CREATE INDEX pal_change_comments_scope ON pal_change_comments (scope_id, created_at)");
     },
   },
+  {
+    version: 16,
+    name: "stdio_mcp",
+    up: async (transaction) => {
+      await transaction.exec("ALTER TABLE pal_mcp_servers ADD COLUMN stdio TEXT");
+    },
+  },
 ];
 
 /**

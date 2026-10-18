@@ -11,6 +11,7 @@ import {
   listChatGPTModels,
 } from "../pi/chatgpt.ts";
 import { McpConfigError } from "../pi/mcp.ts";
+import { StdioConfigError, StdioServerBody } from "../pi/mcp-stdio.ts";
 import type { Pal } from "./app.ts";
 import { AdmissionStopped, ChatNotFound, ProjectUnavailable, type ChatSummary } from "./chats.ts";
 import { cookie, HttpError, isOwnOrigin, readJson, sendJson } from "./http.ts";
@@ -49,20 +50,28 @@ const ChatModelChoice = Type.Object(
   { additionalProperties: false },
 );
 const Keyed = Type.Object({ requestId: Type.Unknown() }, { additionalProperties: true });
-const McpServerBody = Type.Object(
-  {
-    name: Type.String({ minLength: 1, maxLength: 80 }),
-    url: Type.String({ minLength: 1, maxLength: 2048 }),
-    auth: Type.Union([
-      Type.Object({ kind: Type.Literal("none") }, { additionalProperties: false }),
-      Type.Object(
-        { kind: Type.Literal("header"), header: Type.String({ maxLength: 64 }) },
-        { additionalProperties: false },
-      ),
-      Type.Object({ kind: Type.Literal("bearer") }, { additionalProperties: false }),
-    ]),
-    private: Type.Boolean(),
-  },
+const McpServerBody = Type.Union([
+  StdioServerBody,
+  Type.Object(
+    {
+      transport: Type.Optional(Type.Literal("http")),
+      name: Type.String({ minLength: 1, maxLength: 80 }),
+      url: Type.String({ minLength: 1, maxLength: 2048 }),
+      auth: Type.Union([
+        Type.Object({ kind: Type.Literal("none") }, { additionalProperties: false }),
+        Type.Object(
+          { kind: Type.Literal("header"), header: Type.String({ maxLength: 64 }) },
+          { additionalProperties: false },
+        ),
+        Type.Object({ kind: Type.Literal("bearer") }, { additionalProperties: false }),
+      ]),
+      private: Type.Boolean(),
+    },
+    { additionalProperties: false },
+  ),
+]);
+const ProgramApproval = Type.Object(
+  { digest: Type.String({ pattern: "^[a-f0-9]{64}$" }), approved: Type.Boolean() },
   { additionalProperties: false },
 );
 const KeyBody = Type.Object({ key: Type.String({ maxLength: 4096 }) }, { additionalProperties: false });
@@ -310,6 +319,10 @@ export function createApi(pal: Pal, publicOrigin?: string) {
         if (part === undefined && method === "DELETE") {
           await pal.mcp.remove(serverId);
           return send(200, await listing());
+        }
+        if (part === "program" && method === "PUT") {
+          const body = validate(ProgramApproval, await readJson(request));
+          return send(200, { server: await pal.mcp.approveProgram(serverId, body.digest, body.approved) });
         }
         if (part === "key" && method === "PUT") {
           return send(200, { server: await pal.mcp.setKey(serverId, validate(KeyBody, await readJson(request)).key) });
@@ -605,7 +618,7 @@ function classify(error: unknown): [number, string] {
   if (error instanceof ProjectUnavailable) return [409, "project_unavailable"];
   if (error instanceof FolderError) return [422, `folder_${error.code}`];
   if (error instanceof AdmissionStopped) return [503, "admission_stopped"];
-  if (error instanceof McpConfigError) return [400, "mcp_config"];
+  if (error instanceof McpConfigError || error instanceof StdioConfigError) return [400, "mcp_config"];
   if (error instanceof FileAccessError) return [403, "file_access"];
   if (error instanceof SearchError) return [422, "search_unavailable"];
   if (error instanceof WorkspaceBusy) return [409, "workspace_busy"];

@@ -20,7 +20,7 @@ import {
 import { McpClient } from "@earendil-works/pi-mcp";
 import { afterEach, describe, expect, it, vi } from "vitest";
 import { createPalCodemode } from "../src/pi/codemode.ts";
-import { type McpAuth, McpConfigError, McpManager, PRESETS } from "../src/pi/mcp.ts";
+import { type HttpAuth, McpConfigError, McpManager, PRESETS } from "../src/pi/mcp.ts";
 import { loadMasterKey, SqliteCredentialStore } from "../src/storage/credentials.ts";
 import { openStore } from "../src/storage/store.ts";
 import { startMcpFixture } from "./fixtures/mcp-server.ts";
@@ -64,7 +64,7 @@ async function setup() {
   const manager = await open();
   ref.manager = manager;
   cleanups.push(() => manager.close());
-  const add = (auth: McpAuth = { kind: "none" }, url = fixture.url) =>
+  const add = (auth: HttpAuth = { kind: "none" }, url = fixture.url) =>
     manager.add({ name: "Fixture", url, auth, private: true });
 
   /** Run one model turn whose script is `code`, and return the script's result text. */
@@ -92,6 +92,31 @@ async function setup() {
 const tryCall = (call: string) => `try { return await ${call}; } catch (error) { return "error: " + error.message; }`;
 
 describe("MCP connections", () => {
+  it("clears a saved key before publishing a changed recipient, including interrupted credential deletion", async () => {
+    const { manager, add, credentials, open, fixture } = await setup();
+    const server = await add({ kind: "header", header: "x-api-key" });
+    await manager.setKey(server.id, "fixture-bound-recipient-key");
+    const erase = vi.spyOn(credentials, "delete").mockRejectedValueOnce(new Error("interrupted key deletion"));
+    const input = {
+      name: "Moved",
+      url: fixture.url + "?recipient=changed",
+      auth: { kind: "header" as const, header: "x-api-key" },
+      private: true,
+    };
+    await expect(manager.update(server.id, input)).rejects.toThrow("interrupted key deletion");
+    expect(await manager.get(server.id)).toMatchObject({ url: fixture.url, enabled: false, keyConfigured: true });
+    const reopened = await open();
+    cleanups.push(() => reopened.close());
+    expect(await reopened.get(server.id)).toMatchObject({ url: fixture.url, enabled: false });
+    erase.mockRestore();
+    expect(await reopened.update(server.id, input)).toMatchObject({
+      url: input.url,
+      enabled: false,
+      keyConfigured: false,
+    });
+    expect(await credentials.read(`mcp:${server.id}`)).toBeUndefined();
+  });
+
   it("seeds the Exa and Context7 presets once, disabled until the owner's first-run review", async () => {
     const { manager, open } = await setup();
     const servers = await manager.list();
