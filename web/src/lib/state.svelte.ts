@@ -58,7 +58,7 @@ export async function refreshExtensions(): Promise<void> {
   app.extensions = await api.extensions();
 }
 
-function readSetting(key: string): string | null {
+export function readSetting(key: string): string | null {
   try {
     return localStorage.getItem(key);
   } catch {

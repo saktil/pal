@@ -8,8 +8,10 @@
     refreshChatGPT,
     refreshProjects,
     refreshProviders,
+    readSetting,
     refreshExtensions,
     type Route,
+    saveSetting,
     viewport,
   } from "../lib/state.svelte.ts";
   import ChatView from "./ChatView.svelte";
@@ -45,6 +47,65 @@
     { id: "Browser", icon: "globe" },
     { id: "Terminal", icon: "term" },
   ] as const;
+  type Dock = "bottom" | "side";
+  /** Where Terminal sits beside the chat on desktop, and the share of the work area it takes, per position. */
+  let dock: Dock = $state(readSetting("pal.terminalDock") === "side" ? "side" : "bottom");
+  const SHARE = { min: 20, max: 80, step: 5 };
+  function storedShare(where: Dock): number {
+    const value = Number(readSetting(`pal.terminalShare.${where}`));
+    return Number.isFinite(value) && value >= SHARE.min && value <= SHARE.max ? value : where === "bottom" ? 45 : 50;
+  }
+  let shares = $state({ bottom: storedShare("bottom"), side: storedShare("side") });
+  let workarea: HTMLDivElement | undefined = $state();
+  function setDock(next: Dock) {
+    dock = next;
+    saveSetting("pal.terminalDock", next);
+  }
+  function setShare(value: number, save = true) {
+    shares[dock] = Math.round(Math.min(SHARE.max, Math.max(SHARE.min, value)));
+    if (save) saveSetting(`pal.terminalShare.${dock}`, String(shares[dock]));
+  }
+  function drag(event: PointerEvent) {
+    if (workarea === undefined || event.button !== 0) return;
+    const handle = event.currentTarget as HTMLElement;
+    handle.setPointerCapture(event.pointerId);
+    const box = workarea.getBoundingClientRect();
+    const move = (next: PointerEvent) =>
+      setShare(
+        dock === "bottom"
+          ? ((box.bottom - next.clientY) / box.height) * 100
+          : ((box.right - next.clientX) / box.width) * 100,
+        false,
+      );
+    const end = () => {
+      handle.removeEventListener("pointermove", move);
+      setShare(shares[dock]);
+    };
+    handle.addEventListener("pointermove", move);
+    handle.addEventListener("lostpointercapture", end, { once: true });
+  }
+  /** The divider is a slider over its own position: from the bottom when docked below, from the left beside. */
+  const position = $derived(dock === "bottom" ? shares.bottom : 100 - shares.side);
+  function nudge(event: KeyboardEvent) {
+    const steps: Record<string, number> = {
+      ArrowUp: position + SHARE.step,
+      ArrowRight: position + SHARE.step,
+      ArrowDown: position - SHARE.step,
+      ArrowLeft: position - SHARE.step,
+      Home: SHARE.min,
+      End: SHARE.max,
+    };
+    const next = steps[event.key];
+    if (next === undefined) return;
+    event.preventDefault();
+    setShare(dock === "bottom" ? next : 100 - next);
+  }
+  function dockKeys(event: KeyboardEvent) {
+    if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) return;
+    event.preventDefault();
+    setDock(dock === "bottom" ? "side" : "bottom");
+    (event.currentTarget as HTMLElement).querySelector<HTMLElement>('[aria-checked="true"]')?.focus();
+  }
   /** A file Files asked Changes to open. */
   let diffPath: string | undefined = $state();
   let chatView: { insertText(text: string): void } | undefined = $state();
@@ -54,6 +115,7 @@
     panelView = view;
   }
   const size = $derived(viewport());
+  const docked = $derived(panel && panelView === "Terminal" && size === "desktop");
   const chatId = $derived(app.route.view === "chat" ? app.route.chatId : undefined);
   const located = $derived.by(() => {
     for (const project of app.projects) {
@@ -194,7 +256,13 @@
               {/each}
             </div>
           </header>
-          <div class="workarea" class:terminal-open={panel && panelView === "Terminal"}>
+          <div
+            class="workarea"
+            class:dock-bottom={docked && dock === "bottom"}
+            class:dock-side={docked && dock === "side"}
+            bind:this={workarea}
+            style:--terminal-share={`${shares[dock]}%`}
+          >
             <div class="chat-area">
               {#key located.chat.id}<ChatView
                   bind:this={chatView}
@@ -204,6 +272,19 @@
                 />{/key}
             </div>
             {#if panel && enabledPanels.has(panelView)}
+              {#if docked}<div
+                  class="divider"
+                  role="slider"
+                  tabindex="0"
+                  aria-label="Resize terminal"
+                  aria-orientation={dock === "bottom" ? "vertical" : "horizontal"}
+                  aria-valuemin={SHARE.min}
+                  aria-valuemax={SHARE.max}
+                  aria-valuenow={position}
+                  aria-valuetext={`Terminal ${shares[dock]}% of the work area`}
+                  onpointerdown={drag}
+                  onkeydown={nudge}
+                ></div>{/if}
               {#if size === "tablet"}<button
                   class="panel-scrim"
                   aria-label="Close workspace panel"
@@ -216,6 +297,25 @@
               >
                 <div class="panelhead">
                   <h2>{panelView}</h2>
+                  {#if docked}
+                    <div
+                      class="seg"
+                      role="radiogroup"
+                      aria-label="Terminal position"
+                      tabindex="-1"
+                      onkeydown={dockKeys}
+                    >
+                      {#each [["bottom", "Bottom", "dockBottom"], ["side", "Side", "dockSide"]] as const as [where, label, icon] (where)}
+                        <button
+                          class="segb"
+                          role="radio"
+                          aria-checked={dock === where}
+                          tabindex={dock === where ? 0 : -1}
+                          onclick={() => setDock(where)}><Icon name={icon} size={14} />{label}</button
+                        >
+                      {/each}
+                    </div>
+                  {/if}
                   <button class="b i q" aria-label="Close panel" onclick={() => (panelRoute = undefined)}
                     ><Icon name="x" /></button
                   >
@@ -436,14 +536,62 @@
     display: flex;
     position: relative;
   }
-  .workarea.terminal-open {
+  .workarea.dock-bottom {
     flex-direction: column;
   }
-  .workspace-panel.terminal-panel {
+  .dock-bottom .workspace-panel.terminal-panel {
     width: 100%;
-    height: 50%;
+    height: var(--terminal-share);
     border-left: 0;
-    border-top: 1px solid var(--line);
+  }
+  .dock-side .workspace-panel.terminal-panel {
+    width: var(--terminal-share);
+  }
+  /* A wide hit area around a hairline; the line brightens while hovered, focused or dragged. */
+  .divider {
+    position: relative;
+    flex: 0 0 auto;
+    z-index: 27;
+    background: transparent;
+    touch-action: none;
+  }
+  .dock-bottom .divider {
+    height: 7px;
+    margin: -3px 0;
+    cursor: row-resize;
+  }
+  .dock-side .divider {
+    width: 7px;
+    margin: 0 -3px;
+    cursor: col-resize;
+  }
+  .divider::after {
+    content: "";
+    position: absolute;
+    background: var(--line);
+    transition: background-color var(--fast) var(--ease);
+  }
+  .dock-bottom .divider::after {
+    inset: 3px 0;
+  }
+  .dock-side .divider::after {
+    inset: 0 3px;
+  }
+  .divider:hover::after,
+  .divider:focus-visible::after,
+  .divider:active::after {
+    background: var(--glint);
+  }
+  .divider:focus-visible {
+    outline: none;
+  }
+  .panelhead .seg {
+    margin-right: 4px;
+  }
+  .panelhead .segb {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
   }
   .chat-area {
     display: flex;

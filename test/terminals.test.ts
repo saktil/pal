@@ -105,6 +105,11 @@ describe("human host terminals", () => {
     const environment = await readFile(join(project.root, "environment.txt"), "utf8");
     expect(environment).not.toMatch(/OPENAI|CHATGPT|MCP|BASH_ENV|ambient-key/);
     expect(environment).toContain("HISTFILE=/dev/null");
+    // The prompt is colored by the shell itself, not by sourcing any profile or rc file.
+    await expect
+      .poll(() => client.output().replaceAll("\x01", "").replaceAll("\x02", ""))
+      .toContain("\x1b[2mpal\x1b[0m \x1b[36m");
+    expect(environment).toContain("PROMPT_DIRTRIM=2");
     expect((await readFile(join(project.root, "cwd.txt"), "utf8")).trim()).toBe(project.root);
     client.send({ type: "input", epoch, data: "printf '\\033[2J\\033[HOLD\\rNEW\\r\\n'\r" });
     await expect.poll(client.output).toContain("\x1b[2J\x1b[HOLD\rNEW");

@@ -36,6 +36,8 @@ export const ICONS = {
   host: "M2 3h12v8H2zM5.5 14h5M8 11v3",
   edit: "M10.5 2.5l3 3-8 8H2.5v-3z",
   read: "M2 4.5c2-1.3 4-1.3 6 0 2-1.3 4-1.3 6 0v8c-2-1.3-4-1.3-6 0-2-1.3-4-1.3-6 0zM8 4.5v8",
+  dockBottom: "M2 3h12v10H2zM2 9.5h12",
+  dockSide: "M2 3h12v10H2zM9.5 3v10",
 } as const;
 
 export type IconName = keyof typeof ICONS;

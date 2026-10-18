@@ -105,7 +105,7 @@ afterAll(async () => {
 });
 
 async function shoot(name: string): Promise<void> {
-  if (shots !== undefined) await page.screenshot({ path: join(shots, `${name}.png`) });
+  if (shots !== undefined) await page.screenshot({ path: join(shots, `${name}.png`), animations: "disabled" });
 }
 
 /** The composer's model control opens on reasoning; its model header opens the model list. */
@@ -903,8 +903,11 @@ describe("Pal in a browser", () => {
     await page.keyboard.press("Escape");
     await menu.waitFor({ state: "detached" });
     expect(await add.evaluate((node) => node === document.activeElement)).toBe(true);
-    await page.keyboard.press("ArrowDown");
+    // Listening first lets Playwright's file chooser interception settle before the key that opens it.
     const chooser = page.waitForEvent("filechooser");
+    // Arrow keys open the menu on its only item, the way a keyboard user would reach it.
+    await page.keyboard.press("ArrowDown");
+    await expect.poll(() => item.evaluate((node) => node === document.activeElement)).toBe(true);
     await page.keyboard.press("Enter");
     const picked = await chooser;
     expect(picked.isMultiple()).toBe(true);
@@ -1696,7 +1699,30 @@ describe("Pal in a browser", () => {
     await page.keyboard.press("Enter");
     await expect.poll(() => panel.locator(".xterm-accessibility-tree").innerText()).toContain("reader-ok");
     await panel.getByRole("checkbox", { name: "Screen reader mode" }).uncheck();
+    // Program colors reach the screen in Pal's palette; the echoed command itself stays uncolored.
+    await panel.getByLabel("Terminal input").focus();
+    await page.keyboard.insertText("printf '\\033[31m%s\\033[0m\\n' \"ansi-$((40 + 2))\"");
+    await page.keyboard.press("Enter");
+    const colored = panel.locator(".xterm-rows span").filter({ hasText: /^ansi-42$/ });
+    await expect.poll(() => colored.count()).toBeGreaterThan(0);
+    expect(await colored.first().evaluate((node) => getComputedStyle(node).color)).toBe("rgb(255, 123, 138)");
     await shoot("terminal-1440");
+    // Bottom is the default dock; Side refits the same shell, with no new session and no replayed input.
+    const position = panel.getByRole("radiogroup", { name: "Terminal position" });
+    expect(await position.getByRole("radio", { name: "Bottom" }).getAttribute("aria-checked")).toBe("true");
+    expect((await panel.boundingBox())?.width).toBeGreaterThan(1000);
+    const bottomCols = (await pal.terminals.list(project.id))[0]?.cols ?? 0;
+    await position.getByRole("radio", { name: "Side" }).click();
+    await expect.poll(async () => (await panel.boundingBox())?.x ?? 0).toBeGreaterThan(700);
+    await expect.poll(async () => (await pal.terminals.list(project.id))[0]?.cols ?? 0).toBeLessThan(bottomCols);
+    expect((await pal.terminals.list(project.id)).map((terminal) => terminal.id)).toEqual([id]);
+    const divider = page.getByRole("slider", { name: "Resize terminal" });
+    expect(await divider.getAttribute("aria-valuetext")).toBe("Terminal 50% of the work area");
+    await divider.focus();
+    await page.keyboard.press("ArrowLeft");
+    await expect.poll(() => divider.getAttribute("aria-valuetext")).toBe("Terminal 55% of the work area");
+    await shoot("terminal-side-1440");
+    expect(await readFile(join(project.root, "terminal-count.txt"), "utf8")).toBe("once");
     await panel.getByRole("button", { name: "Close panel", exact: true }).click();
     await page.reload();
     await page.getByRole("button", { name: "Terminal", exact: true }).click();
@@ -1704,6 +1730,11 @@ describe("Pal in a browser", () => {
     await expect.poll(() => panel.locator(".xterm-rows").innerText()).toContain("terminal-live");
     expect((await pal.terminals.list(project.id))[0]?.id).toBe(id);
     expect(await page.getByLabel("Message").inputValue()).toBe("");
+    // This browser remembers the position and size.
+    expect(await position.getByRole("radio", { name: "Side" }).getAttribute("aria-checked")).toBe("true");
+    expect(await divider.getAttribute("aria-valuetext")).toBe("Terminal 55% of the work area");
+    await position.getByRole("radio", { name: "Bottom" }).click();
+    await expect.poll(async () => (await panel.boundingBox())?.width ?? 0).toBeGreaterThan(1000);
 
     const phoneContext = await browser.newContext({ storageState: await page.context().storageState() });
     const phone = await phoneContext.newPage();

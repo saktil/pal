@@ -16,6 +16,10 @@ import type { Projects } from "./projects.ts";
 import { validate } from "./requests.ts";
 import type { Workspaces } from "./workspaces.ts";
 
+/** A color code inside readline's non-printing markers, so line editing measures the prompt correctly; a bash
+ * without readline passes the markers through and terminals ignore them. */
+const sgr = (code: string) => `\x01\x1b[${code}m\x02`;
+
 const Cols = Type.Integer({ minimum: 20, maximum: 240 });
 const Rows = Type.Integer({ minimum: 5, maximum: 80 });
 export const TerminalSize = Type.Object({ cols: Cols, rows: Rows }, { additionalProperties: false });
@@ -143,7 +147,9 @@ export class Terminals {
             HISTFILE: "/dev/null",
             HISTSIZE: "0",
             INPUTRC: "/dev/null",
-            PS1: "[pal] \\w \\$ ",
+            // A dim "pal" marks Pal's clean host shell; the last two folders keep long workspace paths readable.
+            PS1: `${sgr("2")}pal${sgr("0")} ${sgr("36")}\\w${sgr("0")} ${sgr("1;34")}\\$${sgr("0")} `,
+            PROMPT_DIRTRIM: "2",
           },
         });
       } catch (error) {
