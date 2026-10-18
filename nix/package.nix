@@ -18,9 +18,13 @@
   playwright-driver,
   makeFontsConf,
   dejavu_fonts,
+  nix,
+  util-linux,
+  pkgsPath,
+  sourceRoot ? ../.,
 }:
 let
-  root = ../.;
+  root = sourceRoot;
   # The owner's sandboxed browser (Linux only): the headless shell matching the pinned playwright-core, bubblewrap and
   # socat for the network-less sandbox, coreutils for its relay and fonts so pages render text.
   browsers = playwright-driver.browsers.override {
@@ -50,7 +54,33 @@ let
     (root + "/vite.config.ts")
     (root + "/src")
     (root + "/web")
+    (root + "/scripts/release-manifest.ts")
   ];
+  releaseSource = lib.fileset.toSource {
+    inherit root;
+    fileset = lib.fileset.unions (
+      appFiles
+      ++ [
+        (root + "/nix")
+        (root + "/test")
+        (root + "/scripts")
+        (root + "/flake.nix")
+        (root + "/flake.lock")
+        (root + "/devenv.nix")
+        (root + "/.envrc")
+        (root + "/vitest.config.ts")
+        (root + "/vitest.e2e.config.ts")
+        (root + "/vitest.feasibility.config.ts")
+        (root + "/eslint.config.js")
+        (root + "/.prettierrc.json")
+        (root + "/.prettierignore")
+      ]
+    );
+  };
+  releaseEnv = lib.optionalAttrs stdenv.hostPlatform.isLinux {
+    PAL_NIX = lib.getExe nix;
+    PAL_FLOCK = "${util-linux}/bin/flock";
+  };
   # pnpm installs with --ignore-scripts, so node-pty is compiled here against this Node. Its prebuilds
   # (darwin/win32 only; 1.1.0's darwin spawn-helper lacks the executable bit) and Windows sources are dropped.
   buildNodePty = ''
@@ -106,16 +136,27 @@ stdenv.mkDerivation (finalAttrs: {
     pnpm prune --prod --ignore-scripts
     mkdir -p $out/lib/pal $out/bin
     cp -r dist node_modules package.json $out/lib/pal/
+    ln -s ${releaseSource} $out/lib/pal/release-source
+    node scripts/release-manifest.ts ${releaseSource} "$out" ${pkgsPath} "$out/lib/pal/release.json"
     makeWrapper ${lib.getExe nodejs_24} $out/bin/pal --add-flags $out/lib/pal/dist/main.js \
-      --prefix PATH : ${lib.makeBinPath [ bash coreutils git nodejs_24 ]} \
+      --prefix PATH : ${
+        lib.makeBinPath [
+          bash
+          coreutils
+          git
+          nodejs_24
+        ]
+      } \
       --set PAL_BASH ${lib.getExe bash} --set PAL_TIMEOUT ${coreutils}/bin/timeout \
-      ${lib.concatStringsSep " " (lib.mapAttrsToList (name: value: "--set ${name} ${value}") browserEnv)}
+      ${lib.concatStringsSep " " (
+        lib.mapAttrsToList (name: value: "--set ${name} ${value}") (browserEnv // releaseEnv)
+      )}
     runHook postInstall
   '';
 
   passthru = {
     inherit (finalAttrs) pnpmDeps;
-    inherit buildNodePty browserEnv;
+    inherit buildNodePty browserEnv releaseEnv;
   };
 
   meta = {

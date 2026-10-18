@@ -10,9 +10,10 @@
   python3,
   git,
   pal,
+  sourceRoot ? ../.,
 }:
 let
-  root = ../.;
+  root = sourceRoot;
 in
 stdenv.mkDerivation {
   pname = "pal-tests";
@@ -50,6 +51,7 @@ stdenv.mkDerivation {
   ++ lib.optional stdenv.hostPlatform.isLinux autoPatchelfHook;
   buildInputs = lib.optional stdenv.hostPlatform.isLinux stdenv.cc.cc.lib;
   __darwinAllowLocalNetworking = true;
+  env = pal.releaseEnv;
 
   # Build node-pty and patch the prebuilt native libraries the tests load, as the package does; scripts need real shebangs.
   preBuild = ''

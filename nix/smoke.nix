@@ -2,6 +2,7 @@
 {
   runCommand,
   curl,
+  nodejs_24,
   pal,
 }:
 runCommand "pal-smoke-${pal.version}"
@@ -15,6 +16,16 @@ runCommand "pal-smoke-${pal.version}"
   ''
     pal --version | grep -Fx 'pal ${pal.version}'
     pal --help | grep -F 'Usage: pal'
+    ${pal}/bin/pal --help | grep -F 'check-release'
+    ${nodejs_24}/bin/node --input-type=module <<'JS'
+    import assert from 'node:assert/strict';
+    import { readFile } from 'node:fs/promises';
+    import { readSource } from '${pal}/lib/pal/release-source/src/core/release-policy.ts';
+    const manifest = JSON.parse(await readFile('${pal}/lib/pal/release.json', 'utf8'));
+    const source = await readSource('${pal}/lib/pal/release-source', manifest.source.files.map(file => file.path), false);
+    assert.equal(source.digest, manifest.source.digest);
+    assert.equal(source.compatibility, manifest.source.compatibility);
+    JS
     pal probe | tee probe.jsonl
     test "$(grep -c '"ok":true' probe.jsonl)" -eq 5
 

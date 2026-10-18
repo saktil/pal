@@ -38,6 +38,19 @@ async function main(argv: readonly string[]): Promise<number> {
       for (const result of results) process.stdout.write(`${JSON.stringify(result)}\n`);
       return results.every((result) => result.ok) ? 0 : 1;
     }
+    case "check-release": {
+      const { evaluateRelease } = await import("./core/release-check.ts");
+      try {
+        const result = await evaluateRelease(installRoot, command.dataRoot, command.candidate);
+        process.stdout.write(
+          `${JSON.stringify({ digest: result.digest, package: result.package, changes: result.changes, checkedAt: result.checkedAt })}\n`,
+        );
+        return 0;
+      } catch (error) {
+        process.stderr.write(`pal: ${error instanceof Error ? error.message : "release check failed"}\n`);
+        return 1;
+      }
+    }
     case "serve": {
       const { host, port, dataRoot, publicOrigin } = command.config;
       let pal;

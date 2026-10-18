@@ -54,6 +54,23 @@ describe("parseCommand", () => {
     expect(() => parseCommand(argv, linux)).toThrow(message);
   });
 
+  it("checks only an explicit candidate worktree and never accepts activation flags", () => {
+    expect(parseCommand(["check-release", "--candidate", "/tmp/candidate", "--data-dir", "/data/pal"], linux)).toEqual({
+      kind: "check-release",
+      candidate: "/tmp/candidate",
+      dataRoot: "/data/pal",
+    });
+    for (const argv of [
+      ["check-release"],
+      ["check-release", "--candidate", "relative"],
+      ["serve", "--candidate", "/tmp/candidate"],
+      ["probe", "--candidate", "/tmp/candidate"],
+      ["check-release", "--candidate", "/tmp/candidate", "--port", "7337"],
+      ["check-release", "--candidate", "/tmp/candidate", "--approve"],
+    ])
+      expect(() => parseCommand(argv, linux)).toThrow(UsageError);
+  });
+
   it("requires explicit canonical public origins for remote binding", () => {
     expect(serve(["--host", "100.64.0.10", "--public-origin", "http://100.64.0.10:7337/"])).toMatchObject({
       host: "100.64.0.10",

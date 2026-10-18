@@ -23,7 +23,7 @@
     in
     {
       packages = forSystems (pkgs: {
-        default = pkgs.callPackage ./nix/package.nix { };
+        default = pkgs.callPackage ./nix/package.nix { pkgsPath = pkgs.path; };
       });
 
       apps = forSystems (pkgs: {

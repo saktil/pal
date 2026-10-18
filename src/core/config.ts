@@ -8,7 +8,11 @@ export const DEFAULT_PORT = 7337;
 export type ServeConfig = { host: string; port: number; dataRoot: string; publicOrigin?: string };
 
 export type Command =
-  { kind: "help" } | { kind: "version" } | { kind: "probe" } | { kind: "serve"; config: ServeConfig };
+  | { kind: "help" }
+  | { kind: "version" }
+  | { kind: "probe" }
+  | { kind: "serve"; config: ServeConfig }
+  | { kind: "check-release"; dataRoot: string; candidate: string };
 
 /** Process facts that decide defaults, passed in so tests do not depend on the machine. */
 export type HostFacts = {
@@ -24,10 +28,12 @@ export class UsageError extends Error {}
 export const USAGE = `Usage: pal [serve] [--host <address>] [--port <number>] [--data-dir <path>]
                  [--public-origin <url>]
        pal probe
+       pal check-release --candidate <worktree> [--data-dir <path>]
 
 Commands:
   serve              Run the Pal server (default)
   probe              Check SQLite FTS5, fff, Code Mode and PTY support on this host, then exit
+  check-release      Run protected offline candidate tests/evals; never approve or activate
 
 Options:
   --host <address>   Address to listen on (default ${DEFAULT_HOST})
@@ -51,6 +57,7 @@ export function parseCommand(argv: readonly string[], host: HostFacts): Command 
         port: { type: "string" },
         "data-dir": { type: "string" },
         "public-origin": { type: "string" },
+        candidate: { type: "string" },
         help: { type: "boolean", short: "h" },
         version: { type: "boolean", short: "v" },
       },
@@ -65,12 +72,24 @@ export function parseCommand(argv: readonly string[], host: HostFacts): Command 
   const [name = "serve", extra] = positionals;
   if (extra !== undefined) throw new UsageError(`unexpected argument '${extra}'`);
   if (name === "probe") {
-    const options = ["host", "port", "data-dir", "public-origin"] as const;
+    const options = ["host", "port", "data-dir", "public-origin", "candidate"] as const;
     const given = options.find((option) => values[option] !== undefined);
     if (given !== undefined) throw new UsageError(`'probe' does not accept --${given}`);
     return { kind: "probe" };
   }
+  if (name === "check-release") {
+    const given = (["host", "port", "public-origin"] as const).find((option) => values[option] !== undefined);
+    if (given !== undefined) throw new UsageError(`check-release does not accept --${given}`);
+    if (values.candidate === undefined || !isAbsolute(values.candidate))
+      throw new UsageError("--candidate must be an absolute worktree path");
+    return {
+      kind: "check-release",
+      candidate: resolve(values.candidate),
+      dataRoot: resolveDataRoot(values["data-dir"], host),
+    };
+  }
   if (name !== "serve") throw new UsageError(`unknown command '${name}'`);
+  if (values.candidate !== undefined) throw new UsageError("serve does not accept --candidate");
 
   const publicOrigin = parsePublicOrigin(values["public-origin"]);
   return {
