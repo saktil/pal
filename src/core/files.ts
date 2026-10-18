@@ -82,6 +82,7 @@ export function fileTools(options: {
     signal?: AbortSignal,
   ) => {
     const lease = await access(api, context);
+    if (lease.access !== "write") throw new FileAccessError("this workspace is read-only");
     const initial = await resolve(lease, path, "allow");
     return locks.run(initial.root, async () => {
       await lease.check();
@@ -432,10 +433,10 @@ export type FilePreview =
 export function projectFiles(options: {
   readonly root: (projectId: string) => Promise<string | undefined>;
   readonly deny: readonly string[];
-  readonly folder?: (projectId: string, id?: string) => Promise<FolderLease>;
+  readonly folder?: (projectId: string, id?: string, workspaceId?: string) => Promise<FolderLease>;
 }) {
-  const open = async (projectId: string, path: string, id?: string) => {
-    const lease = await options.folder?.(projectId, id);
+  const open = async (projectId: string, path: string, id?: string, workspaceId?: string) => {
+    const lease = await options.folder?.(projectId, id, workspaceId);
     if (lease === undefined && id !== undefined && id !== "primary")
       throw new FileAccessError("this folder is not granted");
     const root = lease?.root ?? (await options.root(projectId));
@@ -443,8 +444,8 @@ export function projectFiles(options: {
     return { ...(await resolveProjectPath(root, path, options.deny)), lease };
   };
   return {
-    async list(projectId: string, path: string, id?: string) {
-      const { root, target, lease } = await open(projectId, path, id);
+    async list(projectId: string, path: string, id?: string, workspaceId?: string) {
+      const { root, target, lease } = await open(projectId, path, id, workspaceId);
       if (!(await stat(target)).isDirectory()) throw new FileAccessError(`${path} is not a folder`);
       const listed = await listProjectFolder(root, target, options.deny);
       await lease?.check();
@@ -452,8 +453,8 @@ export function projectFiles(options: {
       const parent = dirname(at) === "." ? "" : dirname(at);
       return { path: at, ...(at === "" ? {} : { parent }), ...listed };
     },
-    async preview(projectId: string, path: string, id?: string): Promise<FilePreview> {
-      const { root, target, lease } = await open(projectId, path, id);
+    async preview(projectId: string, path: string, id?: string, workspaceId?: string): Promise<FilePreview> {
+      const { root, target, lease } = await open(projectId, path, id, workspaceId);
       const at = relative(root, target);
       const { bytes, size, truncated } = await readFileSnapshot(target);
       await lease?.check();
@@ -493,12 +494,12 @@ function trimPartialCharacter(bytes: Buffer): Buffer {
   return bytes;
 }
 
-export async function readFileSnapshot(path: string) {
+export async function readFileSnapshot(path: string, maxBytes = MAX_READ_BYTES) {
   const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   try {
     const info = await handle.stat();
     if (!info.isFile()) throw new FileAccessError("path is not a regular file");
-    const buffer = Buffer.alloc(Math.min(info.size + 1, MAX_READ_BYTES + 1));
+    const buffer = Buffer.alloc(Math.min(info.size + 1, maxBytes + 1));
     let length = 0;
     while (length < buffer.length) {
       const { bytesRead } = await handle.read(buffer, length, buffer.length - length, length);
@@ -506,9 +507,9 @@ export async function readFileSnapshot(path: string) {
       length += bytesRead;
     }
     return {
-      bytes: buffer.subarray(0, Math.min(length, MAX_READ_BYTES)),
+      bytes: buffer.subarray(0, Math.min(length, maxBytes)),
       size: info.size,
-      truncated: length > MAX_READ_BYTES || info.size > MAX_READ_BYTES,
+      truncated: length > maxBytes || info.size > maxBytes,
       mode: info.mode & 0o777,
     };
   } finally {

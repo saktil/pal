@@ -246,6 +246,31 @@ export const MIGRATIONS: readonly Migration[] = [
       await transaction.exec("ALTER TABLE pal_admissions ADD COLUMN folder_scope TEXT");
     },
   },
+  {
+    version: 15,
+    name: "chat_workspaces",
+    up: async (transaction) => {
+      await transaction.exec(`CREATE TABLE pal_workspaces (
+        id TEXT PRIMARY KEY,
+        project_id TEXT NOT NULL,
+        chat_id TEXT NOT NULL UNIQUE,
+        mode TEXT NOT NULL CHECK (mode IN ('local', 'worktree', 'read-only')),
+        root TEXT NOT NULL,
+        source TEXT NOT NULL,
+        plan TEXT,
+        identity TEXT,
+        nonce TEXT NOT NULL,
+        state TEXT NOT NULL CHECK (state IN ('provisioning', 'ready', 'failed')),
+        error TEXT
+      ) STRICT`);
+      await transaction.exec("CREATE INDEX pal_workspaces_project ON pal_workspaces (project_id)");
+      await transaction.exec("ALTER TABLE pal_change_bases RENAME COLUMN project_id TO scope_id");
+      await transaction.exec("ALTER TABLE pal_change_reviews RENAME COLUMN project_id TO scope_id");
+      await transaction.exec("ALTER TABLE pal_change_comments RENAME COLUMN project_id TO scope_id");
+      await transaction.exec("DROP INDEX pal_change_comments_project");
+      await transaction.exec("CREATE INDEX pal_change_comments_scope ON pal_change_comments (scope_id, created_at)");
+    },
+  },
 ];
 
 /**

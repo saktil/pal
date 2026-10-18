@@ -1,5 +1,14 @@
 <script lang="ts">
-  import { api, ApiError, type ChatSummary, type Effort, type Project, requestId, type Upload } from "../lib/api.ts";
+  import {
+    api,
+    ApiError,
+    type ChatSummary,
+    type Effort,
+    type Project,
+    requestId,
+    type Upload,
+    type WorkspaceMode as Mode,
+  } from "../lib/api.ts";
   import {
     type Attachment,
     type Block,
@@ -13,10 +22,27 @@
   } from "../lib/chat.svelte.ts";
   import Icon from "../lib/Icon.svelte";
   import InternetSources from "./InternetSources.svelte";
+  import WorkspaceMode from "./WorkspaceMode.svelte";
   import { renderMarkdown } from "../lib/markdown.ts";
   import { app, navigate, refreshProjects, viewport } from "../lib/state.svelte.ts";
 
-  let { chat, project }: { chat: ChatSummary; project: Project } = $props();
+  let { chat, project, onNewChat }: { chat: ChatSummary; project: Project; onNewChat: (mode: Mode) => Promise<void> } =
+    $props();
+  const workspace = $derived(chat.workspace);
+  const root = $derived(workspace?.root ?? project.root);
+  const ready = $derived(workspace == null || workspace.state === "ready");
+  let preparing = $state(false);
+  async function prepare() {
+    preparing = true;
+    try {
+      await api.prepareWorkspace(chat.id);
+      await refreshProjects();
+    } catch (failure) {
+      error = failure instanceof Error ? failure.message : String(failure);
+    } finally {
+      preparing = false;
+    }
+  }
 
   type Step = {
     id: string;
@@ -86,7 +112,7 @@
   );
   const supportedEfforts = $derived(choices.find((choice) => choice.slug === effectiveModel)?.efforts ?? []);
   const canSend = $derived(
-    !sending && !choosing && uploading === 0 && draft.trim() !== "" && connected && effectiveModel !== null,
+    ready && !sending && !choosing && uploading === 0 && draft.trim() !== "" && connected && effectiveModel !== null,
   );
 
   function build(entries: Entry[], partial: Message | undefined): Item[] {
@@ -263,7 +289,7 @@
         <div class="project">{project.name}</div>
         <h1>{chat.title ?? "New chat"}</h1>
       </div>
-      <span class="wsitem" title={project.root}><Icon name="folder" />{project.root}</span>
+      <span class="wsitem" title={root}><Icon name="folder" />{root}</span>
     </header>
   {/if}
 
@@ -272,7 +298,16 @@
       {#if stream?.loaded && items.length === 0}
         <div class="empty">
           <h2>Start the conversation</h2>
-          <p>Pal works in <span class="mono">{project.root}</span>. Ask a question or describe what you need.</p>
+          {#if ready}<p>Pal works in <span class="mono">{root}</span>. Ask a question or describe what you need.</p>
+          {:else}<p>This chat's folder is not ready. No local folder was substituted.</p>{/if}
+          {#if workspace?.mode === "worktree" && ready}<p>
+              Detached worktree from <span class="mono">{workspace.base?.slice(0, 12)}</span>. Source dirt was not
+              copied; {workspace.submodules} submodules left uninitialized. Not a sandbox.
+            </p>{/if}
+          {#if workspace?.mode === "read-only"}<p>
+              Agent file writes and shell are disabled. Human Terminal and MCP grants are separate. This is a tool
+              policy, not a sandbox.
+            </p>{/if}
         </div>
       {/if}
       {#each items as item (item.id)}
@@ -433,6 +468,14 @@
         </div>
       {/if}
 
+      {#if !ready}
+        <div class="callout wa" role="status">
+          {workspace?.error ?? "Preparing this chat's working folder. Messages stay disabled until it is ready."}
+          {#if workspace?.state === "provisioning"}<button class="b sm" disabled={preparing} onclick={prepare}
+              >{preparing ? "Checking…" : "Check workspace"}</button
+            >{/if}
+        </div>
+      {/if}
       {#if !connected}
         <div class="callout wa nowrap" role="status">
           <span class="grow"><strong>ChatGPT isn't connected.</strong> Messages need your ChatGPT subscription.</span>
@@ -509,6 +552,7 @@
           <button class="b q" aria-label="Choose model" aria-expanded={picker} onclick={() => (picker = !picker)}>
             <Icon name="model" />{modelName}<Icon name="chevD" />
           </button>
+          <WorkspaceMode {workspace} {onNewChat} />
           <span class="grow"></span>
           {#if stream?.running}
             <div class="seg" role="radiogroup" aria-label="While the agent is running">

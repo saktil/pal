@@ -104,6 +104,106 @@ async function putBytes(base: string, cookie: string, id: string, bytes: Uint8Ar
 }
 
 describe("API", () => {
+  it("creates immutable worktree/read-only chats and scopes every owner panel to the authenticated working directory", async () => {
+    const { api, pal, base, cookie } = await signedIn();
+    const project = (await api("POST", "projects", { requestId: "worktree-project", name: "Worktrees" })).body.project;
+    const git = (...args: string[]) =>
+      promisify(execFile)(
+        "git",
+        ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "-c", "commit.gpgsign=false", ...args],
+        { cwd: project.root },
+      );
+    await git("init", "-q");
+    await writeFile(join(project.root, "base.txt"), "committed needle\n");
+    await git("add", "base.txt");
+    await git("commit", "-qm", "base");
+    expect(
+      (await api("POST", "chats", { requestId: "bad-workspace", projectId: project.id, workspace: "yolo" })).status,
+    ).toBe(400);
+    const body = { requestId: "worktree-chat", projectId: project.id, workspace: "worktree" };
+    const created = await api("POST", "chats", body);
+    expect(created.status).toBe(200);
+    const chat = created.body.chat;
+    expect(chat.workspace).toMatchObject({ mode: "worktree", state: "ready", source: project.root });
+    expect(chat.workspace.root).not.toBe(project.root);
+    expect((await api("POST", "chats", body)).body.chat).toEqual(chat);
+    expect((await api("POST", "chats", { ...body, workspace: "local" })).status).toBe(409);
+    expect((await api("GET", `chats/${chat.id}`)).body.chat).toEqual(chat);
+    expect((await api("GET", "projects")).body.projects[0].chats[0].workspace).toEqual(chat.workspace);
+    const path = `projects/${project.id}`;
+    const query = `workspace=${chat.workspace.id}`;
+    await writeFile(join(project.root, "base.txt"), "source-only needle\n");
+    expect((await api("GET", `${path}/file?path=base.txt&${query}`)).body.text).toBe("committed needle\n");
+    expect((await api("GET", `${path}/file?path=base.txt`)).body.text).toBe("source-only needle\n");
+    expect(
+      (await api("GET", `${path}/files?${query}`)).body.entries.map((entry: { name: string }) => entry.name),
+    ).toEqual([".git", "base.txt"]);
+    expect((await api("GET", `${path}/folders?${query}`)).body.folders[0].root).toBe(chat.workspace.root);
+    expect((await api("GET", `${path}/search?q=source-only&${query}`)).body.hits).toEqual([]);
+    await writeFile(join(chat.workspace.root, "base.txt"), "worktree-only needle\n");
+    const changes = (await api("GET", `${path}/changes?${query}`)).body;
+    expect(changes.base).toBe(chat.workspace.base);
+    const file = changes.files[0];
+    const review = { path: "base.txt", revision: file.revision, workspace: chat.workspace.id };
+    expect((await api("PUT", `${path}/review`, { ...review, reviewed: true })).status).toBe(200);
+    const comment = (await api("POST", `${path}/comments`, { ...review, line: 1, body: "Isolated review" })).body
+      .comment;
+    expect(
+      (await api("POST", `${path}/comments/sent`, { ids: [comment.id], workspace: chat.workspace.id })).status,
+    ).toBe(200);
+    expect((await api("GET", `${path}/changes`)).body.comments).toEqual([]);
+    expect((await api("GET", `${path}/changes?${query}`)).body.comments[0].sent).toBe(true);
+    expect((await api("POST", `${path}/discard`, review)).status).toBe(200);
+    expect(await readFile(join(project.root, "base.txt"), "utf8")).toBe("source-only needle\n");
+    expect(await readFile(join(chat.workspace.root, "base.txt"), "utf8")).toBe("committed needle\n");
+    expect((await api("GET", `${path}/changes?workspace=`)).status).toBe(400);
+    const other = (await api("POST", "projects", { requestId: "other-workspace-project", name: "Other" })).body.project;
+    for (const suffix of [
+      `file?path=base.txt&${query}`,
+      `files?${query}`,
+      `folders?${query}`,
+      `search?q=needle&${query}`,
+      `changes?${query}`,
+    ])
+      expect((await api("GET", `projects/${other.id}/${suffix}`)).status).toBe(403);
+    expect((await api("PUT", `projects/${other.id}/review`, { ...review, reviewed: true })).status).toBe(403);
+    expect(
+      (
+        await api("POST", `projects/${other.id}/terminals`, {
+          cols: 80,
+          rows: 24,
+          trust: true,
+          workspace: chat.workspace.id,
+        })
+      ).status,
+    ).toBe(403);
+    expect((await fetch(`${base}/api/${path}/files?${query}`)).status).toBe(401);
+    expect(
+      (await raw(base, `/api/chats/${chat.id}/workspace`, { cookie: cookie(), origin: "https://attacker.example" }, {}))
+        .status,
+    ).toBe(403);
+    const readonly = (
+      await api("POST", "chats", { requestId: "readonly-workspace", projectId: project.id, workspace: "read-only" })
+    ).body.chat;
+    expect(readonly.workspace).toMatchObject({ mode: "read-only", root: project.root, state: "ready" });
+    expect((await api("GET", `${path}/folders?workspace=${readonly.workspace.id}`)).body.folders[0].access).toBe(
+      "read",
+    );
+    const terminal = await api("POST", `${path}/terminals`, {
+      cols: 80,
+      rows: 24,
+      trust: true,
+      workspace: chat.workspace.id,
+    });
+    expect(terminal.body.terminal.cwd).toBe(chat.workspace.root);
+    await api("DELETE", `${path}/terminals/${terminal.body.terminal.id}`);
+    await api("DELETE", `chats/${chat.id}`);
+    expect((await api("GET", `${path}/files?${query}`)).status).toBe(403);
+    expect((await api("POST", `chats/${chat.id}/workspace`, {})).status).toBe(404);
+    expect(await readFile(join(chat.workspace.root, "base.txt"), "utf8")).toBe("committed needle\n");
+    expect(pal.chats.stopped).toBe(false);
+  });
+
   it("requires explicit owner opt-in to review ignored files and hides their retained comment excerpts by default", async () => {
     const { api, pal, base, cookie } = await signedIn();
     const project = (await api("POST", "projects", { requestId: "ignored-project", name: "Ignored review" })).body

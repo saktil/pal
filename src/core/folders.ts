@@ -1,5 +1,4 @@
 import { randomUUID } from "node:crypto";
-import { lstat, realpath } from "node:fs/promises";
 import { isAbsolute, relative } from "node:path";
 import type { Context } from "@earendil-works/chord";
 import { LiveDoc, type Storage, type ToolExecutionApi } from "@earendil-works/pi-durable";
@@ -9,16 +8,22 @@ import { FileAccessError } from "./files.ts";
 import type { Projects } from "./projects.ts";
 import type { ProjectSearch } from "./search.ts";
 import { normalize, RequestConflict, validate } from "./requests.ts";
+import { directoryIdentity } from "./workspace-root.ts";
+import type { Workspaces } from "./workspaces.ts";
 
 const MAX_REFERENCES = 8;
 const ReferenceBody = Type.Object(
   { folder: Type.String({ minLength: 1, maxLength: 4096 }), indexed: Type.Boolean() },
   { additionalProperties: false },
 );
-const Scope = Type.Object({
-  primary: Type.String(),
-  references: Type.Array(Type.String(), { maxItems: MAX_REFERENCES }),
-});
+const Scope = Type.Object(
+  {
+    primary: Type.String(),
+    references: Type.Array(Type.String(), { maxItems: MAX_REFERENCES }),
+    workspace: Type.Optional(Type.String({ minLength: 1, maxLength: 64 })),
+  },
+  { additionalProperties: false },
+);
 
 export type GrantedFolder = {
   readonly id: string;
@@ -47,6 +52,7 @@ export class FolderGrants {
   readonly storage: Storage;
   readonly search: ProjectSearch;
   readonly forbidden: readonly string[];
+  readonly workspaces: Workspaces | undefined;
 
   constructor(
     database: SqliteDatabase,
@@ -54,21 +60,35 @@ export class FolderGrants {
     storage: Storage,
     search: ProjectSearch,
     forbidden: readonly string[],
+    workspaces?: Workspaces,
   ) {
     this.database = database;
     this.projects = projects;
     this.storage = storage;
     this.search = search;
     this.forbidden = forbidden;
+    this.workspaces = workspaces;
   }
 
-  async list(projectId: string): Promise<GrantedFolder[]> {
-    const project = await this.#project(projectId);
-    const references = await this.database.all<Reference>(
-      "SELECT * FROM pal_folder_grants WHERE project_id = ? AND revoked_at IS NULL ORDER BY rowid",
+  async list(projectId: string, workspaceId?: string): Promise<GrantedFolder[]> {
+    const lease = await this.#lease(projectId, "primary", undefined, workspaceId);
+    await lease.check();
+    // Read grants last: identity checks can yield while a reference is revoked.
+    const rows = await this.database.all<{ id: string | null; root: string | null; indexed: number | null }>(
+      "SELECT g.id, g.root, g.indexed FROM pal_projects p LEFT JOIN pal_folder_grants g ON g.project_id = p.id AND g.revoked_at IS NULL WHERE p.id = ? AND p.state = 'ready' AND p.removed_at IS NULL AND (? IS NULL OR EXISTS (SELECT 1 FROM pal_workspaces w JOIN pal_chats c ON c.id = w.chat_id WHERE w.id = ? AND w.project_id = p.id AND w.state = 'ready' AND c.deleted_at IS NULL)) ORDER BY g.rowid",
       projectId,
+      workspaceId ?? null,
+      workspaceId ?? null,
     );
-    return [primary(project.root), ...references.map(reference)];
+    if (rows.length === 0) throw new FileAccessError("workspace authority was revoked");
+    return [
+      { ...primary(lease.root), access: lease.access },
+      ...rows.flatMap((row) =>
+        row.id === null || row.root === null || row.indexed === null
+          ? []
+          : [reference({ id: row.id, root: row.root, indexed: row.indexed })],
+      ),
+    ];
   }
 
   async add(projectId: string, requestId: unknown, body: unknown): Promise<GrantedFolder> {
@@ -148,25 +168,33 @@ export class FolderGrants {
   }
 
   /** Frozen at input admission, before Pi may start it; retries and crash reconciliation keep this exact scope. */
-  async capture(projectId: string): Promise<string> {
-    const project = await this.#project(projectId);
-    const identity = await directoryIdentity(project.root);
+  async capture(projectId: string, chatId?: string): Promise<string> {
+    const workspace = chatId === undefined ? undefined : await this.workspaces?.info(chatId);
+    if (this.workspaces !== undefined && chatId !== undefined && workspace?.projectId !== projectId)
+      throw new FileAccessError("this chat has no workspace");
+    const lease = await this.#lease(projectId, "primary", undefined, workspace?.id);
+    const identity = await directoryIdentity(lease.root);
     const references = await this.database.all<{ id: string }>(
       "SELECT id FROM pal_folder_grants WHERE project_id = ? AND revoked_at IS NULL ORDER BY rowid",
       projectId,
     );
-    return JSON.stringify({ primary: identity, references: references.map(({ id }) => id) });
+    await lease.check();
+    return JSON.stringify({
+      primary: identity,
+      references: references.map(({ id }) => id),
+      ...(workspace === undefined ? {} : { workspace: workspace.id }),
+    });
   }
 
-  async owner(projectId: string, id = "primary"): Promise<FolderLease> {
-    return this.#lease(projectId, id);
+  async owner(projectId: string, id = "primary", workspaceId?: string): Promise<FolderLease> {
+    return this.#lease(projectId, id, undefined, workspaceId);
   }
 
   async forTool(api: ToolExecutionApi, context: Context, id = "primary"): Promise<FolderLease> {
     const { projectId, scope, input } = await this.#run(api, context);
     if (id !== "primary" && !scope.references.includes(id))
       throw new FileAccessError("this folder was not granted when the run was admitted; start a new run");
-    const lease = await this.#lease(projectId, id, id === "primary" ? scope.primary : undefined);
+    const lease = await this.#lease(projectId, id, id === "primary" ? scope.primary : undefined, scope.workspace);
     return {
       ...lease,
       check: async () => {
@@ -182,7 +210,8 @@ export class FolderGrants {
     const { projectId, scope, input } = await this.#run(api, context);
     if ((await this.#run(api, context)).input !== input)
       throw new FileAccessError("the run's folder authority changed");
-    const folders = (await this.list(projectId)).filter(
+    await (await this.#lease(projectId, "primary", scope.primary, scope.workspace)).check();
+    const folders = (await this.list(projectId, scope.workspace)).filter(
       (entry) => entry.id === "primary" || scope.references.includes(entry.id),
     );
     context.abortSignal?.throwIfAborted();
@@ -204,8 +233,8 @@ export class FolderGrants {
       submission.status !== "placed"
     )
       throw new FileAccessError("this input no longer owns an active run");
-    const row = await this.database.get<{ project_id: string; folder_scope: string | null }>(
-      "SELECT c.project_id, a.folder_scope FROM pal_chats c JOIN pal_projects p ON p.id = c.project_id LEFT JOIN pal_admissions a ON a.chat_id = c.id AND a.request_id = ? WHERE c.conversation_id = ? AND c.deleted_at IS NULL AND p.removed_at IS NULL AND p.state = 'ready'",
+    const row = await this.database.get<{ chat_id: string; project_id: string; folder_scope: string | null }>(
+      "SELECT c.id AS chat_id, c.project_id, a.folder_scope FROM pal_chats c JOIN pal_projects p ON p.id = c.project_id LEFT JOIN pal_admissions a ON a.chat_id = c.id AND a.request_id = ? WHERE c.conversation_id = ? AND c.deleted_at IS NULL AND p.removed_at IS NULL AND p.state = 'ready'",
       submission.requestId ?? null,
       api.conversationId,
     );
@@ -213,14 +242,21 @@ export class FolderGrants {
     // Pre-grant/host-direct submissions retain primary-only access, never references added later.
     const scope =
       row.folder_scope === null
-        ? { primary: undefined, references: [] as string[] }
+        ? { primary: undefined, references: [] as string[], workspace: undefined }
         : validate(Scope, JSON.parse(row.folder_scope));
-    return { projectId: row.project_id, scope, input };
+    const workspace = await this.workspaces?.info(row.chat_id);
+    if (scope.workspace !== undefined && workspace?.id !== scope.workspace)
+      throw new FileAccessError("the run's workspace does not belong to this chat");
+    if (this.workspaces !== undefined && workspace === undefined)
+      throw new FileAccessError("this chat has no workspace");
+    return { projectId: row.project_id, scope: { ...scope, workspace: scope.workspace ?? workspace?.id }, input };
   }
 
-  async #lease(projectId: string, id: string, pinnedIdentity?: string): Promise<FolderLease> {
+  async #lease(projectId: string, id: string, pinnedIdentity?: string, workspaceId?: string): Promise<FolderLease> {
     const project = await this.#project(projectId);
-    let grant = primary(project.root);
+    const workspace = workspaceId === undefined ? undefined : await this.workspaces?.lease(projectId, workspaceId);
+    if (workspaceId !== undefined && workspace === undefined) throw new FileAccessError("no such workspace");
+    let grant = workspace ?? primary(project.root);
     let identity = pinnedIdentity;
     if (id !== "primary") {
       const row = await this.#reference(projectId, id);
@@ -233,8 +269,9 @@ export class FolderGrants {
       if ((await directoryIdentity(grant.root)) !== expected)
         throw new FileAccessError("the granted folder was replaced; choose it again");
       const current = await this.#project(projectId);
+      await workspace?.check();
       if (id === "primary") {
-        if (current.root !== grant.root) throw new FileAccessError("the workspace changed");
+        if (workspace === undefined && current.root !== grant.root) throw new FileAccessError("the workspace changed");
       } else if ((await this.#reference(projectId, id)).identity !== expected)
         throw new FileAccessError("the folder grant changed");
     };
@@ -271,13 +308,6 @@ function primary(root: string): GrantedFolder {
 
 function reference(row: { id: string; root: string; indexed: number }): GrantedFolder {
   return { id: row.id, root: row.root, access: "read", indexed: row.indexed === 1, instructions: "untrusted" };
-}
-
-async function directoryIdentity(root: string): Promise<string> {
-  const info = await lstat(root, { bigint: true });
-  if (!info.isDirectory() || (await realpath(root)) !== root)
-    throw new FileAccessError("the granted folder is no longer a canonical directory");
-  return `${info.dev}:${info.ino}:${info.birthtimeNs}`;
 }
 
 function overlaps(a: string, b: string): boolean {

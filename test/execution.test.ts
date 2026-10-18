@@ -8,7 +8,8 @@ import { startOpenAIFixture } from "./fixtures/openai-server.ts";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { HostCommands, WorkspaceLocks } from "../src/core/execution.ts";
+import { HostCommands, WorkspaceLocks, shellTools } from "../src/core/execution.ts";
+import type { ConversationId, ToolExecutionApi, ToolRegistration } from "@earendil-works/pi-durable";
 
 const cleanups: (() => Promise<unknown>)[] = [];
 afterEach(async () => {
@@ -33,6 +34,23 @@ async function running(pid: number) {
 }
 
 describe("trusted host commands", () => {
+  it("rechecks workspace authority after the durable intent and before dispatch", async () => {
+    const { root, commands } = await setup();
+    let authorized: string | undefined = root;
+    const tools = shellTools({ root: async () => authorized, commands, locks: new WorkspaceLocks() });
+    const tool = tools.tools?.find((tool) => tool.name === "shell_run") as ToolRegistration;
+    const api = {
+      conversationId: 1 as ConversationId,
+      commit: async () => {
+        authorized = undefined;
+      },
+    } as unknown as ToolExecutionApi;
+    await expect(
+      tool.execute({ command: "printf dispatched > marker", timeout: 1 } as never, api, context),
+    ).rejects.toThrow(/revoked before command dispatch/);
+    await expect(readFile(join(root, "marker"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
   it("starts in the project and does not inherit secrets or shell startup configuration", async () => {
     const { root, commands } = await setup();
     const old = { key: process.env.OPENAI_API_KEY, startup: process.env.BASH_ENV };

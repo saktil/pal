@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { api, ApiError, type ChatSummary, requestId } from "../lib/api.ts";
+  import { api, ApiError, type ChatSummary, requestId, type WorkspaceMode } from "../lib/api.ts";
   import Icon from "../lib/Icon.svelte";
   import { app, navigate, refreshChatGPT, refreshProjects, type Route, viewport } from "../lib/state.svelte.ts";
   import ChatView from "./ChatView.svelte";
@@ -50,14 +50,23 @@
       .finally(() => (loaded = true));
   });
 
-  async function newChat(projectId: string) {
+  let creatingChat = false;
+  let pendingChat: { key: string; project: string; mode: WorkspaceMode } | undefined;
+  async function newChat(projectId: string, mode: WorkspaceMode = "local") {
+    if (creatingChat) return;
+    creatingChat = true;
+    if (pendingChat?.project !== projectId || pendingChat.mode !== mode)
+      pendingChat = { key: requestId(), project: projectId, mode };
     error = undefined;
     try {
-      const { chat } = await api.createChat(requestId(), projectId);
+      const { chat } = await api.createChat(pendingChat.key, projectId, mode);
       await refreshProjects();
       navigate({ view: "chat", chatId: chat.id });
+      pendingChat = undefined;
     } catch (failure) {
       error = failure instanceof ApiError ? failure.message : String(failure);
+    } finally {
+      creatingChat = false;
     }
   }
 </script>
@@ -87,7 +96,9 @@
         >
         <div class="phonetitle">
           <div class="t">{located?.chat.title ?? (located ? "New chat" : "Pal")}</div>
-          {#if located}<div class="s">{located.project.name}</div>{/if}
+          {#if located}<div class="s" title={located.chat.workspace?.root ?? located.project.root}>
+              {located.project.name} · {located.chat.workspace?.root ?? located.project.root}
+            </div>{/if}
         </div>
       </header>
     {/if}
@@ -143,6 +154,7 @@
                   bind:this={chatView}
                   chat={located.chat}
                   project={located.project}
+                  onNewChat={(mode) => newChat(located.project.id, mode)}
                 />{/key}
             </div>
             {#if panel}
@@ -162,12 +174,13 @@
                     ><Icon name="x" /></button
                   >
                 </div>
-                {#key located.project.id}
+                {#key located.chat.workspace?.id ?? located.project.id}
                   {#if panelView === "Terminal"}
                     {#await terminalPanel()}<p role="status">Loading terminal…</p>
                     {:then { default: TerminalPanel }}
                       <TerminalPanel
                         project={located.project}
+                        workspace={located.chat.workspace}
                         onSelection={(text) => {
                           chatView?.insertText(`Terminal selection (human shell):\n\n${text}`);
                           panelRoute = undefined;
@@ -179,6 +192,7 @@
                     {:then { default: FilesPanel }}
                       <FilesPanel
                         project={located.project}
+                        workspace={located.chat.workspace}
                         onAttach={(text) => {
                           chatView?.insertText(text);
                           // Overlay panels give the composer back; the desktop side panel stays open.
@@ -196,6 +210,7 @@
                     {:then { default: ChangesPanel }}
                       <ChangesPanel
                         project={located.project}
+                        workspace={located.chat.workspace}
                         initialPath={diffPath}
                         onFeedback={(text) => {
                           chatView?.insertText(text);

@@ -12,7 +12,7 @@ import {
 } from "../pi/chatgpt.ts";
 import { McpConfigError } from "../pi/mcp.ts";
 import type { Pal } from "./app.ts";
-import { AdmissionStopped, ChatNotFound, ProjectUnavailable } from "./chats.ts";
+import { AdmissionStopped, ChatNotFound, ProjectUnavailable, type ChatSummary } from "./chats.ts";
 import { cookie, HttpError, isOwnOrigin, readJson, sendJson } from "./http.ts";
 import { OwnerError, SESSION_COOKIE, SESSION_MAX_AGE_SECONDS } from "./owner.ts";
 import { WorkspaceBusy } from "./execution.ts";
@@ -23,8 +23,13 @@ import { InvalidRequest, RequestConflict, validate } from "./requests.ts";
 import { UploadBody, UploadError } from "./uploads.ts";
 import { TerminalSize } from "./terminals.ts";
 
+const WorkspaceId = Type.Optional(Type.String({ minLength: 1, maxLength: 64 }));
+const workspaceQuery = (url: URL) => {
+  const id = url.searchParams.get("workspace");
+  return id === null ? undefined : validate(WorkspaceId, id);
+};
 const NewTerminal = Type.Object(
-  { ...TerminalSize.properties, trust: Type.Literal(true) },
+  { ...TerminalSize.properties, trust: Type.Literal(true), workspace: WorkspaceId },
   { additionalProperties: false },
 );
 const HEARTBEAT_MS = 25_000;
@@ -73,6 +78,7 @@ const FileDiscard = Type.Object(
     path: Type.String({ maxLength: 4096 }),
     revision: Type.String({ pattern: "^[a-f0-9]{64}$" }),
     scope: Type.Optional(ReviewScope),
+    workspace: WorkspaceId,
   },
   { additionalProperties: false },
 );
@@ -83,11 +89,16 @@ const FileComment = Type.Object(
     line: Type.Integer({ minimum: 1, maximum: 10_000_000 }),
     body: Type.String({ minLength: 1, maxLength: 4000 }),
     scope: Type.Optional(ReviewScope),
+    workspace: WorkspaceId,
   },
   { additionalProperties: false },
 );
 const CommentsSent = Type.Object(
-  { ids: Type.Array(Type.String({ maxLength: 64 }), { maxItems: 200 }), scope: Type.Optional(ReviewScope) },
+  {
+    ids: Type.Array(Type.String({ maxLength: 64 }), { maxItems: 200 }),
+    scope: Type.Optional(ReviewScope),
+    workspace: WorkspaceId,
+  },
   { additionalProperties: false },
 );
 const FileReview = Type.Object(
@@ -96,6 +107,7 @@ const FileReview = Type.Object(
     revision: Type.String({ pattern: "^[a-f0-9]{64}$" }),
     reviewed: Type.Boolean(),
     scope: Type.Optional(ReviewScope),
+    workspace: WorkspaceId,
   },
   { additionalProperties: false },
 );
@@ -191,6 +203,10 @@ export function createApi(pal: Pal, publicOrigin?: string) {
       modelsError: account !== undefined && listing !== undefined && "error" in listing ? listing.error : null,
       model: (await pal.settings.model()) ?? null,
     };
+  }
+
+  async function describeChat(chat: ChatSummary) {
+    return { ...chat, workspace: (await pal.workspaces.info(chat.id)) ?? null };
   }
 
   async function signedIn(request: IncomingMessage): Promise<boolean> {
@@ -322,7 +338,10 @@ export function createApi(pal: Pal, publicOrigin?: string) {
         const projects = await pal.projects.list();
         return send(200, {
           projects: await Promise.all(
-            projects.map(async (project) => ({ ...project, chats: await pal.chats.list(project.id) })),
+            projects.map(async (project) => ({
+              ...project,
+              chats: await Promise.all((await pal.chats.list(project.id)).map(describeChat)),
+            })),
           ),
         });
       }
@@ -332,7 +351,8 @@ export function createApi(pal: Pal, publicOrigin?: string) {
       }
     }
     if (resource === "projects" && id !== undefined && action === "folders") {
-      if (path.length === 3 && method === "GET") return send(200, { folders: await pal.folders.list(id) });
+      if (path.length === 3 && method === "GET")
+        return send(200, { folders: await pal.folders.list(id, workspaceQuery(url)) });
       if (path.length === 3 && method === "POST") {
         const { requestId, ...body } = validate(Keyed, await readJson(request));
         return send(200, { folder: await pal.folders.add(id, requestId, body) });
@@ -350,8 +370,8 @@ export function createApi(pal: Pal, publicOrigin?: string) {
     if (resource === "projects" && id !== undefined && action === "terminals") {
       if (path.length === 3 && method === "GET") return send(200, { terminals: await pal.terminals.list(id) });
       if (path.length === 3 && method === "POST") {
-        const { cols, rows } = validate(NewTerminal, await readJson(request));
-        return send(200, { terminal: await pal.terminals.create(id, { cols, rows }) });
+        const { cols, rows, workspace } = validate(NewTerminal, await readJson(request));
+        return send(200, { terminal: await pal.terminals.create(id, { cols, rows }, workspace) });
       }
       if (path.length === 4 && path[3] !== undefined && method === "DELETE") {
         await pal.terminals.remove(id, path[3]);
@@ -367,8 +387,8 @@ export function createApi(pal: Pal, publicOrigin?: string) {
         return send(
           200,
           action === "files"
-            ? await pal.files.list(id, relative, folder)
-            : await pal.files.preview(id, relative, folder),
+            ? await pal.files.list(id, relative, folder, workspaceQuery(url))
+            : await pal.files.preview(id, relative, folder, workspaceQuery(url)),
         );
       } catch (error) {
         const code = (error as NodeJS.ErrnoException).code;
@@ -378,37 +398,52 @@ export function createApi(pal: Pal, publicOrigin?: string) {
       }
     }
     if (resource === "projects" && id !== undefined && action === "changes" && path.length === 3 && method === "GET") {
-      return send(200, await pal.changes.list(id, validate(ReviewScope, url.searchParams.get("scope") ?? "normal")));
+      return send(
+        200,
+        await pal.changes.list(
+          id,
+          validate(ReviewScope, url.searchParams.get("scope") ?? "normal"),
+          workspaceQuery(url),
+        ),
+      );
     }
     if (resource === "projects" && id !== undefined && action === "review" && path.length === 3 && method === "PUT") {
       const body = validate(FileReview, await readJson(request));
-      await pal.changes.review(id, body.path, body.revision, body.reviewed, body.scope);
+      await pal.changes.review(id, body.path, body.revision, body.reviewed, body.scope, body.workspace);
       return send(200, { reviewed: body.reviewed });
     }
     if (resource === "projects" && id !== undefined && action === "discard" && path.length === 3 && method === "POST") {
       const body = validate(FileDiscard, await readJson(request));
-      await pal.changes.discard(id, body.path, body.revision, body.scope);
+      await pal.changes.discard(id, body.path, body.revision, body.scope, body.workspace);
       return send(200, { discarded: true });
     }
     if (resource === "projects" && id !== undefined && action === "comments") {
       if (path.length === 3 && method === "POST") {
         const body = validate(FileComment, await readJson(request));
         return send(200, {
-          comment: await pal.changes.comment(id, body.path, body.revision, body.line, body.body, body.scope),
+          comment: await pal.changes.comment(
+            id,
+            body.path,
+            body.revision,
+            body.line,
+            body.body,
+            body.scope,
+            body.workspace,
+          ),
         });
       }
       if (path.length === 4 && path[3] === "sent" && method === "POST") {
         const body = validate(CommentsSent, await readJson(request));
-        await pal.changes.markSent(id, body.ids, body.scope);
+        await pal.changes.markSent(id, body.ids, body.scope, body.workspace);
         return send(200, { sent: true });
       }
       if (path.length === 4 && path[3] !== undefined && method === "DELETE") {
-        await pal.changes.uncomment(id, path[3]);
+        await pal.changes.uncomment(id, path[3], workspaceQuery(url));
         return send(200, { deleted: true });
       }
     }
     if (resource === "projects" && id !== undefined && action === "search" && path.length === 3 && method === "GET") {
-      const folder = await pal.folders.owner(id, url.searchParams.get("folder") ?? undefined);
+      const folder = await pal.folders.owner(id, url.searchParams.get("folder") ?? undefined, workspaceQuery(url));
       const query = url.searchParams.get("q") ?? "";
       const mode = url.searchParams.get("mode") ?? "text";
       if (query.length > 500) throw new HttpError(400, "invalid_request", "the query is too long");
@@ -419,6 +454,8 @@ export function createApi(pal: Pal, publicOrigin?: string) {
     if (resource === "projects" && id !== undefined && action === undefined && method === "DELETE") {
       const removing = await pal.projects.get(id);
       await pal.projects.remove(id);
+      await pal.workspaces.cancelProject(id);
+      for (const root of await pal.workspaces.roots(id)) await pal.search.forget(root);
       await pal.folders.forgetProject(id);
       if (removing !== undefined) await pal.search.forget(removing.root);
       pal.mcp.revokeProject(id);
@@ -450,16 +487,30 @@ export function createApi(pal: Pal, publicOrigin?: string) {
       if (path.length === 1 && method === "POST") {
         const { requestId, ...body } = validate(Keyed, await readJson(request));
         const chat = await pal.chats.createChat(requestId, body, context);
-        return send(200, { chat: await pal.chats.get(chat.id) });
+        try {
+          await pal.workspaces.provision(chat.id);
+        } catch (error) {
+          if (!(error instanceof HttpError && error.code === "workspace_busy")) throw error;
+        }
+        const summary = await pal.chats.get(chat.id);
+        if (summary === undefined) throw new HttpError(404, "not_found", "the chat was removed");
+        return send(200, { chat: await describeChat(summary) });
       }
       if (id !== undefined && action === undefined && method === "DELETE") {
+        const workspace = await pal.workspaces.info(id);
         await pal.chats.remove(id, context);
+        pal.workspaces.cancelChat(id);
+        if (workspace?.mode === "worktree") await pal.search.forget(workspace.root);
         return send(200, { removed: true });
       }
       const chat = id === undefined ? undefined : await pal.chats.get(id);
       if (chat === undefined) throw new HttpError(404, "not_found", "no such chat");
       if (action === "title" && path.length === 3 && method === "PUT")
-        return send(200, { chat: await pal.chats.rename(chat.id, await readJson(request)) });
+        return send(200, { chat: await describeChat(await pal.chats.rename(chat.id, await readJson(request))) });
+      if (action === "workspace" && path.length === 3 && method === "POST") {
+        await pal.workspaces.provision(chat.id);
+        return send(200, { chat: await describeChat(chat) });
+      }
       const conversation = await pal.harness.conversation(chat.conversationId, context);
       if (conversation === undefined) throw new HttpError(404, "not_found", "the chat's conversation is missing");
       if (action === undefined && method === "GET") {
@@ -467,7 +518,7 @@ export function createApi(pal: Pal, publicOrigin?: string) {
         const model =
           agent.model === undefined ? undefined : pal.models.getModel(CHATGPT_PROVIDER, agent.model.modelId);
         return send(200, {
-          chat,
+          chat: await describeChat(chat),
           model: agent.model?.modelId ?? null,
           effort: model === undefined ? "off" : clampThinkingLevel(model, agent.thinkingLevel),
         });
@@ -490,7 +541,7 @@ export function createApi(pal: Pal, publicOrigin?: string) {
           { model: { provider: CHATGPT_PROVIDER, modelId: model }, thinkingLevel: effort },
           context,
         );
-        return send(200, { chat, model, effort });
+        return send(200, { chat: await describeChat(chat), model, effort });
       }
       if (action === "events" && method === "GET") return observe(request, response, chat.conversationId);
     }

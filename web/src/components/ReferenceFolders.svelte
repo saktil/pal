@@ -1,12 +1,18 @@
 <script lang="ts">
-  import { api, requestId, type FolderListing, type GrantedFolder, type Project } from "../lib/api.ts";
+  import { api, requestId, type FolderListing, type GrantedFolder, type Project, type Workspace } from "../lib/api.ts";
   import Icon from "../lib/Icon.svelte";
 
   let {
     project,
+    workspace,
     onChanged,
     disabled = false,
-  }: { project: Project; onChanged: (folders: GrantedFolder[]) => void; disabled?: boolean } = $props();
+  }: {
+    project: Project;
+    workspace?: Workspace | null | undefined;
+    onChanged: (folders: GrantedFolder[]) => void;
+    disabled?: boolean;
+  } = $props();
   let open = $state(false);
   let dialog: HTMLDialogElement | undefined = $state();
   let folders: GrantedFolder[] = $state.raw([]);
@@ -31,7 +37,7 @@
   }
 
   async function refresh() {
-    folders = (await api.projectFolders(project.id)).folders;
+    folders = (await api.projectFolders(project.id, workspace?.id)).folders;
     onChanged(folders);
   }
 

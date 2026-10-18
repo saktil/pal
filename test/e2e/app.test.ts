@@ -569,6 +569,151 @@ describe("Pal in a browser", () => {
     await panel.waitFor({ state: "detached" });
   });
 
+  it("starts explicit per-chat workspace modes and keeps Files, Changes and Terminal in the chosen folder", async () => {
+    const project = await pal.projects.create("worktree-ui-project", { name: "Workspace modes" });
+    try {
+      const git = (...args: string[]) =>
+        exec(
+          "git",
+          ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "-c", "commit.gpgsign=false", ...args],
+          { cwd: project.root },
+        );
+      await git("init", "-q");
+      await writeFile(join(project.root, "workspace.txt"), "committed workspace fixture\n");
+      await git("add", "workspace.txt");
+      await git("commit", "-qm", "base");
+      await writeFile(join(project.root, "workspace.txt"), "source-only manual change\n");
+      const local = await pal.chats.createChat("worktree-ui-local", { projectId: project.id }, context);
+      await page.goto(`${base}/#/chat/${local.id}`);
+      await page.reload();
+      const mode = page.getByRole("button", { name: "Workspace mode", exact: true });
+      await mode.waitFor();
+      await expect.poll(() => mode.textContent()).toContain("Local");
+      const picker = page.getByRole("dialog", { name: "Workspace mode", exact: true });
+      for (const width of [1440, 768, 390]) {
+        await page.setViewportSize({ width, height: 900 });
+        await mode.click();
+        expect(await picker.getByRole("button").count()).toBe(3);
+        await expect.poll(() => page.evaluate(() => document.activeElement?.textContent)).toContain("New local chat");
+        expect(await page.evaluate("document.documentElement.scrollWidth <= innerWidth")).toBe(true);
+        const box = await picker.boundingBox();
+        expect(box !== null && box.x >= 0 && box.x + box.width <= width).toBe(true);
+        await shoot(`workspace-picker-${width}`);
+        await page.keyboard.press("Escape");
+        await picker.waitFor({ state: "detached" });
+        await expect
+          .poll(() => page.evaluate(() => document.activeElement?.getAttribute("aria-label")))
+          .toBe("Workspace mode");
+      }
+      await page.setViewportSize({ width: 1440, height: 900 });
+      const requests = fixture.apiRequests.length;
+      await mode.click();
+      const admitted = page.waitForResponse(
+        (response) => response.url() === `${base}/api/chats` && response.request().method() === "POST",
+      );
+      await picker.getByRole("button", { name: "New worktree chat", exact: false }).click();
+      const response = await admitted;
+      expect(response.status()).toBe(200);
+      const created = await response.json();
+      expect(created.chat.workspace).toMatchObject({ mode: "worktree", state: "ready" });
+      await page.waitForURL(`${base}/#/chat/${created.chat.id}`);
+      await expect.poll(() => mode.textContent()).toContain("Worktree");
+      const worktreeChat = (await pal.chats.list(project.id)).find((chat) => chat.id !== local.id);
+      if (worktreeChat === undefined) throw new Error("worktree chat missing");
+      const workspace = await pal.workspaces.info(worktreeChat.id);
+      if (workspace?.state !== "ready") throw new Error("worktree not ready");
+      const url = page.url();
+      expect(workspace.root).not.toBe(project.root);
+      await page.reload();
+      await expect.poll(() => mode.textContent()).toContain("Worktree");
+      await page.getByRole("button", { name: "Files", exact: true }).click();
+      const panel = page.getByRole("complementary", { name: "Workspace panel" });
+      await panel.getByTitle(workspace.root, { exact: true }).waitFor();
+      await panel.getByRole("button", { name: /^workspace.txt/ }).click();
+      await panel.getByText("committed workspace fixture", { exact: true }).waitFor();
+      await writeFile(join(workspace.root, "workspace.txt"), "worktree-only revision\n");
+      await panel.getByRole("button", { name: "Refresh", exact: true }).click();
+      await panel.getByText("worktree-only revision", { exact: true }).waitFor();
+      await panel.getByRole("button", { name: "Select line 1", exact: true }).click();
+      await panel.getByRole("button", { name: "Attach line 1", exact: true }).click();
+      await expect
+        .poll(() => page.getByLabel("Message").inputValue())
+        .toContain(`Worktree file (workspace ${workspace.id}, ${workspace.root})`);
+      await page.getByLabel("Message").fill("");
+      await panel.getByRole("button", { name: "View diff", exact: true }).click();
+      await panel.getByRole("region", { name: "File diff" }).filter({ hasText: "+worktree-only revision" }).waitFor();
+      await panel.getByTitle(workspace.root, { exact: true }).waitFor();
+      for (const width of [1440, 768, 390]) {
+        await page.setViewportSize({ width, height: 900 });
+        expect(await page.evaluate("document.documentElement.scrollWidth <= innerWidth")).toBe(true);
+        await shoot(`worktree-changes-${width}`);
+      }
+      await page.setViewportSize({ width: 1440, height: 900 });
+      await panel.getByRole("button", { name: "Discard…", exact: true }).click();
+      const discard = page.getByRole("alertdialog", { name: "Discard changes to this file?" });
+      await discard.getByText(`${workspace.root}/workspace.txt`, { exact: false }).waitFor();
+      await discard.getByRole("button", { name: "Discard changes", exact: true }).click();
+      await panel.getByRole("heading", { name: "No changes found" }).waitFor();
+      expect(await readFile(join(project.root, "workspace.txt"), "utf8")).toBe("source-only manual change\n");
+      await page.getByRole("button", { name: "Terminal", exact: true }).click();
+      await panel.getByRole("checkbox", { name: /I understand this shell/ }).check();
+      await panel.getByRole("button", { name: "New host terminal", exact: true }).click();
+      await panel.getByText(workspace.root, { exact: true }).first().waitFor();
+      await expect.poll(async () => (await pal.terminals.list(project.id))[0]?.cwd).toBe(workspace.root);
+      await shoot("worktree-terminal-1440");
+      await panel.getByRole("button", { name: "Close terminal 1", exact: true }).click();
+      await page.getByRole("button", { name: "Close panel", exact: true }).click();
+      await mode.click();
+      await picker.getByRole("button", { name: "New read-only chat", exact: false }).click();
+      await expect.poll(() => mode.textContent()).toContain("Read-only");
+      await page.getByText("Agent file writes and shell are disabled.", { exact: false }).waitFor();
+      await page.getByRole("button", { name: "Files", exact: true }).click();
+      await panel.getByRole("button", { name: /^workspace.txt/ }).click();
+      await panel.getByText("source-only manual change", { exact: true }).waitFor();
+      await page.getByRole("button", { name: "Close panel", exact: true }).click();
+      await page.goto(url);
+      await page.reload();
+      await expect.poll(() => mode.textContent()).toContain("Worktree");
+      expect(fixture.apiRequests.length).toBe(requests);
+    } finally {
+      expect(
+        (await page.request.delete(`${base}/api/projects/${project.id}`, { headers: { origin: base } })).status(),
+      ).toBe(200);
+      await page.goto(chatUrl);
+      await page.reload();
+      await page.getByLabel("Message").waitFor();
+    }
+  });
+
+  it("shows failed worktree preparation without a local fallback and keeps the error across reload", async () => {
+    const project = await pal.projects.create("non-git-ui-project", { name: "No Git" });
+    try {
+      const local = await pal.chats.createChat("non-git-ui-local", { projectId: project.id }, context);
+      await page.goto(`${base}/#/chat/${local.id}`);
+      await page.reload();
+      await page.getByRole("button", { name: "Workspace mode", exact: true }).click();
+      await page.getByRole("button", { name: "New worktree chat", exact: false }).click();
+      const status = page.getByRole("status").filter({ hasText: "Worktree unavailable" });
+      await status.waitFor();
+      await page.getByLabel("Message").fill("must not dispatch");
+      expect(await page.getByRole("button", { name: "Send", exact: true }).isDisabled()).toBe(true);
+      const created = (await pal.chats.list(project.id)).find((chat) => chat.id !== local.id);
+      if (created === undefined) throw new Error("failed chat missing");
+      expect(await pal.workspaces.info(created.id)).toMatchObject({ mode: "worktree", state: "failed" });
+      await page.reload();
+      await status.waitFor();
+      await shoot("worktree-unavailable-1440");
+      expect(pal.chats.stopped).toBe(false);
+    } finally {
+      expect(
+        (await page.request.delete(`${base}/api/projects/${project.id}`, { headers: { origin: base } })).status(),
+      ).toBe(200);
+      await page.goto(chatUrl);
+      await page.reload();
+      await page.getByLabel("Message").waitFor();
+    }
+  });
+
   it("requires local opt-in for ignored review, drops late private responses and resets permission on reload", async () => {
     const project = (await pal.projects.list())[0];
     if (project === undefined) throw new Error("missing project");
@@ -600,7 +745,7 @@ describe("Pal in a browser", () => {
     const entered = Promise.withResolvers<undefined>();
     const release = Promise.withResolvers<undefined>();
     const completed = Promise.withResolvers<undefined>();
-    const routePattern = `**/api/projects/${project.id}/changes?scope=include-ignored`;
+    const routePattern = `**/api/projects/${project.id}/changes?scope=include-ignored*`;
     await page.route(routePattern, async (route) => {
       const response = await route.fetch();
       entered.resolve(undefined);
@@ -613,7 +758,7 @@ describe("Pal in a browser", () => {
       await entered.promise;
       await include.uncheck();
       await expect.poll(() => panel.getByRole("button", { name: "Refresh", exact: true }).isEnabled()).toBe(true);
-      const delivered = page.waitForResponse((response) => response.url().endsWith("/changes?scope=include-ignored"));
+      const delivered = page.waitForResponse((response) => response.url().includes("/changes?scope=include-ignored"));
       release.resolve(undefined);
       await (await delivered).finished();
       await completed.promise;
@@ -747,7 +892,7 @@ describe("Pal in a browser", () => {
     await expect
       .poll(() => page.getByLabel("Message").inputValue())
       .toMatch(
-        /^Review feedback:\n\nbase\.txt \(revision [0-9a-f]{12}\), line 2 \(outdated\): two\nRename two\.\n\nbase\.txt \(revision [0-9a-f]{12}\), line 3: three\nKeep three\.$/,
+        /^Review feedback:\n\nWorkspace: [^\n]+\n\nbase\.txt \(revision [0-9a-f]{12}\), line 2 \(outdated\): two\nRename two\.\n\nbase\.txt \(revision [0-9a-f]{12}\), line 3: three\nKeep three\.$/,
       );
     await expect.poll(() => panel.getByText("Added to composer").count()).toBe(2);
     await expect

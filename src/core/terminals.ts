@@ -14,6 +14,7 @@ import { cookie, HttpError, isOwnHost, isOwnOrigin } from "./http.ts";
 import { Owner, SESSION_COOKIE } from "./owner.ts";
 import type { Projects } from "./projects.ts";
 import { validate } from "./requests.ts";
+import type { Workspaces } from "./workspaces.ts";
 
 const Cols = Type.Integer({ minimum: 20, maximum: 240 });
 const Rows = Type.Integer({ minimum: 5, maximum: 80 });
@@ -74,6 +75,7 @@ export class Terminals {
   readonly #projects: Projects;
   readonly #owner: Owner;
   readonly #capture: (root: string) => Promise<void>;
+  readonly #workspaces: Workspaces | undefined;
   readonly #sessions = new Map<string, Session>();
   #creating = 0;
   #upgrades = 0;
@@ -81,10 +83,11 @@ export class Terminals {
   #closing: Promise<void> | undefined;
   #wss: WebSocketServer | undefined;
 
-  constructor(projects: Projects, owner: Owner, capture: (root: string) => Promise<void>) {
+  constructor(projects: Projects, owner: Owner, capture: (root: string) => Promise<void>, workspaces?: Workspaces) {
     this.#projects = projects;
     this.#owner = owner;
     this.#capture = capture;
+    this.#workspaces = workspaces;
   }
   async #project(id: string) {
     const project = await this.#projects.get(id);
@@ -97,7 +100,7 @@ export class Terminals {
       session.info.projectId === projectId ? [{ ...session.info }] : [],
     );
   }
-  async create(projectId: string, size: { cols: number; rows: number }): Promise<TerminalInfo> {
+  async create(projectId: string, size: { cols: number; rows: number }, workspaceId?: string): Promise<TerminalInfo> {
     validate(TerminalSize, size);
     if (this.#closed || this.#sessions.size + this.#creating >= 4)
       throw new HttpError(409, "terminal_limit", "close an existing terminal first (at most four sessions)");
@@ -105,7 +108,9 @@ export class Terminals {
     let home: string | undefined;
     try {
       const project = await this.#project(projectId);
-      const cwd = await realpath(project.root);
+      const lease = workspaceId === undefined ? undefined : await this.#workspaces?.lease(projectId, workspaceId);
+      if (workspaceId !== undefined && lease === undefined) throw new HttpError(404, "not_found", "no such workspace");
+      const cwd = lease?.root ?? (await realpath(project.root));
       await this.#capture(cwd);
       const { spawn } = await import("node-pty");
       const require = createRequire(import.meta.url);
@@ -113,6 +118,7 @@ export class Terminals {
       const { SerializeAddon } = require("@xterm/addon-serialize") as typeof import("@xterm/addon-serialize");
       home = await mkdtemp(join(tmpdir(), "pal-terminal-"));
       await this.#project(projectId);
+      await lease?.check();
       if (this.#closed) throw new HttpError(503, "closing", "Pal is closing");
       const screen = new Terminal({ ...size, scrollback: 200, allowProposedApi: true });
       const serializer = new SerializeAddon();

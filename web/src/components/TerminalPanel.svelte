@@ -1,10 +1,14 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import type { Terminal } from "@xterm/xterm";
-  import { api, type Project, type TerminalInfo } from "../lib/api.ts";
+  import { api, type Project, type TerminalInfo, type Workspace } from "../lib/api.ts";
   import Icon from "../lib/Icon.svelte";
 
-  let { project, onSelection }: { project: Project; onSelection: (text: string) => void } = $props();
+  let {
+    project,
+    workspace,
+    onSelection,
+  }: { project: Project; workspace?: Workspace | null | undefined; onSelection: (text: string) => void } = $props();
   let terminals: TerminalInfo[] = $state.raw([]);
   let selected: string | undefined = $state();
   let surface: HTMLDivElement | undefined = $state();
@@ -34,7 +38,7 @@
     busy = true;
     error = undefined;
     try {
-      const { terminal } = await api.newTerminal(project.id);
+      const { terminal } = await api.newTerminal(project.id, workspace?.id);
       terminals = [...terminals, terminal];
       selected = terminal.id;
     } catch (failure) {
@@ -240,10 +244,17 @@
         onclick={() => close(terminal.id)}><Icon name="x" /></button
       >
     {/each}
-    <button class="b sm q" disabled={busy || !trust} onclick={create}><Icon name="plus" />New host terminal</button>
+    <button
+      class="b sm q"
+      disabled={busy || !trust || (workspace != null && workspace.state !== "ready")}
+      onclick={create}><Icon name="plus" />New host terminal</button
+    >
   </div>
   <div class="trust">
-    <span>Host shell, not a sandbox. Starts in <span class="mono">{project.root}</span>.</span>
+    <span
+      >Host shell, not a sandbox. New sessions start in <span class="mono">{workspace?.root ?? project.root}</span>.
+      Existing sessions keep their own directories.</span
+    >
     <label
       ><input type="checkbox" bind:checked={trust} /> I understand this shell has the Pal host user's authority.</label
     >

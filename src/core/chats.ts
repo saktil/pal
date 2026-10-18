@@ -11,6 +11,7 @@ import {
 import type { SqliteDatabase } from "@earendil-works/pi-durable/storage/sqlite";
 import { type Static, Type } from "typebox";
 import { InvalidRequest, normalize, RequestConflict, validate } from "./requests.ts";
+import { WorkspaceMode, workspaceMode } from "./workspaces.ts";
 
 export const MAX_INPUT_CHARS = 100_000;
 
@@ -18,6 +19,7 @@ export const ChatBody = Type.Object(
   {
     projectId: Type.String({ minLength: 1, maxLength: 64 }),
     title: Type.Optional(Type.String({ minLength: 1, maxLength: 200 })),
+    workspace: Type.Optional(WorkspaceMode),
   },
   { additionalProperties: false },
 );
@@ -75,7 +77,7 @@ export type ChatServiceOptions = {
   readonly database: SqliteDatabase;
   readonly harness: Harness;
   /** Agent settings for a new conversation in a project; undefined while the project is missing or not ready. */
-  readonly agentFor: (projectId: string) => Promise<AgentChange | undefined>;
+  readonly agentFor: (projectId: string, chatId?: string, mode?: WorkspaceMode) => Promise<AgentChange | undefined>;
   /** Device uploads a message may attach: checked before admission, turned into model content at submission. */
   readonly attachments?: {
     check(
@@ -85,7 +87,7 @@ export type ChatServiceOptions = {
     content(projectId: string, ids: readonly string[]): Promise<(TextContent | ImageContent)[]>;
   };
   /** Host authority frozen with the admission, not recomputed during retry or restart. */
-  readonly folderScope?: (projectId: string) => Promise<string>;
+  readonly folderScope?: (projectId: string, chatId: string) => Promise<string>;
   readonly barrier?: (point: Barrier) => void | Promise<void>;
 };
 
@@ -212,6 +214,7 @@ export class ChatService {
     const { key, intent, digest } = normalize(requestId, ChatBody, body, (value) => ({
       projectId: value.projectId,
       title: value.title ?? null,
+      ...(value.workspace === undefined || value.workspace === "local" ? {} : { workspace: value.workspace }),
     }));
     const { projectId, title } = body as ChatBody;
     if ((await this.#options.agentFor(projectId)) === undefined) {
@@ -274,7 +277,7 @@ export class ChatService {
     if (previous !== undefined && previous.digest !== digest)
       throw new RequestConflict(`request ${key} was admitted with a different body`);
     if (previous?.submission_id != null) return { chatId, requestId: key, submissionId: previous.submission_id };
-    const scope = previous === undefined ? await this.#options.folderScope?.(chat.projectId) : undefined;
+    const scope = previous === undefined ? await this.#options.folderScope?.(chat.projectId, chatId) : undefined;
     const row = await this.#guard((db) =>
       db.transaction(async (tx) => {
         const chat = await tx.get<{ state: string }>(
@@ -309,10 +312,13 @@ export class ChatService {
 
   /** Create the chat's conversation unless an earlier attempt did, then record the mapping. */
   async #provision(chatId: string, context: Context): Promise<Chat> {
-    const conversationId = await this.#guard(async (db) => {
-      const row = await db.get<{ project_id: string }>("SELECT project_id FROM pal_chats WHERE id = ?", chatId);
-      const agent = row === undefined ? undefined : await this.#options.agentFor(row.project_id);
-      if (agent === undefined) throw new Error(`chat ${chatId}'s project is not available`);
+    const row = await this.#guard((db) =>
+      db.get<{ project_id: string; intent: string }>("SELECT project_id, intent FROM pal_chats WHERE id = ?", chatId),
+    );
+    const agent =
+      row === undefined ? undefined : await this.#options.agentFor(row.project_id, chatId, workspaceMode(row.intent));
+    if (agent === undefined) throw new ProjectUnavailable(`chat ${chatId}'s project is not available`);
+    const conversationId = await this.#guard(async () => {
       try {
         const conversation = await this.#options.harness.createConversation(
           {

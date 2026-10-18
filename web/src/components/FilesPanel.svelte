@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount, tick } from "svelte";
-  import { api, type GrantedFolder, type Project, type ProjectFolder } from "../lib/api.ts";
+  import { api, type GrantedFolder, type Project, type ProjectFolder, type Workspace } from "../lib/api.ts";
   import Icon from "../lib/Icon.svelte";
   import ReferenceFolders from "./ReferenceFolders.svelte";
 
@@ -9,10 +9,12 @@
 
   let {
     project,
+    workspace,
     onAttach,
     onViewDiff,
   }: {
     project: Project;
+    workspace?: Workspace | null | undefined;
     /** Put a reference the owner chose into the composer; it is sent only when they send the message. */
     onAttach: (text: string) => void;
     onViewDiff: (path: string) => void;
@@ -34,8 +36,12 @@
   let grants: GrantedFolder[] = $state.raw([]);
   let selected = $state("primary");
   const active = $derived(grants.find((folder) => folder.id === selected));
+  const root = $derived(workspace?.root ?? project.root);
+  const primarySource = $derived(
+    workspace?.mode === "worktree" ? `Worktree file (workspace ${workspace.id}, ${root})` : "Project file",
+  );
   const source = $derived(
-    selected === "primary" ? "Project file" : `Reference file (folder ${selected}, ${active?.root ?? ""})`,
+    selected === "primary" ? primarySource : `Reference file (folder ${selected}, ${active?.root ?? ""})`,
   );
 
   function selectFolder(id: string) {
@@ -56,7 +62,7 @@
   const find = (event: SubmitEvent) => {
     event.preventDefault();
     void run(async () => {
-      found = query.trim() === "" ? undefined : await api.search(project.id, query, mode, selected);
+      found = query.trim() === "" ? undefined : await api.search(project.id, query, mode, selected, workspace?.id);
     });
   };
 
@@ -107,7 +113,7 @@
 
   const load = (path: string) =>
     run(async () => {
-      folders[path] = await api.files(project.id, path, selected);
+      folders[path] = await api.files(project.id, path, selected, workspace?.id);
     });
 
   function toggle(path: string) {
@@ -119,7 +125,7 @@
   async function openLink(path: string) {
     await run(async () => {
       try {
-        folders[path] = await api.files(project.id, path, selected);
+        folders[path] = await api.files(project.id, path, selected, workspace?.id);
         expanded[path] = true;
       } catch {
         await display(path);
@@ -130,7 +136,7 @@
   async function display(path: string) {
     opener = path;
     selection = undefined;
-    preview = await api.file(project.id, path, selected);
+    preview = await api.file(project.id, path, selected, workspace?.id);
     await tick();
     back?.focus();
   }
@@ -145,7 +151,7 @@
 
   function refresh() {
     void run(async () => {
-      const current = (await api.projectFolders(project.id)).folders;
+      const current = (await api.projectFolders(project.id, workspace?.id)).folders;
       grants = current;
       if (!current.some((folder) => folder.id === selected)) {
         selected = "primary";
@@ -157,10 +163,10 @@
       }
       const open = ["", ...Object.keys(expanded).filter((path) => expanded[path])];
       const reloaded = await Promise.all(
-        open.map(async (path) => [path, await api.files(project.id, path, selected)] as const),
+        open.map(async (path) => [path, await api.files(project.id, path, selected, workspace?.id)] as const),
       );
       folders = Object.fromEntries(reloaded);
-      if (preview !== undefined) preview = await api.file(project.id, preview.path, selected);
+      if (preview !== undefined) preview = await api.file(project.id, preview.path, selected, workspace?.id);
     });
   }
 
@@ -172,8 +178,8 @@
 
   onMount(() => {
     void run(async () => {
-      grants = (await api.projectFolders(project.id)).folders;
-      folders[""] = await api.files(project.id, "");
+      grants = (await api.projectFolders(project.id, workspace?.id)).folders;
+      folders[""] = await api.files(project.id, "", "primary", workspace?.id);
     });
   });
 </script>
@@ -219,7 +225,7 @@
 <div class="files" aria-busy={busy}>
   <div class="info">
     <span class="pill">{selected === "primary" ? "Primary" : "Read-only"}</span>
-    <span class="mono folder" title={active?.root ?? project.root}>{active?.root ?? project.root}</span>
+    <span class="mono folder" title={active?.root ?? root}>{active?.root ?? root}</span>
     <button class="b sm q" onclick={refresh} disabled={busy}><Icon name="refresh" />Refresh</button>
   </div>
   <div class="folder-tools">
@@ -235,7 +241,7 @@
           >{folder.id === "primary" ? "Primary workspace" : folder.root}</option
         >{/each}
     </select>
-    <ReferenceFolders {project} disabled={busy} onChanged={acceptGrants} />
+    <ReferenceFolders {project} {workspace} disabled={busy} onChanged={acceptGrants} />
   </div>
   {#if active !== undefined && !active.indexed}<p class="hint">
       Indexing is off for this reference. Browse or read individual files; manage Folders to change the grant.

@@ -1,4 +1,3 @@
-import { execFile } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import { isUtf8 } from "node:buffer";
 import { constants } from "node:fs";
@@ -10,56 +9,16 @@ import { WorkspaceLocks } from "./execution.ts";
 import { FileAccessError, readFileSnapshot, resolveProjectPath } from "./files.ts";
 import { HttpError } from "./http.ts";
 import type { Projects } from "./projects.ts";
+import type { Workspaces } from "./workspaces.ts";
+import { directoryIdentity } from "./workspace-root.ts";
+import { runGit } from "./git.ts";
 
 const MAX_FILES = 128;
 const MAX_COMMENTS = 200;
 const LINE_TEXT = 1000;
-const MAX_BYTES = 256 * 1024;
-const SAFE_GIT = [
-  "--no-pager",
-  "-c",
-  "core.fsmonitor=false",
-  "-c",
-  "core.hooksPath=/dev/null",
-  "-c",
-  "core.attributesFile=/dev/null",
-];
-
 /** No worktree diff/status: those can execute repository clean filters even with --no-textconv. */
 function git(cwd: string, args: string[], signal: AbortSignal, diff = false, input?: Buffer): Promise<Buffer> {
-  return new Promise((resolve, reject) => {
-    const child = execFile(
-      "git",
-      [...SAFE_GIT, ...args],
-      {
-        cwd,
-        encoding: "buffer",
-        maxBuffer: MAX_BYTES,
-        timeout: 5000,
-        signal,
-        env: {
-          PATH: process.env.PATH ?? "/run/current-system/sw/bin:/usr/bin:/bin",
-          HOME: "/nonexistent",
-          LC_ALL: "C",
-          GIT_CONFIG_NOSYSTEM: "1",
-          GIT_CONFIG_GLOBAL: "/dev/null",
-          GIT_OPTIONAL_LOCKS: "0",
-          GIT_TERMINAL_PROMPT: "0",
-          GIT_ALLOW_PROTOCOL: "",
-          GIT_NO_LAZY_FETCH: "1",
-          GIT_NO_REPLACE_OBJECTS: "1",
-          GIT_CEILING_DIRECTORIES: dirname(cwd),
-        },
-      },
-      (error, stdout) => {
-        if (error !== null && !(diff && error.code === 1))
-          reject(new Error("Git read unavailable or exceeds its limits; no hooks, filters or network were allowed"));
-        else resolve(stdout);
-      },
-    );
-    child.stdin?.on("error", reject);
-    child.stdin?.end(input);
-  });
+  return runGit(cwd, args, { signal, acceptOne: diff, ...(input === undefined ? {} : { input }) });
 }
 
 export type ReviewScope = "normal" | "include-ignored";
@@ -103,25 +62,66 @@ export class Changes {
   readonly #projects: Projects;
   readonly #deny: string;
   readonly #locks: WorkspaceLocks;
+  readonly #workspaces: Workspaces | undefined;
   #active = 0;
-  constructor(database: SqliteDatabase, projects: Projects, dataRoot: string, locks = new WorkspaceLocks()) {
+  constructor(
+    database: SqliteDatabase,
+    projects: Projects,
+    dataRoot: string,
+    locks = new WorkspaceLocks(),
+    workspaces?: Workspaces,
+  ) {
     this.#database = database;
     this.#projects = projects;
     this.#deny = dataRoot;
     this.#locks = locks;
+    this.#workspaces = workspaces;
+  }
+
+  async #location(projectId: string, workspaceId?: string) {
+    const project = await this.#projects.get(projectId);
+    if (project?.state !== "ready") throw new HttpError(404, "not_found", "no such ready project");
+    if (workspaceId !== undefined) {
+      const lease = await this.#workspaces?.lease(projectId, workspaceId);
+      const info = await this.#database.get<{ mode: string }>(
+        "SELECT mode FROM pal_workspaces WHERE id = ?",
+        workspaceId,
+      );
+      if (lease === undefined || info === undefined) throw new FileAccessError("no such workspace");
+      return {
+        root: lease.root,
+        key: info.mode === "worktree" ? `worktree:${workspaceId}` : projectId,
+        check: lease.check,
+      };
+    }
+    const identity = await directoryIdentity(project.root);
+    return {
+      root: project.root,
+      key: projectId,
+      check: async () => {
+        const current = await this.#projects.get(projectId);
+        if (
+          current?.state !== "ready" ||
+          current.root !== project.root ||
+          (await directoryIdentity(project.root)) !== identity
+        )
+          throw new FileAccessError("the project folder was revoked or replaced");
+      },
+    };
   }
 
   /** Called before the first Pal mutation as well as on opening the panel; never moves an existing baseline. */
   async capture(root: string): Promise<void> {
     const projects = await this.#database.all<{ id: string }>(
-      "SELECT id FROM pal_projects WHERE root = ? AND removed_at IS NULL AND state = 'ready'",
+      "SELECT id FROM pal_projects WHERE root = ? AND removed_at IS NULL AND state = 'ready' UNION SELECT 'worktree:' || w.id AS id FROM pal_workspaces w JOIN pal_chats c ON c.id = w.chat_id JOIN pal_projects p ON p.id = w.project_id WHERE w.root = ? AND w.mode = 'worktree' AND w.state = 'ready' AND c.deleted_at IS NULL AND p.removed_at IS NULL",
+      root,
       root,
     );
     for (const { id } of projects) await this.#baseline(id, root);
   }
   async #baseline(id: string, root: string): Promise<{ head: string | null } | undefined> {
     const stored = await this.#database.get<{ head: string | null }>(
-      "SELECT head FROM pal_change_bases WHERE project_id = ?",
+      "SELECT head FROM pal_change_bases WHERE scope_id = ?",
       id,
     );
     if (stored !== undefined) return stored;
@@ -137,24 +137,24 @@ export class Changes {
       () => "",
     );
     const head = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(value) ? value : null;
-    await this.#database.run("INSERT OR IGNORE INTO pal_change_bases (project_id, head) VALUES (?, ?)", id, head);
+    await this.#database.run("INSERT OR IGNORE INTO pal_change_bases (scope_id, head) VALUES (?, ?)", id, head);
     return await this.#database.get<{ head: string | null }>(
-      "SELECT head FROM pal_change_bases WHERE project_id = ?",
+      "SELECT head FROM pal_change_bases WHERE scope_id = ?",
       id,
     );
   }
-  async list(projectId: string, scope: ReviewScope = "normal"): Promise<ChangeSet> {
+  async list(projectId: string, scope: ReviewScope = "normal", workspaceId?: string): Promise<ChangeSet> {
     if (this.#active >= 2)
       throw new HttpError(409, "changes_busy", "another change scan is in progress; retry shortly");
     this.#active++;
     try {
-      const project = await this.#projects.get(projectId);
-      if (project?.state !== "ready") throw new HttpError(404, "not_found", "no such ready project");
-      const root = await realpath(project.root);
-      const baseline = await this.#baseline(projectId, root);
+      const location = await this.#location(projectId, workspaceId);
+      const { root, key } = location;
+      const baseline = await this.#baseline(key, root);
       const note =
         "Raw text against the recorded Git commit (or empty tree). Includes pre-existing changes; no hooks or filters run. Refresh to see later edits. Discard restores one file, only while it still matches the revision shown.";
-      if (baseline === undefined)
+      if (baseline === undefined) {
+        await location.check();
         return {
           state: "unavailable",
           base: null,
@@ -163,6 +163,7 @@ export class Changes {
           truncated: false,
           note: "Git is unavailable or this folder is not a repository root. No baseline or rollback is invented. Use the host terminal to initialize Git explicitly.",
         };
+      }
       const signal = AbortSignal.timeout(10_000);
       const tracked =
         baseline.head === null
@@ -186,12 +187,12 @@ export class Changes {
         .filter((path) => this.#allowed(root, path))
         .sort();
       const reviews = await this.#database.all<{ path: string; revision: string }>(
-        "SELECT path, revision FROM pal_change_reviews WHERE project_id = ?",
-        projectId,
+        "SELECT path, revision FROM pal_change_reviews WHERE scope_id = ?",
+        key,
       );
       const comments = await this.#database.all<CommentRow>(
-        "SELECT * FROM pal_change_comments WHERE project_id = ? ORDER BY created_at, id",
-        projectId,
+        "SELECT * FROM pal_change_comments WHERE scope_id = ? ORDER BY created_at, id",
+        key,
       );
       const commented = new Set(comments.map((comment) => comment.path));
       const lines = new Map<string, string[]>();
@@ -242,6 +243,7 @@ export class Changes {
         signal,
       );
       const visible = (path: string) => this.#allowed(root, path) && (scope === "include-ignored" || !hidden.has(path));
+      await location.check();
       return {
         state: "ready",
         base: baseline.head,
@@ -363,22 +365,26 @@ export class Changes {
     revision: string,
     reviewed: boolean,
     scope: ReviewScope = "normal",
+    workspaceId?: string,
   ): Promise<void> {
-    const project = await this.#projects.get(projectId);
-    if (project?.state !== "ready") throw new HttpError(404, "not_found", "no such ready project");
-    const listing = await this.list(projectId, scope);
-    if (listing.state === "ready") await this.#permission(project.root, path, scope, AbortSignal.timeout(10_000));
+    const location = await this.#location(projectId, workspaceId);
+    const listing = await this.list(projectId, scope, workspaceId);
+    if (listing.state === "ready") await this.#permission(location.root, path, scope, AbortSignal.timeout(10_000));
     const latest = listing.files.find((file) => file.path === path);
     if (latest === undefined || latest.problem !== undefined || latest.revision !== revision)
       throw new HttpError(409, "changes_stale", "the file changed; refresh and review its latest revision");
-    if (reviewed)
-      await this.#database.run(
-        "INSERT INTO pal_change_reviews (project_id, path, revision) VALUES (?, ?, ?) ON CONFLICT (project_id, path) DO UPDATE SET revision = excluded.revision",
-        projectId,
-        path,
-        revision,
-      );
-    else await this.#database.run("DELETE FROM pal_change_reviews WHERE project_id = ? AND path = ?", projectId, path);
+    await location.check();
+    await this.#database.transaction(async (tx) => {
+      await this.#ready(projectId, tx, workspaceId);
+      if (reviewed)
+        await tx.run(
+          "INSERT INTO pal_change_reviews (scope_id, path, revision) VALUES (?, ?, ?) ON CONFLICT (scope_id, path) DO UPDATE SET revision = excluded.revision",
+          location.key,
+          path,
+          revision,
+        );
+      else await tx.run("DELETE FROM pal_change_reviews WHERE scope_id = ? AND path = ?", location.key, path);
+    });
   }
 
   /**
@@ -386,14 +392,20 @@ export class Changes {
    * owner looked fails without touching anything. Held under the workspace lock so Pal's own writes and commands cannot
    * interleave; external editors are rechecked just before the final rename.
    */
-  async discard(projectId: string, path: string, revision: string, scope: ReviewScope = "normal"): Promise<void> {
-    const project = await this.#projects.get(projectId);
-    if (project?.state !== "ready") throw new HttpError(404, "not_found", "no such ready project");
-    const root = await realpath(project.root);
+  async discard(
+    projectId: string,
+    path: string,
+    revision: string,
+    scope: ReviewScope = "normal",
+    workspaceId?: string,
+  ): Promise<void> {
+    const location = await this.#location(projectId, workspaceId);
+    const { root, key } = location;
     const stale = () =>
       new HttpError(409, "changes_stale", "the file changed since you viewed it; nothing was discarded. Refresh first");
     await this.#locks.run(root, async () => {
-      const baseline = await this.#baseline(projectId, root);
+      await location.check();
+      const baseline = await this.#baseline(key, root);
       if (!this.#allowed(root, path)) throw new FileAccessError(`${path} is outside the project folder or protected`);
       if (baseline === undefined) throw stale();
       const signal = AbortSignal.timeout(10_000);
@@ -407,6 +419,7 @@ export class Changes {
       if (change?.revision !== revision) throw stale();
       // Rechecked right before the change; a link, oversized or unreadable file counts as changed.
       const unchanged = async (target: string) => {
+        await location.check();
         await this.#permission(root, path, scope, signal);
         const now = await readFileSnapshot(target).then(
           (snapshot) => (snapshot.truncated ? undefined : snapshot.bytes),
@@ -455,8 +468,8 @@ export class Changes {
           });
         }
       }
-      for (const table of ["pal_change_reviews", "pal_change_comments"])
-        await this.#database.run(`DELETE FROM ${table} WHERE project_id = ? AND path = ?`, projectId, path);
+      await this.#database.run("DELETE FROM pal_change_reviews WHERE scope_id = ? AND path = ?", key, path);
+      await this.#database.run("DELETE FROM pal_change_comments WHERE scope_id = ? AND path = ?", key, path);
     });
   }
 
@@ -468,12 +481,12 @@ export class Changes {
     line: number,
     body: string,
     scope: ReviewScope = "normal",
+    workspaceId?: string,
   ): Promise<ChangeComment> {
-    const project = await this.#projects.get(projectId);
-    if (project?.state !== "ready") throw new HttpError(404, "not_found", "no such ready project");
-    const root = await realpath(project.root);
+    const location = await this.#location(projectId, workspaceId);
+    const { root, key } = location;
     if (!this.#allowed(root, path)) throw new FileAccessError(`${path} is outside the project folder or protected`);
-    const baseline = await this.#baseline(projectId, root);
+    const baseline = await this.#baseline(key, root);
     const signal = AbortSignal.timeout(10_000);
     if (baseline !== undefined) await this.#permission(root, path, scope, signal);
     const change =
@@ -491,7 +504,7 @@ export class Changes {
     if (body.trim() === "") throw new HttpError(400, "invalid_request", "write a comment first");
     const row: CommentRow = {
       id: randomUUID(),
-      project_id: projectId,
+      scope_id: key,
       path,
       revision,
       line,
@@ -502,18 +515,19 @@ export class Changes {
       sent_at: null,
     };
     await this.#permission(root, path, scope, signal);
+    await location.check();
     await this.#database.transaction(async (transaction) => {
-      await this.#ready(projectId, transaction);
+      await this.#ready(projectId, transaction, workspaceId);
       const count = await transaction.get<{ count: number }>(
-        "SELECT count(*) AS count FROM pal_change_comments WHERE project_id = ?",
-        projectId,
+        "SELECT count(*) AS count FROM pal_change_comments WHERE scope_id = ?",
+        key,
       );
       if ((count?.count ?? 0) >= MAX_COMMENTS)
         throw new HttpError(409, "comments_full", `at most ${MAX_COMMENTS} comments per project; delete some first`);
       await transaction.run(
-        "INSERT INTO pal_change_comments (id, project_id, path, revision, line, line_text, line_hash, body, created_at, sent_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)",
+        "INSERT INTO pal_change_comments (id, scope_id, path, revision, line, line_text, line_hash, body, created_at, sent_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)",
         row.id,
-        projectId,
+        key,
         path,
         revision,
         line,
@@ -526,7 +540,16 @@ export class Changes {
     return { ...toComment(row), outdated: false };
   }
 
-  async #ready(projectId: string, database: SqliteExecutor): Promise<void> {
+  async #ready(projectId: string, database: SqliteExecutor, workspaceId?: string): Promise<void> {
+    if (
+      workspaceId !== undefined &&
+      (await database.get(
+        "SELECT 1 FROM pal_workspaces w JOIN pal_chats c ON c.id = w.chat_id JOIN pal_projects p ON p.id = w.project_id WHERE w.id = ? AND w.project_id = ? AND w.state = 'ready' AND c.deleted_at IS NULL AND p.removed_at IS NULL AND p.state = 'ready'",
+        workspaceId,
+        projectId,
+      )) === undefined
+    )
+      throw new FileAccessError("workspace authority was revoked");
     if (
       (await database.get(
         "SELECT 1 FROM pal_projects WHERE id = ? AND state = 'ready' AND removed_at IS NULL",
@@ -536,35 +559,41 @@ export class Changes {
       throw new HttpError(404, "not_found", "no such ready project");
   }
 
-  async uncomment(projectId: string, id: string): Promise<void> {
+  async uncomment(projectId: string, id: string, workspaceId?: string): Promise<void> {
+    const location = await this.#location(projectId, workspaceId);
     await this.#database.transaction(async (transaction) => {
-      await this.#ready(projectId, transaction);
-      await transaction.run("DELETE FROM pal_change_comments WHERE project_id = ? AND id = ?", projectId, id);
+      await this.#ready(projectId, transaction, workspaceId);
+      await transaction.run("DELETE FROM pal_change_comments WHERE scope_id = ? AND id = ?", location.key, id);
     });
   }
 
-  async markSent(projectId: string, ids: readonly string[], scope: ReviewScope = "normal"): Promise<void> {
-    const project = await this.#projects.get(projectId);
-    if (project?.state !== "ready") throw new HttpError(404, "not_found", "no such ready project");
+  async markSent(
+    projectId: string,
+    ids: readonly string[],
+    scope: ReviewScope = "normal",
+    workspaceId?: string,
+  ): Promise<void> {
+    const location = await this.#location(projectId, workspaceId);
     const comments = await this.#database.all<{ id: string; path: string }>(
-      "SELECT id, path FROM pal_change_comments WHERE project_id = ?",
-      projectId,
+      "SELECT id, path FROM pal_change_comments WHERE scope_id = ?",
+      location.key,
     );
     const hidden = await this.#ignored(
-      project.root,
+      location.root,
       comments.flatMap((comment) => (ids.includes(comment.id) ? [comment.path] : [])),
       AbortSignal.timeout(10_000),
     );
     if (scope === "normal" && hidden.size > 0)
       throw new HttpError(403, "ignored_permission", "include ignored files explicitly before sharing their comments");
     const now = Date.now();
+    await location.check();
     await this.#database.transaction(async (transaction) => {
-      await this.#ready(projectId, transaction);
+      await this.#ready(projectId, transaction, workspaceId);
       for (const id of ids)
         await transaction.run(
-          "UPDATE pal_change_comments SET sent_at = ? WHERE project_id = ? AND id = ? AND sent_at IS NULL",
+          "UPDATE pal_change_comments SET sent_at = ? WHERE scope_id = ? AND id = ? AND sent_at IS NULL",
           now,
-          projectId,
+          location.key,
           id,
         );
     });
@@ -584,7 +613,7 @@ export class Changes {
 
 type CommentRow = {
   id: string;
-  project_id: string;
+  scope_id: string;
   path: string;
   revision: string;
   line: number;

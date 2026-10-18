@@ -1,14 +1,29 @@
 <script lang="ts">
   import { onMount } from "svelte";
-  import { api, ApiError, type Change, type ChangeComment, type ChangeSet, type Project } from "../lib/api.ts";
+  import {
+    api,
+    ApiError,
+    type Change,
+    type ChangeComment,
+    type ChangeSet,
+    type Project,
+    type Workspace,
+  } from "../lib/api.ts";
   import Icon from "../lib/Icon.svelte";
   import ConfirmRemoval from "./ConfirmRemoval.svelte";
 
   let {
     project,
+    workspace,
     initialPath,
     onFeedback,
-  }: { project: Project; initialPath?: string | undefined; onFeedback?: (text: string) => void } = $props();
+  }: {
+    project: Project;
+    workspace?: Workspace | null | undefined;
+    initialPath?: string | undefined;
+    onFeedback?: (text: string) => void;
+  } = $props();
+  const root = $derived(workspace?.root ?? project.root);
   let changes: ChangeSet | undefined = $state.raw();
   let chosen: string | undefined = $state();
   // A click wins; until then, the file Files asked to see.
@@ -69,7 +84,7 @@
     error = undefined;
     done = undefined;
     try {
-      const loaded = await api.changes(project.id, scope);
+      const loaded = await api.changes(project.id, scope, workspace?.id);
       if (request === scan) changes = loaded;
     } catch (failure) {
       if (request === scan) error = failure instanceof Error ? failure.message : String(failure);
@@ -91,7 +106,7 @@
     busy = true;
     error = undefined;
     try {
-      await api.review(project.id, file.path, file.revision, !file.reviewed, scope);
+      await api.review(project.id, file.path, file.revision, !file.reviewed, scope, workspace?.id);
       await refresh();
     } catch (failure) {
       error = failure instanceof Error ? failure.message : String(failure);
@@ -102,7 +117,7 @@
     const target = discarding;
     if (target === undefined) return;
     try {
-      await api.discard(project.id, target.path, target.revision, scope);
+      await api.discard(project.id, target.path, target.revision, scope, workspace?.id);
     } catch (failure) {
       if (!(failure instanceof ApiError && failure.code === "changes_stale")) throw failure;
       discarding = undefined;
@@ -132,7 +147,7 @@
   }
   const add = (target: Change, line: number) =>
     act(async () => {
-      await api.comment(project.id, target.path, target.revision, line, draft, scope);
+      await api.comment(project.id, target.path, target.revision, line, draft, scope, workspace?.id);
       composing = undefined;
       draft = "";
     });
@@ -141,6 +156,7 @@
     onFeedback?.(
       [
         "Review feedback:",
+        `Workspace: ${root}${workspace == null ? "" : ` (${workspace.mode}, ${workspace.id})`}.`,
         ...sending.map(
           (comment) =>
             `${comment.path} (revision ${comment.revision.slice(0, 12)}), line ${comment.line}${comment.outdated ? " (outdated)" : ""}: ${comment.lineText.trim()}\n${comment.body}`,
@@ -152,6 +168,7 @@
         project.id,
         sending.map((comment) => comment.id),
         scope,
+        workspace?.id,
       ),
     );
     if (error === undefined) done = "Feedback is in the composer. Edit it if needed, then send.";
@@ -164,8 +181,8 @@
 
 <div class="changes" aria-busy={busy}>
   <div class="info">
-    <span class="pill">{project.mode === "managed" ? "Managed" : "Host folder"}</span>
-    <span class="mono folder" title={project.root}>{project.root}</span>
+    <span class="pill">{workspace?.mode ?? (project.mode === "managed" ? "Managed" : "Host folder")}</span>
+    <span class="mono folder" title={root}>{root}</span>
     <button class="b sm q" onclick={refresh} disabled={busy}><Icon name="refresh" />Refresh</button>
     {#if onFeedback}<button
         class="b sm"
@@ -334,7 +351,7 @@
         class="b sm q"
         disabled={busy}
         aria-label={`Delete comment on line ${comment.line}`}
-        onclick={() => act(() => api.uncomment(project.id, comment.id))}>Delete</button
+        onclick={() => act(() => api.uncomment(project.id, comment.id, workspace?.id))}>Delete</button
       >
     </div>
     {#if detached}<code class="mono quote" class:gone={comment.outdated}>{comment.lineText.trim()}</code>{/if}
@@ -352,7 +369,7 @@
           ? `Restores the deleted file from baseline ${baseline}.`
           : `Rewrites the file on disk to baseline ${baseline}.`
     } This can't be undone from here and may include changes made before Pal recorded the baseline. If the file changes before you confirm, nothing is discarded.`}
-    detail={`${project.root}/${discarding.path} · revision ${discarding.revision.slice(0, 12)}`}
+    detail={`${root}/${discarding.path} · revision ${discarding.revision.slice(0, 12)}`}
     confirmLabel="Discard changes"
     busyLabel="Discarding…"
     onCancel={() => (discarding = undefined)}

@@ -200,6 +200,8 @@ export function shellTools(options: {
               (tx) => tx.appendEntry(api.conversationId, { kind: "pal.shell", data: { shell } }),
               context,
             );
+            if ((await options.root(api.conversationId)) !== configured)
+              throw new Error("the workspace was revoked before command dispatch");
             const result = await options.commands.run(
               cwd,
               args.command,

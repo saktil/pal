@@ -1,5 +1,6 @@
 // Typed calls to Pal's API. Shapes mirror src/core/api.ts responses.
 import type { ReviewScope } from "../../../src/core/changes.ts";
+import type { WorkspaceMode } from "../../../src/core/workspaces.ts";
 
 export type Session = { owner: boolean; signedIn: boolean };
 export type { Change, ChangeComment, ChangeSet } from "../../../src/core/changes.ts";
@@ -7,6 +8,7 @@ export type { TerminalInfo } from "../../../src/core/terminals.ts";
 export type { RemovedWorkspace } from "../../../src/core/workspace-purge.ts";
 export type { ProjectMcp, ProjectMcpServer } from "../../../src/core/mcp-grants.ts";
 export type { GrantedFolder } from "../../../src/core/folders.ts";
+export type { Workspace, WorkspaceMode } from "../../../src/core/workspaces.ts";
 
 export type Effort = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 export type ChatGPTModel = { slug: string; displayName: string; supported: boolean; efforts: Effort[] };
@@ -20,7 +22,19 @@ export type ChatGPTState = {
 };
 
 export type Upload = { id: string; name: string; size: number; mediaType: string; state: "receiving" | "ready" };
-export type ChatSummary = { id: string; projectId: string; title: string | null; createdAt: number };
+export type ChatSummary = {
+  id: string;
+  projectId: string;
+  title: string | null;
+  createdAt: number;
+  workspace?: import("../../../src/core/workspaces.ts").Workspace | null;
+};
+
+const inWorkspace = (path: string, id?: string) => {
+  if (id === undefined) return path;
+  const separator = path.includes("?") ? "&" : "?";
+  return `${path}${separator}workspace=${encodeURIComponent(id)}`;
+};
 export type Project = {
   id: string;
   name: string;
@@ -137,10 +151,16 @@ export const api = {
       mode,
       tools,
     }),
-  changes: (id: string, scope: ReviewScope = "normal") =>
-    call<import("../../../src/core/changes.ts").ChangeSet>("GET", `projects/${id}/changes?scope=${scope}`),
-  projectFolders: (id: string) =>
-    call<{ folders: import("../../../src/core/folders.ts").GrantedFolder[] }>("GET", `projects/${id}/folders`),
+  changes: (id: string, scope: ReviewScope = "normal", workspace?: string) =>
+    call<import("../../../src/core/changes.ts").ChangeSet>(
+      "GET",
+      inWorkspace(`projects/${id}/changes?scope=${scope}`, workspace),
+    ),
+  projectFolders: (id: string, workspace?: string) =>
+    call<{ folders: import("../../../src/core/folders.ts").GrantedFolder[] }>(
+      "GET",
+      inWorkspace(`projects/${id}/folders`, workspace),
+    ),
   addFolder: (id: string, key: string, folder: string, indexed: boolean) =>
     call<{ folder: import("../../../src/core/folders.ts").GrantedFolder }>("POST", `projects/${id}/folders`, {
       requestId: key,
@@ -148,43 +168,69 @@ export const api = {
       indexed,
     }),
   removeFolder: (project: string, id: string) => call<{ removed: true }>("DELETE", `projects/${project}/folders/${id}`),
-  files: (id: string, path: string, folder = "primary") =>
+  files: (id: string, path: string, folder = "primary", workspace?: string) =>
     call<ProjectFolder>(
       "GET",
-      `projects/${id}/files?path=${encodeURIComponent(path)}&folder=${encodeURIComponent(folder)}`,
+      inWorkspace(
+        `projects/${id}/files?path=${encodeURIComponent(path)}&folder=${encodeURIComponent(folder)}`,
+        workspace,
+      ),
     ),
-  search: (id: string, query: string, mode: "text" | "regex" | "files", folder = "primary") =>
+  search: (id: string, query: string, mode: "text" | "regex" | "files", folder = "primary", workspace?: string) =>
     call<import("../../../src/core/search.ts").SearchResults>(
       "GET",
-      `projects/${id}/search?q=${encodeURIComponent(query)}&mode=${mode}&folder=${encodeURIComponent(folder)}`,
+      inWorkspace(
+        `projects/${id}/search?q=${encodeURIComponent(query)}&mode=${mode}&folder=${encodeURIComponent(folder)}`,
+        workspace,
+      ),
     ),
-  file: (id: string, path: string, folder = "primary") =>
+  file: (id: string, path: string, folder = "primary", workspace?: string) =>
     call<import("../../../src/core/files.ts").FilePreview>(
       "GET",
-      `projects/${id}/file?path=${encodeURIComponent(path)}&folder=${encodeURIComponent(folder)}`,
+      inWorkspace(
+        `projects/${id}/file?path=${encodeURIComponent(path)}&folder=${encodeURIComponent(folder)}`,
+        workspace,
+      ),
     ),
-  discard: (id: string, path: string, revision: string, scope: ReviewScope = "normal") =>
-    call<{ discarded: true }>("POST", `projects/${id}/discard`, { path, revision, scope }),
-  comment: (id: string, path: string, revision: string, line: number, body: string, scope: ReviewScope = "normal") =>
+  discard: (id: string, path: string, revision: string, scope: ReviewScope = "normal", workspace?: string) =>
+    call<{ discarded: true }>("POST", `projects/${id}/discard`, { path, revision, scope, workspace }),
+  comment: (
+    id: string,
+    path: string,
+    revision: string,
+    line: number,
+    body: string,
+    scope: ReviewScope = "normal",
+    workspace?: string,
+  ) =>
     call<{ comment: import("../../../src/core/changes.ts").ChangeComment }>("POST", `projects/${id}/comments`, {
       path,
       revision,
       line,
       body,
       scope,
+      workspace,
     }),
-  uncomment: (id: string, comment: string) => call<{ deleted: true }>("DELETE", `projects/${id}/comments/${comment}`),
-  commentsSent: (id: string, ids: string[], scope: ReviewScope = "normal") =>
-    call<{ sent: true }>("POST", `projects/${id}/comments/sent`, { ids, scope }),
-  review: (id: string, path: string, revision: string, reviewed: boolean, scope: ReviewScope = "normal") =>
-    call<{ reviewed: boolean }>("PUT", `projects/${id}/review`, { path, revision, reviewed, scope }),
+  uncomment: (id: string, comment: string, workspace?: string) =>
+    call<{ deleted: true }>("DELETE", inWorkspace(`projects/${id}/comments/${comment}`, workspace)),
+  commentsSent: (id: string, ids: string[], scope: ReviewScope = "normal", workspace?: string) =>
+    call<{ sent: true }>("POST", `projects/${id}/comments/sent`, { ids, scope, workspace }),
+  review: (
+    id: string,
+    path: string,
+    revision: string,
+    reviewed: boolean,
+    scope: ReviewScope = "normal",
+    workspace?: string,
+  ) => call<{ reviewed: boolean }>("PUT", `projects/${id}/review`, { path, revision, reviewed, scope, workspace }),
   terminals: (id: string) =>
     call<{ terminals: import("../../../src/core/terminals.ts").TerminalInfo[] }>("GET", `projects/${id}/terminals`),
-  newTerminal: (id: string) =>
+  newTerminal: (id: string, workspace?: string) =>
     call<{ terminal: import("../../../src/core/terminals.ts").TerminalInfo }>("POST", `projects/${id}/terminals`, {
       cols: 80,
       rows: 24,
       trust: true,
+      workspace,
     }),
   closeTerminal: (project: string, id: string) =>
     call<{ closed: true }>("DELETE", `projects/${project}/terminals/${id}`),
@@ -199,8 +245,9 @@ export const api = {
   folders: (path?: string) =>
     call<FolderListing>("GET", `folders${path === undefined ? "" : `?path=${encodeURIComponent(path)}`}`),
 
-  createChat: (key: string, projectId: string) =>
-    call<{ chat: ChatSummary }>("POST", "chats", { requestId: key, projectId }),
+  createChat: (key: string, projectId: string, workspace: WorkspaceMode = "local") =>
+    call<{ chat: ChatSummary }>("POST", "chats", { requestId: key, projectId, workspace }),
+  prepareWorkspace: (id: string) => call<{ chat: ChatSummary }>("POST", `chats/${id}/workspace`, {}),
   deleteChat: (id: string) => call<{ removed: true }>("DELETE", `chats/${id}`),
   chat: (id: string) => call<{ chat: ChatSummary; model: string | null; effort: Effort }>("GET", `chats/${id}`),
   send: (id: string, key: string, text: string, whenBusy: "followUp" | "steer", attachments: string[]) =>
