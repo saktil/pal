@@ -1,0 +1,147 @@
+# Configuration
+
+## Command line
+
+```
+pal [serve] [--host <address>] [--port <number>] [--data-dir <path>] [--public-origin <url>]
+pal probe
+pal supervise [serve options]
+pal check-release --candidate <absolute worktree path> [--data-dir <path>]
+```
+
+With pnpm, run the server as `pnpm start [options]` (build, then serve) or `pnpm serve [options]` (existing build).
+The Nix package installs the same program as `pal`.
+
+| Command         | What it does                                                                                    |
+| --------------- | ----------------------------------------------------------------------------------------------- |
+| `serve`         | Runs Pal; this is the default command.                                                          |
+| `probe`         | Checks SQLite FTS5, fff, Code Mode and the terminal on this host, then exits.                   |
+| `supervise`     | Runs Pal under the release supervisor (Linux, Nix package). See [Releases](#releases).          |
+| `check-release` | Tests a candidate worktree with the running package's protected recipes. It never approves or activates anything. |
+
+| Option            | Meaning                                                                                       |
+| ----------------- | --------------------------------------------------------------------------------------------- |
+| `--host`          | Listen address, default `127.0.0.1`. Must be an IP address or `localhost`; any non-loopback address also requires `--public-origin`. |
+| `--port`          | TCP port, default `7337`. `0` picks a free port.                                              |
+| `--data-dir`      | Absolute path for Pal's data. The default is `$XDG_DATA_HOME/pal` or `~/.local/share/pal` on Linux and `~/Library/Application Support/pal` on macOS. |
+| `--public-origin` | The exact origin browsers use, such as `https://pal.example` (no path, query or credentials). |
+
+## Data directory
+
+Everything Pal keeps is in the data directory:
+
+| Path                        | Contents                                                                     |
+| --------------------------- | ---------------------------------------------------------------------------- |
+| `pal.sqlite`                | Projects, chats, durable runs, settings and sealed credentials (WAL mode)     |
+| `credentials.key`           | The 32-byte key that seals credentials (mode 0600). Keep it with the database. |
+| `projects/<id>/workspace`   | Folders of managed projects                                                   |
+| `uploads/`                  | Files uploaded from your devices                                              |
+| `browser/<project>/`        | Browser profiles, including site cookies and logins                           |
+| `release-checks/`, `release-control/` | Release candidates and the supervisor's selection (Nix only)        |
+
+Pal creates the directory with mode 0700. If you create it yourself, keep it private (`chmod 700`), because it holds
+credentials and site logins. Only one Pal process may own a data directory at a time. To back it up, stop Pal
+first, then copy the whole directory; copying the database while Pal runs can produce an inconsistent snapshot.
+
+## First run
+
+On first start, Pal prints a one-time setup link (`http://127.0.0.1:7337/#setup=…`). Open it and choose an owner
+passphrase of at least 12 characters. The link works only until the owner exists. Sessions last 30 days.
+
+Onboarding then walks you through three steps:
+
+1. **Sign in with ChatGPT** opens OpenAI's sign-in page. Its callback goes to `127.0.0.1:1455` on the machine
+   running Pal. If your browser is on another device, the final page will not load; copy its full address and
+   paste it into the field Pal shows.
+2. **Internet tools** offers the Exa and Context7 presets, which you can enable now or later.
+3. **Create a project**, either a Pal-managed folder or an existing folder on the server.
+
+## Remote access
+
+Pal accepts requests only for its own host name, and state-changing requests only from its exact origin. To use it
+from other devices, choose one of these:
+
+- **Behind an HTTPS reverse proxy.** Keep Pal on loopback and give the proxy's origin:
+  `pal serve --public-origin https://pal.example`. The proxy must forward the original `Host` header and pass
+  WebSocket upgrades (`/api/terminals/…`, `/api/projects/…/browser/socket`). With an HTTPS origin, session
+  cookies are marked `Secure`.
+- **On a private network you trust,** such as a VPN address:
+  `pal serve --host 100.64.0.10 --public-origin http://100.64.0.10:7337`.
+
+Never expose plain HTTP to the internet: the passphrase and session cookie would travel unencrypted.
+
+## Models
+
+Settings → **Models**:
+
+- **ChatGPT** uses your subscription through Sign in with ChatGPT. Usage counts against that account's limits, and
+  Pal never falls back to an API key.
+- **Other model providers**: OpenRouter, OpenCode Zen, OpenCode Go, the OpenAI API, the Anthropic API and an
+  OpenAI-compatible endpoint. Each one needs a saved key (except a keyless compatible endpoint) and then an explicit
+  **Use … in chats** switch.
+  - Keys are stored encrypted and never shown again. **Check key** asks the provider without a model request,
+    where it documents a free way to (OpenRouter, OpenAI, Anthropic, compatible endpoints).
+  - An OpenAI-compatible endpoint takes a name, base URL, model IDs, context window and output limit. The URL may
+    point at a private network address, because you chose it.
+
+The model picker in each chat lists ChatGPT and every enabled provider, with search. Choosing a model from another
+provider sends that chat's history to it with your next message. **Use for new chats** makes it the default.
+Pal never reads model keys from environment variables such as `OPENAI_API_KEY`.
+
+## Internet tools (MCP)
+
+Settings → **MCP servers**:
+
+- **Exa** (web search and page fetch) and **Context7** (library documentation) are presets. Both work without a
+  key at rate-limited levels; a key raises the limits.
+- **Custom servers** speak Streamable HTTP over HTTPS. A private-network endpoint needs an explicit opt-in.
+- **Tool review.** **Test** connects and lists tools without calling them. You approve exact tool definitions, and
+  a changed definition is blocked until you approve it again.
+- **Local programs** start a Nix-store executable with exact arguments, folder and an optional key variable, after
+  explicit consent. They run unsandboxed as the Pal user.
+- **Per-project grants.** The **Internet tools** button in a chat narrows which servers and tools the project may
+  use.
+
+## Agent permissions
+
+- **Command approval** is set per chat with the composer's **Ask** / **Full access** pill. Ask is the default for
+  every chat.
+- **Workspace mode** is chosen when you start a chat:
+  - **Local** works in the project folder.
+  - **Worktree** works in a separate Git worktree from `HEAD`.
+  - **Read-only** has no agent writes and no agent shell.
+- **Extensions** (Settings → Extensions) switch built-in tools and panels (files, shell, memory, browser) for new
+  chats. Existing chats keep what they started with.
+
+## Browser
+
+The Browser panel needs the browser runtime: Chromium, bubblewrap, socat and coreutils, plus `systemd-run --user`
+for resource limits. The Linux Nix package provides it. Without it the panel says the runtime is unavailable.
+Browsing is limited to public addresses on ports 80 and 443. **Clear browser data…** deletes the project's profile,
+and removing a project deletes it too.
+
+## Releases
+
+On Linux, the Nix package can run as `pal supervise`. Settings → **Releases** then shows candidates that
+`pal check-release` has tested. Activation needs two explicit confirmations:
+
+1. You approve the exact checked digest.
+2. You confirm the activation or compatible rollback.
+
+The supervisor drains running work, starts the new child, checks its health and keeps the previous release to fall
+back to.
+
+## Environment variables
+
+The Nix package sets these, and most users never need them.
+
+| Variable           | Purpose                                                                                  |
+| ------------------ | ---------------------------------------------------------------------------------------- |
+| `PAL_TIMEOUT`      | GNU `timeout` used to bound shell and Git commands. Defaults to `timeout`, then `gtimeout`, on `PATH`. |
+| `PAL_BASH`         | Bash for agent commands and terminals (default `bash`)                                    |
+| `PAL_CHROMIUM`, `PAL_BWRAP`, `PAL_SOCAT`, `PAL_COREUTILS`, `PAL_FONTCONFIG` | Browser runtime programs. The browser is available only when the first four are set. |
+| `PAL_SYSTEMD_RUN`  | `systemd-run` for the browser's resource scope (default `systemd-run`)                    |
+| `PAL_NIX`, `PAL_FLOCK`, `PAL_RELEASE_*` | Programs and pinned sources for release checks and the supervisor            |
+
+Agent commands start with a clean environment containing `PATH`, a private `HOME` and `TMPDIR`, `LANG` and
+`TERM`. Pal's own environment and secrets are not passed on.
