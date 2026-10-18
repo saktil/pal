@@ -5,9 +5,11 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { Duplex } from "node:stream";
 import type { BrowserContext, Dialog, Page } from "playwright-core";
+import type { ConversationId } from "@earendil-works/pi-durable";
 import { type Static, Type } from "typebox";
 import type { WebSocket, WebSocketServer } from "ws";
 import { EgressBroker } from "./browser-egress.ts";
+import { BrowserActionBody, type BrowserActionInput, BrowserPage } from "./browser-page.ts";
 import { cookie, HttpError, isOwnHost, isOwnOrigin } from "./http.ts";
 import { type Owner, SESSION_COOKIE } from "./owner.ts";
 import type { Projects } from "./projects.ts";
@@ -49,6 +51,9 @@ const MAX_BROWSERS = 2;
 const MAX_VIEWERS = 3;
 const MAX_TABS = 8;
 const MAX_INPUTS = 32;
+const AGENT_MS = 5 * 60_000;
+const AGENT_CALLS = 40;
+export type BrowserMode = "paused" | "human" | "private-login" | "agent";
 const IDLE_MS = 10 * 60_000;
 const DIALOG_MS = 60_000;
 const PROXY_PORT = 3128;
@@ -58,6 +63,19 @@ const VIEWPORT = { width: 1280, height: 800 };
 const Point = { x: Type.Number({ minimum: 0, maximum: 4096 }), y: Type.Number({ minimum: 0, maximum: 4096 }) };
 const Message = Type.Union([
   Type.Object({ type: Type.Literal("take") }, { additionalProperties: false }),
+  Type.Object(
+    { type: Type.Literal("mode"), epoch: Type.Integer(), mode: Type.Enum(["paused", "human", "private-login"]) },
+    { additionalProperties: false },
+  ),
+  Type.Object(
+    {
+      type: Type.Literal("handoff"),
+      epoch: Type.Integer(),
+      chat: Type.String({ maxLength: 64 }),
+      url: Type.String({ maxLength: 4096 }),
+    },
+    { additionalProperties: false },
+  ),
   Type.Object(
     { type: Type.Literal("navigate"), epoch: Type.Integer(), url: Type.String({ maxLength: 4096 }) },
     { additionalProperties: false },
@@ -119,10 +137,22 @@ const Message = Type.Union([
 ]);
 type Input = Static<typeof Message>;
 
-type Viewer = { ws: WebSocket; token: string; ready: boolean; messages: number; window: number };
-type Tab = { id: string; page: Page };
+type Viewer = { ws: WebSocket; token: string; expiry: number; ready: boolean; messages: number; window: number };
+type Tab = { id: string; page: Page; model: BrowserPage };
+type Lease = {
+  conversation: ConversationId;
+  chat: string;
+  token: string;
+  expires: number;
+  left: number;
+  timer: NodeJS.Timeout;
+};
 type Instance = {
   projectId: string;
+  id: string;
+  mode: BrowserMode;
+  lease: Lease | undefined;
+  modelBusy: boolean;
   context: BrowserContext;
   broker: EgressBroker;
   run: string;
@@ -164,12 +194,14 @@ export function browsable(input: string): string {
  * share no network and no Pal data: only the project's dedicated profile, the read-only Nix store and a Unix socket
  * to the host's egress broker, which admits public destinations only. A transient user scope caps memory, tasks and
  * CPU; without one the browser does not start. Frames live in memory only: no screenshots, traces, HAR or input logs.
- * Pages are driven by the owner alone; agent control is not offered.
+ * Model access requires an explicit, expiring per-chat handoff and native durable tools. Private login never enters it.
  */
 export class ProjectBrowsers {
   readonly #dataRoot: string;
   readonly #projects: Projects;
   readonly #owner: Owner;
+  readonly #chat: ((id: string) => Promise<{ project: string; conversation: ConversationId } | undefined>) | undefined;
+  readonly #ownOrigins = new Set<string>();
   readonly #runtime: BrowserRuntime | undefined;
   readonly #egress: Parameters<typeof EgressBroker.listen>[1];
   readonly #instances = new Map<string, Instance>();
@@ -183,12 +215,14 @@ export class ProjectBrowsers {
     projects: Projects;
     owner: Owner;
     runtime: BrowserRuntime | undefined;
+    chat?: (id: string) => Promise<{ project: string; conversation: ConversationId } | undefined>;
     /** Tests admit a loopback fixture; production uses the public-only policy. */
     egress?: Parameters<typeof EgressBroker.listen>[1];
   }) {
     this.#dataRoot = options.dataRoot;
     this.#projects = options.projects;
     this.#owner = options.owner;
+    this.#chat = options.chat;
     this.#runtime = options.runtime;
     this.#egress = options.egress;
   }
@@ -198,9 +232,205 @@ export class ProjectBrowsers {
     return { available: this.#runtime !== undefined, running: this.#instances.has(projectId) };
   }
 
-  /** Sign-out stops this session's observation and input, not the browser itself. */
+  allows(conversation: ConversationId): boolean {
+    return [...this.#instances.values()].some(
+      (instance) =>
+        !this.#closed &&
+        !this.#retiring.has(instance.projectId) &&
+        instance.closing === undefined &&
+        instance.mode === "agent" &&
+        instance.lease?.conversation === conversation &&
+        instance.lease.expires > Date.now() &&
+        instance.lease.left > 0,
+    );
+  }
+
+  #lease(conversation: ConversationId) {
+    const instance = [...this.#instances.values()].find((item) => item.lease?.conversation === conversation);
+    if (instance === undefined || !this.allows(conversation) || instance.active === undefined)
+      throw new HttpError(409, "browser_not_granted", "Open Browser and explicitly hand control to this chat first.");
+    return { instance, tab: instance.active, lease: instance.lease as Lease };
+  }
+
+  /** Exact action/page/epoch description used by the durable pre-dispatch approval, never owner input. */
+  async approval(conversation: ConversationId, input: unknown) {
+    const args = validate(BrowserActionBody, input);
+    const { instance, tab } = this.#lease(conversation);
+    await this.#project(instance.projectId);
+    this.#actionCurrent(instance, tab, conversation, args);
+    if (args.action.type === "navigate") this.#modelUrl(args.action.url);
+    return { command: JSON.stringify(args), cwd: this.#publicUrl(tab.page.url()), timeout: 10 };
+  }
+
+  async observe(conversation: ConversationId, signal?: AbortSignal) {
+    return this.#model(conversation, signal, async (instance, tab, guard) => {
+      const result = await tab.model.observe(guard);
+      guard();
+      if (result.login || result.truncated) {
+        this.#mode(instance, "private-login");
+        throw new HttpError(
+          409,
+          "browser_owner_needed",
+          "Sign-in or a complex page needs the owner; no page content was shared.",
+        );
+      }
+      return {
+        ...result,
+        session: instance.id,
+        epoch: instance.epoch,
+        url: this.#publicUrl(tab.page.url()),
+        remaining: instance.lease?.left ?? 0,
+      };
+    });
+  }
+
+  async act(conversation: ConversationId, input: BrowserActionInput, signal?: AbortSignal) {
+    return this.#model(conversation, signal, async (instance, tab, guard) => {
+      this.#actionCurrent(instance, tab, conversation, input);
+      if (input.action.type === "navigate")
+        input = { ...input, action: { ...input.action, url: this.#modelUrl(input.action.url) } };
+      if (await tab.model.privatePage(guard)) {
+        this.#mode(instance, "private-login");
+        throw new HttpError(409, "browser_owner_needed", "Sign in privately before handing control back.");
+      }
+      guard();
+      await tab.model.act(input, guard);
+      guard();
+      return {
+        session: instance.id,
+        epoch: instance.epoch,
+        action: input.action.type,
+        url: this.#publicUrl(tab.page.url()),
+        remaining: instance.lease?.left ?? 0,
+      };
+    });
+  }
+
+  assertEpoch(conversation: ConversationId, session: string, epoch: number): void {
+    const instance = [...this.#instances.values()].find((item) => item.id === session);
+    if (
+      this.#closed ||
+      instance?.mode !== "agent" ||
+      instance.lease?.conversation !== conversation ||
+      instance.lease.expires <= Date.now() ||
+      instance.epoch !== epoch ||
+      instance.closing !== undefined ||
+      this.#retiring.has(instance.projectId)
+    )
+      throw new HttpError(
+        409,
+        "browser_revoked",
+        "Browser authority changed before delivery; inspect before retrying.",
+      );
+  }
+
+  #actionCurrent(instance: Instance, tab: Tab, conversation: ConversationId, input: BrowserActionInput): void {
+    if (
+      instance.lease?.conversation !== conversation ||
+      instance.mode !== "agent" ||
+      instance.lease.expires <= Date.now() ||
+      instance.active !== tab ||
+      input.session !== instance.id ||
+      input.epoch !== instance.epoch
+    )
+      throw new HttpError(409, "browser_stale", "Browser control or page changed; inspect again.");
+    tab.model.current(input.observation);
+  }
+
+  async #model<T>(
+    conversation: ConversationId,
+    signal: AbortSignal | undefined,
+    work: (instance: Instance, tab: Tab, guard: () => void) => Promise<T>,
+  ): Promise<T> {
+    const { instance, tab, lease } = this.#lease(conversation),
+      epoch = instance.epoch;
+    if (instance.modelBusy || instance.pending > 0)
+      throw new HttpError(409, "browser_busy", "The browser is busy; wait for its current action.");
+    instance.modelBusy = true;
+    lease.left--;
+    const guard = () => {
+      signal?.throwIfAborted();
+      if (
+        this.#closed ||
+        instance.closing !== undefined ||
+        this.#retiring.has(instance.projectId) ||
+        instance.lease !== lease ||
+        instance.mode !== "agent" ||
+        instance.epoch !== epoch ||
+        instance.active !== tab ||
+        lease.expires <= Date.now()
+      )
+        throw new HttpError(
+          409,
+          "browser_revoked",
+          "Browser control changed. An action may have completed; inspect before retrying.",
+        );
+    };
+    this.#broadcast(instance);
+    const cancel = () => {
+      this.#mode(instance, "paused");
+      void instance.context.close().catch(() => {});
+    };
+    signal?.addEventListener("abort", cancel, { once: true });
+    const deadline = setTimeout(cancel, 12_000);
+    deadline.unref();
+    try {
+      await this.#project(instance.projectId);
+      await instance.activation;
+      guard();
+      this.#modelUrl(tab.page.url());
+      return await work(instance, tab, guard);
+    } catch (error) {
+      if (instance.mode === "agent") this.#mode(instance, "paused");
+      if (error instanceof HttpError) throw error;
+      throw new HttpError(
+        409,
+        "browser_interrupted",
+        "Browser action failed or was interrupted. It may have completed; inspect before retrying.",
+      );
+    } finally {
+      clearTimeout(deadline);
+      signal?.removeEventListener("abort", cancel);
+      instance.modelBusy = false;
+      this.#broadcast(instance);
+    }
+  }
+
+  #modelUrl(input: string): string {
+    const url = URL.parse(browsable(input));
+    if (
+      url === null ||
+      !["http:", "https:"].includes(url.protocol) ||
+      url.username !== "" ||
+      url.password !== "" ||
+      [...this.#ownOrigins].some((origin) => URL.parse(origin)?.host === url.host)
+    )
+      throw new HttpError(
+        403,
+        "browser_url_forbidden",
+        "Pal itself, credentials in URLs and non-web pages are off limits to browser tools.",
+      );
+    return url.href;
+  }
+
+  #publicUrl(input: string): string {
+    const url = URL.parse(input);
+    return url === null ? "" : `${url.origin}${url.pathname}`.slice(0, 2000);
+  }
+
+  #mode(instance: Instance, mode: Exclude<BrowserMode, "agent">, viewer?: Viewer): void {
+    if (instance.lease !== undefined) clearTimeout(instance.lease.timer);
+    instance.lease = undefined;
+    instance.mode = mode;
+    instance.epoch++;
+    instance.controller = mode === "paused" ? undefined : viewer;
+    this.#broadcast(instance);
+  }
+
+  /** Sign-out revokes this session's observation, input and agent handoff, not the browser itself. */
   revoke(token: string | undefined): void {
     for (const instance of this.#instances.values()) {
+      if (instance.lease?.token === token) this.#mode(instance, "paused");
       for (const viewer of instance.viewers) {
         if (viewer.token !== token) continue;
         viewer.ready = false;
@@ -283,6 +513,7 @@ export class ProjectBrowsers {
       socket.destroy();
       return;
     }
+    if (request.headers.origin !== undefined) this.#ownOrigins.add(request.headers.origin);
     const expiry = await this.#owner.sessionExpiry(token);
     if (expiry === undefined || (this.#instances.get(projectId)?.viewers.size ?? 0) >= MAX_VIEWERS) {
       socket.destroy();
@@ -315,7 +546,7 @@ export class ProjectBrowsers {
   }
 
   #attach(instance: Instance, ws: WebSocket, token: string, expiry: number): void {
-    const viewer: Viewer = { ws, token, ready: true, messages: 0, window: Date.now() };
+    const viewer: Viewer = { ws, token, expiry, ready: true, messages: 0, window: Date.now() };
     instance.viewers.add(viewer);
     if (instance.idle !== undefined) clearTimeout(instance.idle);
     instance.idle = undefined;
@@ -355,10 +586,10 @@ export class ProjectBrowsers {
       instance.pending++;
       const run = () => this.#handle(instance, viewer, message).finally(() => instance.pending--);
       // Revocation must overtake a slow page action; queued input still binds its original epoch.
-      if (message.type === "take") void run();
+      if (message.type === "take" || message.type === "mode") void run();
       else instance.inputs = instance.inputs.then(run);
     });
-    if (instance.controller === undefined) {
+    if (instance.controller === undefined && (instance.mode === "human" || instance.mode === "private-login")) {
       instance.controller = viewer;
       instance.epoch++;
     }
@@ -376,18 +607,51 @@ export class ProjectBrowsers {
       if (!viewer.ready || this.#closed || this.#retiring.has(instance.projectId) || instance.closing !== undefined)
         return;
       if (message.type === "take") {
-        instance.controller = viewer;
-        instance.epoch++;
-        this.#broadcast(instance);
+        this.#mode(instance, "human", viewer);
+        return;
+      }
+      if (message.type === "mode") {
+        if (message.epoch !== instance.epoch) throw new HttpError(409, "browser_stale", "Control changed; try again.");
+        this.#mode(instance, message.mode, viewer);
         return;
       }
       if (instance.controller !== viewer || message.epoch !== instance.epoch) {
         this.#send(viewer, { type: "error", message: "Control changed; take control before using the browser." });
         return;
       }
+      if (message.type === "handoff") {
+        const chat = await this.#chat?.(message.chat);
+        if (
+          chat?.project !== instance.projectId ||
+          !viewer.ready ||
+          instance.controller !== viewer ||
+          message.epoch !== instance.epoch ||
+          instance.modelBusy ||
+          message.url !== instance.active?.page.url()
+        )
+          throw new HttpError(409, "browser_stale", "The chat, page or control changed; review the handoff again.");
+        this.#modelUrl(message.url);
+        this.#mode(instance, "paused");
+        const expires = Math.min(Date.now() + AGENT_MS, viewer.expiry);
+        const timer = setTimeout(() => this.#mode(instance, "paused"), Math.max(0, expires - Date.now()));
+        timer.unref();
+        instance.mode = "agent";
+        instance.lease = {
+          conversation: chat.conversation,
+          chat: message.chat,
+          token: viewer.token,
+          expires,
+          left: AGENT_CALLS,
+          timer,
+        };
+        this.#broadcast(instance);
+        return;
+      }
       const control = () => {
         if (
           !viewer.ready ||
+          instance.modelBusy ||
+          (instance.mode !== "human" && instance.mode !== "private-login") ||
           instance.closing !== undefined ||
           instance.controller !== viewer ||
           message.epoch !== instance.epoch
@@ -414,7 +678,11 @@ export class ProjectBrowsers {
     }
   }
 
-  async #apply(instance: Instance, message: Exclude<Input, { type: "take" }>, control: () => void): Promise<void> {
+  async #apply(
+    instance: Instance,
+    message: Exclude<Input, { type: "take" | "mode" | "handoff" }>,
+    control: () => void,
+  ): Promise<void> {
     control();
     const page = instance.active?.page;
     switch (message.type) {
@@ -530,6 +798,10 @@ export class ProjectBrowsers {
       });
       const instance: Instance = {
         projectId,
+        id: randomUUID(),
+        mode: "human",
+        lease: undefined,
+        modelBusy: false,
         context,
         broker,
         run,
@@ -575,12 +847,13 @@ export class ProjectBrowsers {
       await page.close();
       return;
     }
-    const tab: Tab = { id: randomUUID(), page };
+    const tab: Tab = { id: randomUUID(), page, model: new BrowserPage(page) };
     instance.tabs.push(tab);
     const changed = () => this.#broadcast(instance);
     page.on("framenavigated", (frame) => frame === page.mainFrame() && changed());
     page.on("load", changed);
     page.on("dialog", (dialog) => {
+      if (instance.mode === "agent") this.#mode(instance, "paused");
       if (instance.dialog !== undefined) {
         void dialog.dismiss().catch(() => {});
         return;
@@ -603,6 +876,7 @@ export class ProjectBrowsers {
       }
       if (instance.active === tab) {
         instance.active = undefined;
+        instance.frame = undefined;
         const next = instance.tabs.at(-1);
         if (next !== undefined) void this.#activate(instance, next).catch(() => {});
       }
@@ -643,6 +917,7 @@ export class ProjectBrowsers {
 
   async #shutdown(instance: Instance): Promise<void> {
     instance.closing ??= (async () => {
+      this.#mode(instance, "paused");
       instance.controller = undefined;
       instance.epoch++;
       instance.frameEpoch++;
@@ -664,6 +939,13 @@ export class ProjectBrowsers {
   #broadcast(instance: Instance): void {
     const state = {
       type: "state",
+      session: instance.id,
+      mode: instance.mode,
+      busy: instance.modelBusy,
+      agent:
+        instance.lease === undefined
+          ? null
+          : { chat: instance.lease.chat, expires: instance.lease.expires, remaining: instance.lease.left },
       epoch: instance.epoch,
       viewport: instance.viewport,
       tabs: instance.tabs.map((tab) => ({
@@ -680,7 +962,14 @@ export class ProjectBrowsers {
               defaultValue: instance.dialog.dialog.defaultValue().slice(0, 2000),
             },
     };
-    for (const viewer of instance.viewers) this.#send(viewer, { ...state, control: viewer === instance.controller });
+    for (const viewer of instance.viewers)
+      this.#send(viewer, {
+        ...state,
+        control:
+          viewer === instance.controller &&
+          !instance.modelBusy &&
+          (instance.mode === "human" || instance.mode === "private-login"),
+      });
     if (!instance.titlesPending && instance.viewers.size > 0 && instance.closing === undefined)
       void this.#titles(instance);
   }

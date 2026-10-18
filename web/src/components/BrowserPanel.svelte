@@ -5,11 +5,14 @@
   import { viewport as layout } from "../lib/state.svelte.ts";
   import ConfirmRemoval from "./ConfirmRemoval.svelte";
 
-  let { project }: { project: Project } = $props();
+  let { project, chatId }: { project: Project; chatId: string } = $props();
   type Tab = { id: string; url: string; active: boolean };
   type View = {
     epoch: number;
     control: boolean;
+    mode: "paused" | "human" | "private-login" | "agent";
+    busy: boolean;
+    agent: { chat: string; expires: number; remaining: number } | null;
     viewport: { width: number; height: number };
     tabs: Tab[];
     dialog: { type: string; message: string; defaultValue: string } | null;
@@ -44,6 +47,7 @@
   let typing = $state("");
   let answer = $state("");
   let clearing = $state(false);
+  let handoff: { epoch: number; url: string; chat: string } | undefined = $state();
   let busy = $state(false);
   let addressFocused = false;
   let socket: WebSocket | undefined;
@@ -67,6 +71,7 @@
     frame = undefined;
     view = undefined;
     titles = {};
+    handoff = undefined;
   }
 
   async function check() {
@@ -306,10 +311,15 @@
       >
     </div>
     <div class="status">
+      {#if view?.mode === "private-login"}<span class="pill wa">Private login · only you</span>{/if}
       {#if view?.control}<span class="pill ok">You control this browser</span>
-      {:else}<span class="pill">View only</span><button class="b sm" onclick={() => send({ type: "take" })}
-          >Take control</button
-        >{/if}
+      {:else}<span class="pill"
+          >{view?.mode === "agent"
+            ? "Pal controls this browser"
+            : view?.mode === "paused"
+              ? "Paused"
+              : "View only"}</span
+        ><button class="b sm" onclick={() => send({ type: "take" })}>Take control</button>{/if}
       <label class="size"
         ><span class="sr">Page size</span>
         <select
@@ -326,9 +336,33 @@
         </select></label
       >
     </div>
+    <div class="row">
+      <button class="b sm q" disabled={view === undefined} onclick={() => send({ type: "mode", mode: "paused" })}
+        >Pause</button
+      >
+      <button class="b sm q" disabled={view === undefined} onclick={() => send({ type: "mode", mode: "private-login" })}
+        >Private login</button
+      >
+      <button
+        class="b sm"
+        disabled={!view?.control || active === undefined || !active.url.startsWith("http")}
+        onclick={() => {
+          if (view !== undefined && active !== undefined)
+            handoff = { epoch: view.epoch, url: active.url, chat: chatId };
+        }}>Hand to Pal…</button
+      >
+    </div>
+    {#if view?.busy}<p class="fine" role="status">
+        Finishing a browser action. Inspect the page before continuing.
+      </p>{/if}
+    {#if view?.agent}<p class="fine" role="status">
+        This chat grant: {view.agent.remaining} calls left, expires {new Date(view.agent.expires).toLocaleTimeString()}.
+        Each action still needs approval.
+      </p>{/if}
     <p class="fine">
-      Separate profile for this project; public sites only, local and private network addresses are blocked. Frames are
-      shown here only, never saved or given to the model. Pal's agent can't use this browser.
+      Separate project profile; public sites only. Frames stay here, never saved or sent to the model. Sign in
+      privately, then explicitly hand back control to share visible page text with this chat. Passwords and form values
+      are not shared.
     </p>
     {#if view?.dialog}
       <div class="callout wa" role="alertdialog" aria-label="Page dialog">
@@ -403,6 +437,21 @@
     </div>
   {/if}
 </div>
+
+{#if handoff !== undefined}
+  <ConfirmRemoval
+    title="Hand browser to Pal?"
+    description="Allow this chat’s selected model to read visible page text and request browser actions using this project’s site logins. The grant lasts five minutes or 40 calls. Every browser action still asks for approval, even in Full access. Finish signing in privately first. Pause or Take control revokes future calls; an action already sent may have completed."
+    detail={`Chat: ${handoff.chat}\nPage: ${handoff.url}`}
+    confirmLabel="Hand to Pal"
+    onConfirm={async () => {
+      if (handoff !== undefined && socket?.readyState === WebSocket.OPEN)
+        socket.send(JSON.stringify({ type: "handoff", ...handoff }));
+      handoff = undefined;
+    }}
+    onCancel={() => (handoff = undefined)}
+  />
+{/if}
 
 {#if clearing}
   <ConfirmRemoval

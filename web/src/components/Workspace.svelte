@@ -217,7 +217,7 @@
                   {:else if panelView === "Browser"}
                     {#await browserPanel()}<p role="status">Loading browser…</p>
                     {:then { default: BrowserPanel }}
-                      {#key located.project.id}<BrowserPanel project={located.project} />{/key}
+                      {#key located.chat.id}<BrowserPanel project={located.project} chatId={located.chat.id} />{/key}
                     {:catch failure}<p role="alert">Couldn't load the browser: {String(failure)}</p>{/await}
                   {:else if panelView === "Context"}
                     {#await contextPanel()}<p role="status">Loading context…</p>

@@ -18,6 +18,7 @@ import { StdioPrograms } from "../pi/mcp-stdio.ts";
 import { loadMasterKey, SqliteCredentialStore } from "../storage/credentials.ts";
 import { openStore, type Store } from "../storage/store.ts";
 import { CommandApprovals } from "./approvals.ts";
+import { BROWSER_NAMESPACE, browserTools } from "../pi/browser-tools.ts";
 import { type BrowserRuntime, browserRuntime, ProjectBrowsers } from "./browser.ts";
 import { ChatService } from "./chats.ts";
 import { ChatContext } from "./context.ts";
@@ -182,10 +183,11 @@ export async function openPal(options: PalOptions, context: Context): Promise<Pa
           name.startsWith(FILES_NAMESPACE.prefix) ||
           name === "shell_run" ||
           name === "memory_search" ||
+          (name.startsWith(BROWSER_NAMESPACE.prefix) && browsers?.allows(conversation) === true) ||
           (await mcp?.allowsInConversation(conversation, name)) === true
         );
       },
-      namespaces: [FILES_NAMESPACE, SHELL_NAMESPACE, MEMORY_NAMESPACE],
+      namespaces: [FILES_NAMESPACE, SHELL_NAMESPACE, MEMORY_NAMESPACE, BROWSER_NAMESPACE],
     });
     sandbox = codemode.sandbox;
     const registry = createRegistry();
@@ -203,13 +205,16 @@ export async function openPal(options: PalOptions, context: Context): Promise<Pa
       }),
     );
     registry.install(shellTools({ root: (conversation) => workspaceRoot(conversation, true), commands, locks }));
+    registry.install(browserTools(() => browsers));
     const commandApprovals = new CommandApprovals({
       database,
       root: (conversation) => workspaceRoot(conversation, true),
       task: async (id, ctx) => harness?.getTask(id, ctx),
+      browser: async (conversation, args) => browsers?.approval(conversation, args),
       ...(options.approvalTtlMs === undefined ? {} : { ttlMs: options.approvalTtlMs }),
     });
     approvals = commandApprovals;
+    await commandApprovals.expire();
     // After the grant policy, so a refused call is never offered for approval.
     registry.install(commandApprovals.extension);
     registry.install(
@@ -225,7 +230,7 @@ export async function openPal(options: PalOptions, context: Context): Promise<Pa
       stdio: new StdioPrograms([options.dataRoot, options.installRoot, "/nix/store"]),
       projectId: async (conversation) => (await projectFor(conversation))?.id,
       codemode: (namespaces) =>
-        codemode.withNamespaces([FILES_NAMESPACE, SHELL_NAMESPACE, MEMORY_NAMESPACE, ...namespaces]),
+        codemode.withNamespaces([FILES_NAMESPACE, SHELL_NAMESPACE, MEMORY_NAMESPACE, BROWSER_NAMESPACE, ...namespaces]),
     });
     mcp = connections;
     const chatContext = new ChatContext(
@@ -270,6 +275,11 @@ export async function openPal(options: PalOptions, context: Context): Promise<Pa
       dataRoot: options.dataRoot,
       projects: openedProjects,
       owner,
+      chat: async (id) =>
+        database.get<{ project: string; conversation: ConversationId }>(
+          "SELECT c.project_id AS project, c.conversation_id AS conversation FROM pal_chats c JOIN pal_projects p ON p.id = c.project_id WHERE c.id = ? AND c.deleted_at IS NULL AND c.state = 'ready' AND p.removed_at IS NULL AND p.state = 'ready'",
+          id,
+        ),
       runtime: options.browser === undefined ? browserRuntime() : options.browser.runtime,
       ...(options.browser?.egress === undefined ? {} : { egress: options.browser.egress }),
     });

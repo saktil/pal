@@ -23,6 +23,7 @@ export type CommandApproval = {
   readonly id: string;
   /** The assistant entry whose script asked, so the card sits under that turn. */
   readonly assistant: number | null;
+  readonly tool: "shell_run" | "browser_act";
   readonly command: string;
   readonly cwd: string;
   readonly timeout: number;
@@ -52,6 +53,7 @@ export const ApprovalDecision = Type.Object(
 type Request = {
   readonly conversation: ConversationId;
   readonly task: TaskId;
+  readonly tool: "shell_run" | "browser_act";
   readonly command: string;
   readonly cwd: string | undefined;
   readonly timeout: number;
@@ -64,6 +66,7 @@ type Row = {
   id: string;
   chat_id: string;
   assistant: number | null;
+  tool: "shell_run" | "browser_act";
   command: string;
   cwd: string;
   timeout: number;
@@ -85,6 +88,12 @@ export class CommandApprovals {
   readonly #database: SqliteDatabase;
   readonly #root: (conversation: ConversationId) => Promise<string | undefined>;
   readonly #task: (id: TaskId, context: Context) => Promise<TaskRecord<JsonValue, JsonValue, unknown> | undefined>;
+  readonly #browser:
+    | ((
+        conversation: ConversationId,
+        args: unknown,
+      ) => Promise<{ command: string; cwd: string; timeout: number } | undefined>)
+    | undefined;
   readonly #now: () => number;
   readonly #ttl: number;
   readonly #waiters = new Map<string, Set<() => void>>();
@@ -96,12 +105,17 @@ export class CommandApprovals {
     /** The conversation's current writable working folder; undefined when it has none. */
     root: (conversation: ConversationId) => Promise<string | undefined>;
     task: (id: TaskId, context: Context) => Promise<TaskRecord<JsonValue, JsonValue, unknown> | undefined>;
+    browser?: (
+      conversation: ConversationId,
+      args: unknown,
+    ) => Promise<{ command: string; cwd: string; timeout: number } | undefined>;
     now?: () => number;
     ttlMs?: number;
   }) {
     this.#database = options.database;
     this.#root = options.root;
     this.#task = options.task;
+    this.#browser = options.browser;
     this.#now = options.now ?? Date.now;
     this.#ttl = Math.min(options.ttlMs ?? APPROVAL_TTL_MS, APPROVAL_TTL_MS);
     this.extension = defineExtension({
@@ -109,7 +123,7 @@ export class CommandApprovals {
       hooks: [
         hook(ToolTask, {
           beforeTool: async (call, api, context) =>
-            call.name === "shell_run" ? this.#gate(call, api, context) : undefined,
+            call.name === "shell_run" || call.name === "browser_act" ? this.#gate(call, api, context) : undefined,
         }),
       ],
     });
@@ -139,7 +153,17 @@ export class CommandApprovals {
     this.#changed(chatId);
   }
 
+  async expire(): Promise<void> {
+    await this.#database.run(
+      "UPDATE pal_command_approvals SET state = 'expired', decided_at = ? WHERE state = 'pending' AND expires_at <= ?",
+      this.#now(),
+      this.#now(),
+    );
+    for (const id of this.#waiters.keys()) this.#wake(id);
+  }
+
   async view(chatId: string): Promise<ApprovalView> {
+    await this.expire();
     const mode = await this.mode(chatId);
     const rows = await this.#database.all<Row>(
       "SELECT * FROM pal_command_approvals WHERE chat_id = ? ORDER BY created_at DESC, rowid DESC LIMIT ?",
@@ -196,24 +220,53 @@ export class CommandApprovals {
   async #gate(call: ToolHookCall, api: HookApi, context: Context): Promise<{ block: string } | undefined> {
     const chat = await this.#chat(api.conversationId);
     if (chat === undefined) return { block: "this conversation has no active chat" };
-    if (!Value.Check(ShellArguments, call.arguments)) return { block: "invalid shell_run arguments" };
+    const browser = call.name === "browser_act";
+    let target: { command: string; cwd: string | undefined; timeout: number } | undefined;
+    if (browser) {
+      try {
+        target = await this.#browser?.(api.conversationId, call.arguments);
+      } catch {
+        return { block: "Browser control or page changed; inspect again. Nothing was run." };
+      }
+    } else if (Value.Check(ShellArguments, call.arguments)) {
+      target = {
+        command: call.arguments.command,
+        cwd: await this.#cwd(api.conversationId),
+        timeout: call.arguments.timeout ?? 120,
+      };
+    }
+    if (target === undefined) return { block: "invalid arguments or missing browser authority; nothing was run" };
     const request: Request = {
       conversation: api.conversationId,
       task: api.taskId,
-      command: call.arguments.command,
-      cwd: await this.#cwd(api.conversationId),
-      timeout: call.arguments.timeout ?? 120,
+      tool: browser ? "browser_act" : "shell_run",
+      ...target,
     };
     // A request that was already asked keeps its answer whatever the mode is now: switching to Full access never
     // approves a pending request.
     let row = await this.#database.get<Row>("SELECT * FROM pal_command_approvals WHERE task_id = ?", api.taskId);
     if (row === undefined) {
-      if (chat.mode === "full") return undefined;
+      if (!browser && chat.mode === "full") return undefined;
       const asked = await this.#ask(chat.id, call, request, context);
       if ("refused" in asked) return { block: asked.refused };
       row = asked.row;
     }
-    return this.#verdict(await this.#settled(row.id, context), request);
+    const settled = await this.#settled(row.id, context);
+    if (browser) {
+      try {
+        const current = await this.#browser?.(api.conversationId, call.arguments);
+        if (
+          current === undefined ||
+          current.command !== request.command ||
+          current.cwd !== request.cwd ||
+          current.timeout !== request.timeout
+        )
+          return { block: "Browser authority changed while waiting; nothing was run" };
+      } catch {
+        return { block: "Browser authority changed while waiting; nothing was run" };
+      }
+    }
+    return this.#verdict(settled, request);
   }
 
   /** Store a new pending request for the owner, or the reason none may be added. */
@@ -290,6 +343,7 @@ export class CommandApprovals {
         id: randomUUID(),
         chat_id: chatId,
         assistant: request.assistant,
+        tool: request.tool,
         command: request.command,
         cwd: request.cwd,
         timeout: request.timeout,
@@ -300,12 +354,13 @@ export class CommandApprovals {
         decided_at: null,
       };
       await tx.run(
-        "INSERT INTO pal_command_approvals (id, chat_id, task_id, call_id, assistant, command, cwd, timeout, digest, state, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)",
+        "INSERT INTO pal_command_approvals (id, chat_id, task_id, call_id, assistant, tool, command, cwd, timeout, digest, state, created_at, expires_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)",
         row.id,
         chatId,
         request.task,
         callId,
         row.assistant,
+        row.tool,
         row.command,
         row.cwd,
         row.timeout,
@@ -380,7 +435,16 @@ export class CommandApprovals {
 function digest(request: Request & { cwd: string }): string {
   const { conversation, task, command, cwd, timeout } = request;
   return createHash("sha256")
-    .update(JSON.stringify([conversation, task, command, cwd, timeout]))
+    .update(
+      JSON.stringify([
+        conversation,
+        task,
+        command,
+        cwd,
+        timeout,
+        ...(request.tool === "browser_act" ? ["browser_act"] : []),
+      ]),
+    )
     .digest("hex");
 }
 
@@ -388,6 +452,7 @@ function present(row: Row): CommandApproval {
   return {
     id: row.id,
     assistant: row.assistant,
+    tool: row.tool,
     command: row.command,
     cwd: row.cwd,
     timeout: row.timeout,

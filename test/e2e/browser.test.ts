@@ -1,14 +1,16 @@
 // The owner's sandboxed browser with the packaged runtime: sandbox and egress isolation, owner-only control, tabs,
 // input, dialogs, profile persistence and limits. Run via `nix build .#checks.<system>.e2e`, which provides it.
-import { spawnSync } from "node:child_process";
+import { spawn, spawnSync } from "node:child_process";
 import { once } from "node:events";
 import { mkdir, mkdtemp, readdir, readFile, readlink, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { createInterface } from "node:readline";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
-import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it } from "vitest";
+import { createModels, fauxAssistantMessage, fauxProvider, fauxToolCall } from "@earendil-works/pi-ai";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { WebSocket } from "ws";
 import { createApi } from "../../src/core/api.ts";
 import { openPal, type Pal } from "../../src/core/app.ts";
@@ -33,10 +35,30 @@ beforeAll(async () => {
   const server = createServer((request, response) => {
     const path = request.url ?? "/";
     requests.push({ path, cookie: request.headers.cookie ?? "" });
+    if (path.startsWith("/external-effect/")) return;
     response.setHeader("content-type", "text/html");
     if (path === "/login") response.setHeader("set-cookie", "session=fixture; Max-Age=3600; Path=/; HttpOnly");
     if (path === "/slow") setTimeout(() => response.end("<title>Slow fixture</title>"), 1500);
     else if (path === "/alert") response.end("<title>Alert</title><script>alert('hi from the page')</script>");
+    else if (/^\/crash-page\/crash-\d+$/.test(path))
+      response.end(
+        `<button onclick="fetch('/external-effect/${path.split("/").at(-1)}'); const until = performance.now() + 10000; while (performance.now() < until) {}">External effect</button>` +
+          '<script>document.title="Crash fixture"</script>',
+      );
+    else if (path.startsWith("/agent"))
+      response.end(
+        "<title>Public fixture</title><p>Visible fixture text</p><p hidden>hidden-canary</p>" +
+          "<button onclick=\"fetch('/agent-clicked')\">Public action</button>" +
+          '<input name="query" value="input-canary"><textarea name="note">textarea-canary</textarea>' +
+          '<script>String.prototype.slice = () => "prototype-canary"; fetch("/agent-ready")</script>',
+      );
+    else if (path.startsWith("/private-page"))
+      response.end(
+        "<title>private-title-canary</title><p>private-text-canary</p>" +
+          (path.endsWith("otp")
+            ? '<input autocomplete="one-time-code" value="otp-canary">'
+            : '<input type="password" value="password-canary">'),
+      );
     else
       response.end(
         `<title>Fixture ${path}</title><style>body{margin:0}</style>` +
@@ -48,7 +70,10 @@ beforeAll(async () => {
   server.listen(0, "127.0.0.1");
   await once(server, "listening");
   site = (server.address() as AddressInfo).port;
-  cleanups.push(() => new Promise((resolve) => server.close(resolve)));
+  cleanups.push(() => {
+    server.closeAllConnections();
+    return new Promise((resolve) => server.close(resolve));
+  });
 });
 let checkpoint: number;
 beforeEach(() => {
@@ -104,7 +129,16 @@ async function start(options: { runtime?: BrowserRuntime; egress?: boolean } = {
   return { pal, base, token, project, dataRoot };
 }
 
-type State = { epoch: number; control: boolean; tabs: { id: string; url: string; active: boolean }[]; dialog: unknown };
+type State = {
+  epoch: number;
+  session: string;
+  mode: "paused" | "human" | "private-login" | "agent";
+  busy: boolean;
+  agent: { chat: string; expires: number; remaining: number } | null;
+  control: boolean;
+  tabs: { id: string; url: string; active: boolean }[];
+  dialog: unknown;
+};
 async function viewer(base: string, projectId: string, token: string | undefined, origin = base) {
   const ws = new WebSocket(`${base.replace("http", "ws")}/api/projects/${projectId}/browser/socket`, {
     headers: { origin, ...(token === undefined ? {} : { cookie: `pal_session=${token}` }) },
@@ -143,6 +177,277 @@ async function viewer(base: string, projectId: string, token: string | undefined
   };
 }
 const seen = (path: string) => requests.some((request) => request.path === path);
+
+async function agentFixture() {
+  const fixture = await start();
+  const { pal, base, project, token } = fixture;
+  const chat = await pal.chats.createChat("browser-agent-chat", { projectId: project.id }, context);
+  const client = await viewer(base, project.id, token);
+  await until(client.state, (state) => state?.control === true, "owner control");
+  const visit = async (path = "/agent") => {
+    const url = `http://127.0.0.1:${site}${path}`;
+    const before = requests.length;
+    client.send({ type: "navigate", url });
+    await until(() => requests.slice(before).some((request) => request.path === path), Boolean, "fixture visit");
+    await until(
+      client.state,
+      (state) => state?.tabs.some((tab) => tab.active && tab.url === url) === true,
+      "active URL",
+    );
+    if (path.startsWith("/agent"))
+      await until(
+        () => requests.slice(before).some((request) => request.path === "/agent-ready"),
+        Boolean,
+        "parsed fixture",
+      );
+    return url;
+  };
+  const handoff = async () => {
+    const url = client.state()?.tabs.find((tab) => tab.active)?.url;
+    client.send({ type: "handoff", chat: chat.id, url });
+    await until(client.state, (state) => state?.mode === "agent", "agent handoff");
+  };
+  const conversation = await pal.harness.conversation(chat.conversationId, context);
+  if (conversation === undefined) throw new Error("missing conversation");
+  let inputs = 0;
+  const run = async (code: string) => {
+    const faux = fauxProvider();
+    (pal.models as ReturnType<typeof createModels>).setProvider(faux.provider);
+    faux.setResponses([
+      fauxAssistantMessage(fauxToolCall("codemode", { code }), { stopReason: "toolUse" }),
+      fauxAssistantMessage("done"),
+    ]);
+    const model = faux.getModel();
+    await conversation.configure({ model: { provider: model.provider, modelId: model.id } }, context);
+    await pal.chats.submit(chat.id, `browser-input-${++inputs}`, { text: "run fixture" }, context);
+  };
+  const results = async () => {
+    await conversation.waitForIdle(context);
+    return JSON.stringify((await conversation.context(context)).messages);
+  };
+  const waiting = async () => {
+    for (let i = 0; i < 400; i++) {
+      const pending = (await pal.approvals.view(chat.id)).approvals.find((item) => item.state === "pending");
+      if (pending !== undefined) return pending;
+      await new Promise((resolve) => setTimeout(resolve, 10));
+    }
+    throw new Error(`no browser approval: ${JSON.stringify((await conversation.context(context)).messages)}`);
+  };
+  await visit();
+  return { ...fixture, chat, client, visit, handoff, run, results, waiting, conversation };
+}
+
+describe("agent browser", () => {
+  it("requires explicit per-chat control and excludes owner inputs, hidden text and page prototypes", async () => {
+    const { pal, project, chat, client, handoff, conversation } = await agentFixture();
+    const other = await pal.chats.createChat("browser-other-chat", { projectId: project.id }, context);
+    expect((await conversation.agent(context)).tools.map((tool) => tool.name)).toEqual(["codemode"]);
+    expect(pal.browsers.allows(chat.conversationId)).toBe(false);
+    await expect(pal.browsers.observe(chat.conversationId)).rejects.toMatchObject({ code: "browser_not_granted" });
+    client.send({ type: "mode", mode: "private-login" });
+    await until(client.state, (state) => state?.mode === "private-login" && state.control, "private owner control");
+    await handoff();
+    await expect(pal.browsers.observe(other.conversationId)).rejects.toMatchObject({ code: "browser_not_granted" });
+    const observation = await pal.browsers.observe(chat.conversationId);
+    expect(observation.text).toContain("Visible fixture text");
+    expect(observation.targets).toEqual(expect.arrayContaining([expect.objectContaining({ label: "Public action" })]));
+    expect(JSON.stringify(observation)).not.toMatch(/hidden-canary|input-canary|textarea-canary|prototype-canary/);
+    const epoch = observation.epoch;
+    client.send({ type: "take" });
+    await until(client.state, (state) => state?.mode === "human" && state.control, "revocation");
+    expect(client.state()?.epoch).toBeGreaterThan(epoch);
+    expect(() => pal.browsers.assertEpoch(chat.conversationId, observation.session, epoch)).toThrow(
+      /authority changed/,
+    );
+    client.ws.send(JSON.stringify({ type: "mode", mode: "paused", epoch }));
+    await until(
+      () => client.errors,
+      (errors) => errors.some((error) => /changed|stale/.test(error)),
+      "stale epoch refusal",
+    );
+    expect(client.state()?.mode).toBe("human");
+  });
+
+  it("never exposes login content, even when handed to the agent", async () => {
+    const { pal, chat, client, visit, handoff } = await agentFixture();
+    for (const path of ["/private-page", "/private-page?otp"]) {
+      await visit(path);
+      await handoff();
+      let failure: unknown;
+      try {
+        await pal.browsers.observe(chat.conversationId);
+      } catch (error) {
+        failure = error;
+      }
+      expect(failure).toMatchObject({ code: "browser_owner_needed" });
+      expect(String(failure)).not.toContain("canary");
+      await until(client.state, (state) => state?.mode === "private-login" && !state.control, "private handback");
+      expect(pal.browsers.allows(chat.conversationId)).toBe(false);
+      client.send({ type: "take" });
+      await until(client.state, (state) => state?.control === true, "owner retakes");
+    }
+  });
+
+  it("uses native Code Mode and asks for the exact action even in Full access", async () => {
+    const { pal, chat, client, handoff, run, results, waiting } = await agentFixture();
+    await handoff();
+    await pal.approvals.setMode(chat.id, "full");
+    const before = requests.length;
+    const code =
+      'const page = await tools.browser_observe({}); const target = page.targets.find(t => t.label === "Public action"); return await tools.browser_act({session:page.session,epoch:page.epoch,observation:page.observation,action:{type:"click",target:target.id}});';
+    await run(code);
+    const pending = await waiting();
+    expect(pending).toMatchObject({ tool: "browser_act", state: "pending", cwd: `http://127.0.0.1:${site}/agent` });
+    expect(JSON.parse(pending.command)).toMatchObject({
+      action: { type: "click", target: expect.stringMatching(/^t\d+$/) },
+    });
+    expect(requests.slice(before).some((request) => request.path === "/agent-clicked")).toBe(false);
+    await expect(pal.approvals.decide(chat.id, pending.id, "approve", "0".repeat(64))).rejects.toMatchObject({
+      code: "approval_stale",
+    });
+    await pal.approvals.decide(chat.id, pending.id, "approve", pending.digest);
+    const output = await results();
+    await until(
+      () => requests.slice(before).filter((request) => request.path === "/agent-clicked").length,
+      (count) => count === 1,
+      "approved click",
+    );
+    expect(output).not.toMatch(/hidden-canary|input-canary|textarea-canary|prototype-canary/);
+    expect(client.state()?.mode).toBe("agent");
+  });
+
+  it("denies and stops pending actions, and revalidates authority after approval", async () => {
+    const { pal, chat, client, handoff, run, results, waiting, conversation } = await agentFixture();
+    await handoff();
+    const before = requests.length;
+    const code =
+      'const page = await tools.browser_observe({}); return await tools.browser_act({session:page.session,epoch:page.epoch,observation:page.observation,action:{type:"click",target:page.targets[0].id}});';
+    await run(code);
+    const denied = await waiting();
+    await pal.approvals.decide(chat.id, denied.id, "deny", denied.digest);
+    expect(await results()).toContain("owner denied");
+    await run(code);
+    const stopped = await waiting();
+    await conversation.abort(context);
+    await results();
+    await expect(pal.approvals.decide(chat.id, stopped.id, "approve", stopped.digest)).rejects.toMatchObject({
+      code: "approval_stale",
+    });
+    await run(code);
+    const revoked = await waiting();
+    client.send({ type: "take" });
+    await until(client.state, (state) => state?.mode === "human" && state.control, "owner takeover");
+    await pal.approvals.decide(chat.id, revoked.id, "approve", revoked.digest);
+    expect(await results()).toContain("authority changed while waiting");
+    expect(requests.slice(before).some((request) => request.path === "/agent-clicked")).toBe(false);
+  });
+
+  it("revokes an in-flight action before owner input or model delivery", async () => {
+    const { pal, chat, client, handoff } = await agentFixture();
+    await handoff();
+    const page = await pal.browsers.observe(chat.conversationId);
+    const controller = new AbortController();
+    const path = `/external-effect/revocation-${Date.now()}`;
+    const work = pal.browsers
+      .act(
+        chat.conversationId,
+        {
+          session: page.session,
+          epoch: page.epoch,
+          observation: page.observation,
+          action: { type: "navigate", url: `http://127.0.0.1:${site}${path}` },
+        },
+        controller.signal,
+      )
+      .then(
+        () => "delivered",
+        (error: unknown) => String(error),
+      );
+    await until(() => seen(path), Boolean, "external effect before receipt");
+    client.send({ type: "take" });
+    await until(client.state, (state) => state?.mode === "human" && state.busy && !state.control, "busy handback");
+    client.send({ type: "text", text: "owner-private-canary" });
+    await until(
+      () => client.errors,
+      (errors) => errors.some((error) => error.includes("Control changed")),
+      "private input held",
+    );
+    controller.abort();
+    expect(await work).not.toBe("delivered");
+    expect(requests.filter((request) => request.path === path)).toHaveLength(1);
+    expect(pal.browsers.allows(chat.conversationId)).toBe(false);
+  });
+
+  it("does not replay an externally completed action after SIGKILL or restore its grant", async () => {
+    const dataRoot = await realpath(await mkdtemp(join(tmpdir(), "pal-browser-kill-")));
+    cleanups.push(() => rm(dataRoot, { recursive: true, force: true }));
+    const path = `/external-effect/crash-${Date.now()}`;
+    const child = spawn(
+      process.execPath,
+      [join(import.meta.dirname, "../fixtures/browser-child.ts"), dataRoot, String(site), path],
+      {
+        stdio: ["ignore", "pipe", "inherit"],
+      },
+    );
+    cleanups.push(async () => {
+      if (child.exitCode === null && child.signalCode === null) {
+        child.kill("SIGKILL");
+        await once(child, "exit");
+      }
+    });
+    const lines = createInterface({ input: child.stdout });
+    const [line] = await Promise.race([
+      once(lines, "line"),
+      once(child, "exit").then(() => {
+        throw new Error("browser fixture exited before ready");
+      }),
+    ]);
+    const ready = JSON.parse(String(line)) as { chat: string; project: string };
+    await until(() => seen(path), Boolean, "committed external effect");
+    child.kill("SIGKILL");
+    await once(child, "exit");
+    lines.close();
+    const pal = await openPal({ dataRoot, installRoot: "/nonexistent-install" }, context);
+    cleanups.push(() => pal.close());
+    const faux = fauxProvider();
+    (pal.models as ReturnType<typeof createModels>).setProvider(faux.provider);
+    faux.setResponses([fauxAssistantMessage("done")]);
+    await pal.harness.waitForIdle(context);
+    const chat = await pal.chats.get(ready.chat);
+    if (chat === undefined) throw new Error("chat lost after crash");
+    const conversation = await pal.harness.conversation(chat.conversationId, context);
+    const output = JSON.stringify((await conversation?.context(context))?.messages);
+    expect(output).toMatch(/interrupted|unknown/i);
+    expect(requests.filter((request) => request.path === path)).toHaveLength(1);
+    expect(pal.browsers.allows(chat.conversationId)).toBe(false);
+    expect((await pal.browsers.status(ready.project)).running).toBe(false);
+  });
+
+  it("bounds handoffs by call count and expiry, and never automatically restores a grant", async () => {
+    const { pal, project, chat, client, handoff } = await agentFixture();
+    await handoff();
+    for (let i = 0; i < 40; i++) {
+      const result = await pal.browsers.observe(chat.conversationId);
+      expect(result.remaining).toBe(39 - i);
+      pal.browsers.assertEpoch(chat.conversationId, result.session, result.epoch);
+    }
+    expect(pal.browsers.allows(chat.conversationId)).toBe(false);
+    await expect(pal.browsers.observe(chat.conversationId)).rejects.toMatchObject({ code: "browser_not_granted" });
+    client.send({ type: "take" });
+    await until(client.state, (state) => state?.control === true, "retake control");
+    await handoff();
+    const now = Date.now();
+    const clock = vi.spyOn(Date, "now").mockReturnValue(now + 301_000);
+    try {
+      expect(pal.browsers.allows(chat.conversationId)).toBe(false);
+      await expect(pal.browsers.observe(chat.conversationId)).rejects.toMatchObject({ code: "browser_not_granted" });
+    } finally {
+      clock.mockRestore();
+    }
+    await pal.browsers.stop(project.id);
+    expect(pal.browsers.allows(chat.conversationId)).toBe(false);
+  });
+});
 
 describe("owner browser", () => {
   it("runs in a sandbox with no network and no view of Pal data", async () => {
@@ -214,8 +519,9 @@ describe("owner browser", () => {
     const owner = await viewer(base, project.id, token);
     expect(owner.opened, owner.errors.join("\n")).toBe(true);
     await until(owner.state, (state) => state?.control === true && state.tabs.length === 1, "control");
+    const navigation = requests.length;
     owner.send({ type: "navigate", url: `http://127.0.0.1:${site}/` });
-    await until(() => seen("/"), Boolean, "page load");
+    await until(() => requests.slice(navigation).some((request) => request.path === "/ready/"), Boolean, "page parsed");
     await until(
       () => owner.frames.at(-1),
       (frame) => frame?.[0] === 0xff && frame[1] === 0xd8,

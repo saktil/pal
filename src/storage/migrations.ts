@@ -329,6 +329,15 @@ export const MIGRATIONS: readonly Migration[] = [
       await transaction.exec("CREATE INDEX pal_command_approvals_chat ON pal_command_approvals (chat_id, created_at)");
     },
   },
+  {
+    version: 20,
+    name: "browser_action_approvals",
+    up: async (transaction) => {
+      await transaction.exec(
+        "ALTER TABLE pal_command_approvals ADD COLUMN tool TEXT NOT NULL DEFAULT 'shell_run' CHECK (tool IN ('shell_run', 'browser_act'))",
+      );
+    },
+  },
 ];
 
 /**

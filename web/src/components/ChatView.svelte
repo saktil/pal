@@ -367,9 +367,16 @@
     expired: "Approval expired",
     stopped: "Approval request ended",
   } as const;
+  const browserHeads = {
+    ...heads,
+    pending: "Approval needed for a browser action",
+    approved: "Browser action approved",
+    denied: "Browser action denied",
+  };
   function outcome(approval: CommandApproval): string {
     const at = time(approval.decidedAt ?? undefined);
-    if (approval.state === "approved") return `Approved once by you at ${at}. Later commands ask again.`;
+    if (approval.state === "approved")
+      return `Approved once by you at ${at}. Later ${approval.tool === "browser_act" ? "browser actions" : "commands"} ask again.`;
     if (approval.state === "denied") return `Denied by you at ${at}. Nothing was run.`;
     if (approval.state === "expired") return "No answer before it expired. Nothing was run.";
     return "The run stopped before you answered. Nothing was run.";
@@ -463,12 +470,19 @@
           {@const approval = item.approval}
           <div class="appr" class:settled={approval.state !== "pending"} role="group" aria-label="Approval request">
             <div class="apph">
-              <Icon name={approval.state === "pending" ? "warn" : "term"} />{heads[approval.state]}
+              <Icon name={approval.state === "pending" ? "warn" : "term"} />{(approval.tool === "browser_act"
+                ? browserHeads
+                : heads)[approval.state]}
             </div>
             <code class="mono cmd">{approval.command}</code>
             <p class="why">
-              In <span class="mono">{approval.cwd}</span> · timeout {approval.timeout} s · runs as the Pal host user, not
-              in a sandbox.
+              {#if approval.tool === "browser_act"}
+                Browser page <span class="mono">{approval.cwd}</span> · timeout {approval.timeout} s · exact action in the
+                sandboxed project browser. Inspect after any interruption.
+              {:else}
+                In <span class="mono">{approval.cwd}</span> · timeout {approval.timeout} s · runs as the Pal host user, not
+                in a sandbox.
+              {/if}
             </p>
             {#if approval.state === "pending"}
               <p class="why">

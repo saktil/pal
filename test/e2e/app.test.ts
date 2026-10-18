@@ -171,7 +171,8 @@ describe("Pal in a browser", () => {
     await page.getByRole("button", { name: "Choose model" }).click();
     await page.getByLabel("Message").fill("reason carefully");
     await page.getByRole("button", { name: "Send" }).click();
-    await expect.poll(() => page.getByText("Hello", { exact: true }).count()).toBe(2);
+    await page.getByText("Hello", { exact: true }).nth(1).waitFor();
+    expect(await page.getByText("Hello", { exact: true }).count()).toBe(2);
     expect(fixture.apiRequests.filter((call) => call.path === "/v1/responses").at(-1)?.body.reasoning).toMatchObject({
       effort: "high",
     });
@@ -1925,6 +1926,46 @@ describe("Pal in a browser", () => {
     await expect
       .poll(() => view.evaluate((image) => image instanceof HTMLImageElement && image.naturalWidth > 0))
       .toBe(true);
+    await panel.getByRole("button", { name: "Private login", exact: true }).click();
+    await panel.getByText("Private login · only you").waitFor();
+    expect(pal.browsers.allows(chat.conversationId)).toBe(false);
+    await panel.getByRole("button", { name: "Hand to Pal…", exact: true }).click();
+    const handoff = page.getByRole("alertdialog", { name: "Hand browser to Pal?" });
+    await handoff.getByText(/Every browser action still asks/).waitFor();
+    await page.keyboard.press("Escape");
+    await handoff.waitFor({ state: "detached" });
+    expect(pal.browsers.allows(chat.conversationId)).toBe(false);
+    await panel.getByRole("button", { name: "Hand to Pal…", exact: true }).click();
+    await handoff.getByRole("button", { name: "Hand to Pal", exact: true }).click();
+    await panel.getByText("Pal controls this browser").waitFor();
+    expect(pal.browsers.allows(chat.conversationId)).toBe(true);
+    await shoot("browser-agent-1440");
+    const beforeAction = visited.filter((path) => path === "/clicked").length;
+    fixture.behavior.responses = "script";
+    fixture.behavior.script =
+      'const page = await tools.browser_observe({}); return await tools.browser_act({session:page.session,epoch:page.epoch,observation:page.observation,action:{type:"click",target:page.targets.find(t => t.label === "go").id}});';
+    try {
+      await page.getByLabel("Message").fill("request the fixture browser action");
+      await page.getByRole("button", { name: "Send", exact: true }).click();
+      const approval = page.getByRole("group", { name: "Approval request" });
+      await approval.getByText("Approval needed for a browser action", { exact: true }).waitFor();
+      await approval.getByText(/Browser page/).waitFor();
+      expect(visited.filter((path) => path === "/clicked")).toHaveLength(beforeAction);
+      await shoot("browser-approval-1440");
+      await approval.getByRole("button", { name: "Approve once", exact: true }).click();
+      await page.getByText("Hello", { exact: true }).waitFor();
+      await expect.poll(() => visited.filter((path) => path === "/clicked").length).toBe(beforeAction + 1);
+      await approval.getByText("Browser action approved", { exact: true }).waitFor();
+    } finally {
+      fixture.behavior.responses = "ok";
+    }
+    await panel.getByRole("button", { name: "Take control", exact: true }).click();
+    await panel.getByText("You control this browser").waitFor();
+    expect(pal.browsers.allows(chat.conversationId)).toBe(false);
+    await panel.getByRole("button", { name: "Pause", exact: true }).click();
+    await panel.getByText("Paused", { exact: true }).waitFor();
+    await panel.getByRole("button", { name: "Take control", exact: true }).click();
+    await panel.getByText("You control this browser").waitFor();
     await shoot("browser-1440");
     await page.setViewportSize({ width: 390, height: 844 });
     expect(await page.evaluate("document.documentElement.scrollWidth <= innerWidth")).toBe(true);
@@ -1948,6 +1989,13 @@ describe("Pal in a browser", () => {
     await expect.poll(() => visited.includes("/submit?q=phone")).toBe(true);
     expect(visited.filter((path) => path === "/clicked")).toHaveLength(clicks);
     await shoot("browser-390");
+    await panel.getByRole("button", { name: "Hand to Pal…", exact: true }).click();
+    await handoff.getByRole("button", { name: "Hand to Pal", exact: true }).click();
+    await panel.getByText("Pal controls this browser").waitFor();
+    await shoot("browser-agent-390");
+    expect(await page.evaluate("document.documentElement.scrollWidth <= innerWidth")).toBe(true);
+    await panel.getByRole("button", { name: "Take control", exact: true }).click();
+    await panel.getByText("You control this browser").waitFor();
     await page.setViewportSize({ width: 1440, height: 900 });
     await panel.getByRole("button", { name: "Close browser" }).click();
     await panel.getByRole("button", { name: "Open browser" }).waitFor();
