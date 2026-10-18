@@ -308,6 +308,161 @@ describe("Pal in a browser", () => {
     }
   });
 
+  it("curates linked memory in Context, refuses stale correction/forgetting, and retrieves only on demand", async () => {
+    const project = await pal.projects.create("context-browser-project", { name: "Context fixture" });
+    const chat = await pal.chats.createChat("context-browser-chat", { projectId: project.id }, context);
+    const errors: string[] = [];
+    const onError = (error: Error) => errors.push(error.message);
+    page.on("pageerror", onError);
+    try {
+      await writeFile(join(project.root, "decision.txt"), "Original cobalt source");
+      await page.goto(`${base}/#/chat/${chat.id}`);
+      await page.reload();
+      await page.getByLabel("Message").fill("A source decision for Context");
+      await page.getByRole("button", { name: "Send", exact: true }).click();
+      await page.getByText("Hello", { exact: true }).waitFor();
+      await page.getByRole("status").filter({ hasText: "Running" }).waitFor({ state: "detached" });
+      const before = fixture.apiRequests.filter((call) => call.path === "/v1/responses").length;
+      await page.getByRole("button", { name: "Context", exact: true }).click();
+      const panel = page.getByRole("complementary", { name: "Workspace panel" });
+      await panel.getByRole("button", { name: "Add memory", exact: true }).waitFor();
+      await panel.getByRole("button", { name: "Add memory", exact: true }).click();
+      await panel.getByLabel("Memory title", { exact: true }).fill("Owner decision");
+      await panel.getByLabel("Memory fact", { exact: true }).fill("cobalt owner decision");
+      await panel.getByRole("button", { name: "Save memory", exact: true }).click();
+      await panel.getByRole("heading", { name: "Owner decision", exact: true }).waitFor();
+      const owner = (await pal.memory.list(project.id, context)).find((item) => item.title === "Owner decision");
+      if (owner === undefined) throw new Error("missing owner memory");
+      await panel.getByRole("button", { name: "Correct Owner decision", exact: true }).click();
+      await panel.getByLabel("Memory fact", { exact: true }).fill("my retained draft");
+      await pal.memory.correct(
+        project.id,
+        owner.id,
+        1,
+        { title: owner.title, body: "external correction", source: { kind: "owner" } },
+        context,
+      );
+      await panel.getByRole("button", { name: "Save memory", exact: true }).click();
+      await panel
+        .getByRole("alert")
+        .filter({ hasText: /changed/ })
+        .waitFor();
+      expect(await panel.getByLabel("Memory fact", { exact: true }).inputValue()).toBe("my retained draft");
+      await panel.getByRole("button", { name: "Cancel memory edit" }).click();
+      await panel.getByRole("button", { name: "Forget Owner decision", exact: true }).click();
+      const dialog = page.getByRole("alertdialog", { name: "Forget this memory?" });
+      expect(
+        await dialog
+          .getByRole("button", { name: "Cancel", exact: true })
+          .evaluate((el) => el === document.activeElement),
+      ).toBe(true);
+      await pal.memory.correct(
+        project.id,
+        owner.id,
+        2,
+        { title: owner.title, body: "latest owner correction", source: { kind: "owner" } },
+        context,
+      );
+      await dialog.getByRole("button", { name: "Forget memory", exact: true }).click();
+      await dialog
+        .getByRole("alert")
+        .filter({ hasText: /changed/ })
+        .waitFor();
+      expect((await pal.memory.list(project.id, context)).find((item) => item.id === owner.id)?.revision).toBe(3);
+      await page.keyboard.press("Escape");
+      await dialog.waitFor({ state: "detached" });
+      expect(await panel.isVisible()).toBe(true);
+      await panel.getByRole("button", { name: "Forget Owner decision", exact: true }).click();
+      await dialog.getByRole("button", { name: "Forget memory", exact: true }).click();
+      await dialog.waitFor({ state: "detached" });
+      await expect.poll(() => panel.getByRole("heading", { name: "Owner decision", exact: true }).count()).toBe(0);
+
+      await panel.getByRole("button", { name: "Add memory", exact: true }).click();
+      await panel.getByLabel("Memory title", { exact: true }).fill("File decision");
+      await panel.getByLabel("Memory fact", { exact: true }).fill("cobalt SQLite from a verified file");
+      await panel.getByRole("combobox", { name: /^Source type/ }).selectOption("file");
+      await panel.getByLabel("Source file", { exact: true }).fill("decision.txt");
+      await panel.getByRole("button", { name: "Verify source file", exact: true }).click();
+      await panel.getByLabel("Verified source preview").filter({ hasText: "Original cobalt source" }).waitFor();
+      await panel.getByRole("button", { name: "Save memory", exact: true }).click();
+      await panel.getByRole("heading", { name: "File decision", exact: true }).waitFor();
+      await panel.getByRole("button", { name: "View source for File decision", exact: true }).click();
+      await panel
+        .getByRole("region", { name: "Memory source", exact: true })
+        .getByText("Original cobalt source", { exact: true })
+        .waitFor();
+      await writeFile(join(project.root, "decision.txt"), "New cobalt source");
+      await panel.getByRole("button", { name: "Refresh context", exact: true }).click();
+      await panel.getByText("Source changed · retrieval off", { exact: true }).waitFor();
+      expect(await panel.getByRole("region", { name: "Memory source", exact: true }).count()).toBe(0);
+      await panel.getByRole("button", { name: "Correct File decision", exact: true }).click();
+      await panel.getByLabel("Memory fact", { exact: true }).fill("cobalt revised file fact");
+      await panel.getByRole("button", { name: "Verify source file", exact: true }).click();
+      await panel.getByLabel("Verified source preview").filter({ hasText: "New cobalt source" }).waitFor();
+      await panel.getByRole("button", { name: "Save memory", exact: true }).click();
+      await expect.poll(() => panel.getByText("Source changed · retrieval off", { exact: true }).count()).toBe(0);
+      await panel.getByRole("button", { name: "Add memory", exact: true }).click();
+      await panel.getByLabel("Memory title", { exact: true }).fill("Chat decision");
+      await panel.getByLabel("Memory fact", { exact: true }).fill("cobalt comes from a retained chat message");
+      await panel.getByRole("combobox", { name: /^Source type/ }).selectOption("chat");
+      const conversation = await pal.harness.conversation(chat.conversationId, context);
+      const entry = (await conversation?.context(context))?.entries.find((entry) =>
+        entry.model?.some((message) => message.role === "user"),
+      );
+      if (entry === undefined) throw new Error("missing source entry");
+      await panel.getByRole("combobox", { name: /^Source message/ }).selectOption(String(entry.id));
+      await panel.getByRole("button", { name: "Save memory", exact: true }).click();
+      await panel.getByRole("heading", { name: "Chat decision", exact: true }).waitFor();
+      await panel.getByRole("button", { name: "View source for Chat decision", exact: true }).click();
+      await panel
+        .getByRole("region", { name: "Memory source", exact: true })
+        .getByText("A source decision for Context", { exact: true })
+        .waitFor();
+      await panel.getByRole("button", { name: "Rebuild memory search", exact: true }).click();
+      await panel.getByText("Memory search rebuilt.", { exact: true }).waitFor();
+      expect(fixture.apiRequests.filter((call) => call.path === "/v1/responses")).toHaveLength(before);
+      await panel.getByRole("button", { name: "Close panel", exact: true }).click();
+      fixture.behavior.responses = "script";
+      fixture.behavior.script = 'return await tools.memory_search({query:"cobalt"});';
+      await page.getByLabel("Message").fill("retrieve the cobalt decisions");
+      const sent = page.waitForResponse(
+        (response) =>
+          response.url() === `${base}/api/chats/${chat.id}/inputs` && response.request().method() === "POST",
+      );
+      await page.getByRole("button", { name: "Send", exact: true }).click();
+      expect((await sent).status()).toBe(200);
+      await page.getByText("Hello", { exact: true }).nth(1).waitFor();
+      expect(await page.getByText("Hello", { exact: true }).count()).toBe(2);
+      await page.getByRole("status").filter({ hasText: "Running" }).waitFor({ state: "detached" });
+      await page.getByRole("button", { name: "Context", exact: true }).click();
+      await panel
+        .getByRole("region", { name: "Recent memory lookups", exact: true })
+        .getByText("cobalt", { exact: true })
+        .waitFor();
+      for (const width of [1440, 768, 390]) {
+        await page.setViewportSize({ width, height: 900 });
+        await panel.getByRole("heading", { name: "Curated memory", exact: true }).scrollIntoViewIfNeeded();
+        expect(await page.evaluate("document.documentElement.scrollWidth <= innerWidth")).toBe(true);
+        await shoot(`context-memory-${width}`);
+      }
+      await page.reload();
+      await page.getByRole("button", { name: "Context", exact: true }).click();
+      await panel.getByRole("heading", { name: "Chat decision", exact: true }).waitFor();
+      await panel
+        .getByRole("region", { name: "Recent memory lookups", exact: true })
+        .getByText("cobalt", { exact: true })
+        .waitFor();
+      expect(errors).toEqual([]);
+    } finally {
+      page.off("pageerror", onError);
+      fixture.behavior.responses = "ok";
+      await pal.projects.remove(project.id);
+      await pal.chats.abortDeleted(context);
+      await page.setViewportSize({ width: 1440, height: 900 });
+      await page.goto(chatUrl);
+    }
+  });
+
   it("persists source receipts, keeps links inert until clicked and labels failed retrieval", async () => {
     const card = page.getByRole("region", { name: "Fixture search sources" });
     await card.waitFor();

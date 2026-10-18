@@ -18,6 +18,7 @@ import { ChatService } from "./chats.ts";
 import { Changes } from "./changes.ts";
 import { FILES_NAMESPACE, fileTools, projectFiles } from "./files.ts";
 import { FolderGrants } from "./folders.ts";
+import { MEMORY_NAMESPACE, ProjectMemory } from "./memory.ts";
 import { HostCommands, SHELL_NAMESPACE, shellTools, WorkspaceLocks } from "./execution.ts";
 import { Owner } from "./owner.ts";
 import { type Project, Projects } from "./projects.ts";
@@ -41,6 +42,7 @@ export type Pal = {
   readonly projects: Projects;
   readonly folders: FolderGrants;
   readonly workspaces: Workspaces;
+  readonly memory: ProjectMemory;
   readonly chats: ChatService;
   readonly chatgpt: ChatGPTConnection;
   readonly models: Models;
@@ -120,6 +122,8 @@ export async function openPal(options: PalOptions, context: Context): Promise<Pa
       openedWorkspaces,
     );
 
+    const memory = new ProjectMemory(database, folders, store.storage, [options.dataRoot]);
+
     // Host writes/commands are the owner's explicit high-trust mode; every nested call rechecks the live project grant.
     const projectFor = async (conversation: ConversationId) =>
       await database.get<{ id: string; root: string }>(
@@ -140,10 +144,11 @@ export async function openPal(options: PalOptions, context: Context): Promise<Pa
         return (
           name.startsWith(FILES_NAMESPACE.prefix) ||
           name === "shell_run" ||
+          name === "memory_search" ||
           (await mcp?.allowsInConversation(conversation, name)) === true
         );
       },
-      namespaces: [FILES_NAMESPACE, SHELL_NAMESPACE],
+      namespaces: [FILES_NAMESPACE, SHELL_NAMESPACE, MEMORY_NAMESPACE],
     });
     sandbox = codemode.sandbox;
     const registry = createRegistry();
@@ -161,13 +166,20 @@ export async function openPal(options: PalOptions, context: Context): Promise<Pa
       }),
     );
     registry.install(shellTools({ root: (conversation) => workspaceRoot(conversation, true), commands, locks }));
+    registry.install(
+      memory.tools(async (conversation) => {
+        const workspace = await openedWorkspaces.forConversation(conversation);
+        return workspace?.state === "ready" ? { id: workspace.projectId, workspace: workspace.id } : undefined;
+      }),
+    );
     const connections = await McpManager.open({
       database: store.database,
       credentials,
       registry,
       stdio: new StdioPrograms([options.dataRoot, options.installRoot, "/nix/store"]),
       projectId: async (conversation) => (await projectFor(conversation))?.id,
-      codemode: (namespaces) => codemode.withNamespaces([FILES_NAMESPACE, SHELL_NAMESPACE, ...namespaces]),
+      codemode: (namespaces) =>
+        codemode.withNamespaces([FILES_NAMESPACE, SHELL_NAMESPACE, MEMORY_NAMESPACE, ...namespaces]),
     });
     mcp = connections;
     const running = await Harness.open(store.storage, { models, registry }, context);
@@ -210,6 +222,7 @@ export async function openPal(options: PalOptions, context: Context): Promise<Pa
       owner,
       projects: openedProjects,
       folders,
+      memory,
       workspaces: openedWorkspaces,
       chats: openedChats,
       chatgpt: new ChatGPTConnection(credentials, {

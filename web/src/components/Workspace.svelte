@@ -25,11 +25,13 @@
   const changesPanel = () => import("./ChangesPanel.svelte");
   const filesPanel = () => import("./FilesPanel.svelte");
   const terminalPanel = () => import("./TerminalPanel.svelte");
-  let panelView = $state<"Changes" | "Files" | "Terminal">("Changes");
+  const contextPanel = () => import("./ContextPanel.svelte");
+  type PanelView = "Changes" | "Files" | "Terminal" | "Context";
+  let panelView = $state<PanelView>("Changes");
   /** A file Files asked Changes to open. */
   let diffPath: string | undefined = $state();
   let chatView: { insertText(text: string): void } | undefined = $state();
-  function togglePanel(view: "Changes" | "Files" | "Terminal") {
+  function togglePanel(view: PanelView) {
     diffPath = undefined;
     panelRoute = panel && panelView === view ? undefined : app.route;
     panelView = view;
@@ -144,6 +146,11 @@
             >
             <button
               class="b sm q"
+              aria-expanded={panel && panelView === "Context"}
+              onclick={() => togglePanel("Context")}><Icon name="read" />Context</button
+            >
+            <button
+              class="b sm q"
               aria-expanded={panel && panelView === "Terminal"}
               onclick={() => togglePanel("Terminal")}><Icon name="term" />Terminal</button
             >
@@ -187,6 +194,11 @@
                         }}
                       />
                     {:catch failure}<p role="alert">Couldn’t load terminal: {String(failure)}</p>{/await}
+                  {:else if panelView === "Context"}
+                    {#await contextPanel()}<p role="status">Loading context…</p>
+                    {:then { default: ContextPanel }}
+                      <ContextPanel project={located.project} chat={located.chat} workspace={located.chat.workspace} />
+                    {:catch failure}<p role="alert">Couldn't load context: {String(failure)}</p>{/await}
                   {:else if panelView === "Files"}
                     {#await filesPanel()}<p role="status">Loading files…</p>
                     {:then { default: FilesPanel }}

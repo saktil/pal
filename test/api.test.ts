@@ -105,6 +105,56 @@ async function putBytes(base: string, cookie: string, id: string, bytes: Uint8Ar
 }
 
 describe("API", () => {
+  it("manages source-linked memory and a bounded Context inspector with owner/origin/revision checks", async () => {
+    const { api, base, cookie, pal } = await signedIn();
+    const project = (await api("POST", "projects", { requestId: "api-memory-project", name: "Context" })).body.project;
+    const chat = (await api("POST", "chats", { requestId: "api-memory-chat", projectId: project.id })).body.chat;
+    const path = `projects/${project.id}/memory`;
+    const input = {
+      title: "Journal",
+      body: "Keep durable state in SQLite",
+      source: { kind: "owner" },
+      requestId: "api-memory-note",
+    };
+    expect((await fetch(`${base}/api/${path}`)).status).toBe(401);
+    expect((await fetch(`${base}/api/chats/${chat.id}/context`)).status).toBe(401);
+    expect(
+      (await raw(base, `/api/${path}`, { cookie: cookie(), origin: "https://attacker.example" }, input)).status,
+    ).toBe(403);
+    const saved = await api("POST", path, input);
+    expect(saved.status).toBe(200);
+    expect((await api("POST", path, input)).body.id).toBe(saved.body.id);
+    const item = `${path}/${saved.body.id}`;
+    const listing = await api("GET", path);
+    expect(listing.body.items).toMatchObject([{ revision: 1, body: input.body, state: "current" }]);
+    expect((await api("GET", `${item}/source`)).body).toMatchObject({
+      label: "Owner note",
+      text: input.body,
+      current: true,
+    });
+    const info = await api("GET", `chats/${chat.id}/context`);
+    expect(info.body.instructions).toContain("You are Pal");
+    expect(info.body).toMatchObject({ sources: [], lookups: [], head: null });
+    const correction = { title: input.title, body: "Corrected SQLite decision", source: input.source, revision: 1 };
+    expect((await api("PUT", item, correction)).status).toBe(200);
+    expect((await api("PUT", item, correction)).status).toBe(409);
+    expect(
+      (await api("PUT", item, { ...correction, revision: 2, source: { kind: "owner", trusted: true } })).status,
+    ).toBe(400);
+    const other = (await api("POST", "projects", { requestId: "api-foreign-memory", name: "Foreign" })).body.project;
+    expect((await api("GET", `projects/${other.id}/memory/${saved.body.id}/source`)).status).toBe(403);
+    expect((await api("GET", `projects/${other.id}/memory`)).body.items).toEqual([]);
+    expect((await api("GET", `${path}?workspace=`)).status).toBe(400);
+    expect((await api("POST", `projects/${project.id}/memory-index`)).status).toBe(200);
+    expect((await api("DELETE", item, { revision: 1 })).status).toBe(409);
+    expect((await api("DELETE", item, { revision: 2 })).status).toBe(200);
+    expect((await api("GET", path)).body.items).toEqual([]);
+    expect((await api("GET", `${item}/source`)).status).toBe(403);
+    await pal.projects.remove(project.id);
+    expect((await api("GET", path)).status).toBe(403);
+    expect((await api("GET", `chats/${chat.id}/context`)).status).toBe(404);
+  });
+
   it("requires owner/origin and exact local-program consent without executing on save, approval or missing key", async () => {
     const { api, base, cookie } = await signedIn();
     const cwd = await realpath(await mkdtemp(join(tmpdir(), "pal-api-program-")));

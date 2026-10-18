@@ -23,6 +23,8 @@ import { FolderError } from "./projects.ts";
 import { InvalidRequest, RequestConflict, validate } from "./requests.ts";
 import { UploadBody, UploadError } from "./uploads.ts";
 import { TerminalSize } from "./terminals.ts";
+import { MemoryBody } from "./memory.ts";
+import { inspectContext } from "./context.ts";
 
 const WorkspaceId = Type.Optional(Type.String({ minLength: 1, maxLength: 64 }));
 const workspaceQuery = (url: URL) => {
@@ -31,6 +33,18 @@ const workspaceQuery = (url: URL) => {
 };
 const NewTerminal = Type.Object(
   { ...TerminalSize.properties, trust: Type.Literal(true), workspace: WorkspaceId },
+  { additionalProperties: false },
+);
+const NewMemory = Type.Object(
+  { ...MemoryBody.properties, requestId: Type.Unknown(), workspace: WorkspaceId },
+  { additionalProperties: false },
+);
+const CorrectMemory = Type.Object(
+  { ...MemoryBody.properties, revision: Type.Integer({ minimum: 1 }), workspace: WorkspaceId },
+  { additionalProperties: false },
+);
+const ForgetMemory = Type.Object(
+  { revision: Type.Integer({ minimum: 1 }), workspace: WorkspaceId },
   { additionalProperties: false },
 );
 const HEARTBEAT_MS = 25_000;
@@ -455,6 +469,37 @@ export function createApi(pal: Pal, publicOrigin?: string) {
         return send(200, { deleted: true });
       }
     }
+    if (resource === "projects" && id !== undefined && action === "memory") {
+      const memoryId = path[3];
+      if (path.length === 3 && method === "GET")
+        return send(200, { items: await pal.memory.list(id, context, workspaceQuery(url)) });
+      if (path.length === 3 && method === "POST") {
+        const { requestId, workspace, ...body } = validate(NewMemory, await readJson(request));
+        return send(200, { id: await pal.memory.save(id, requestId, body, context, workspace) });
+      }
+      if (memoryId !== undefined && path.length === 4 && method === "PUT") {
+        const { revision, workspace, ...body } = validate(CorrectMemory, await readJson(request));
+        await pal.memory.correct(id, memoryId, revision, body, context, workspace);
+        return send(200, { saved: true });
+      }
+      if (memoryId !== undefined && path.length === 4 && method === "DELETE") {
+        const { revision, workspace } = validate(ForgetMemory, await readJson(request));
+        await pal.memory.forget(id, memoryId, revision, workspace);
+        return send(200, { forgotten: true });
+      }
+      if (memoryId !== undefined && path.length === 5 && path[4] === "source" && method === "GET")
+        return send(200, await pal.memory.source(id, memoryId, context, workspaceQuery(url)));
+    }
+    if (
+      resource === "projects" &&
+      id !== undefined &&
+      action === "memory-index" &&
+      path.length === 3 &&
+      method === "POST"
+    ) {
+      await pal.memory.rebuild(id);
+      return send(200, { rebuilt: true });
+    }
     if (resource === "projects" && id !== undefined && action === "search" && path.length === 3 && method === "GET") {
       const folder = await pal.folders.owner(id, url.searchParams.get("folder") ?? undefined, workspaceQuery(url));
       const query = url.searchParams.get("q") ?? "";
@@ -536,6 +581,8 @@ export function createApi(pal: Pal, publicOrigin?: string) {
           effort: model === undefined ? "off" : clampThinkingLevel(model, agent.thinkingLevel),
         });
       }
+      if (action === "context" && path.length === 3 && method === "GET")
+        return send(200, await inspectContext(pal, chat, context));
       if (action === "inputs" && method === "POST") {
         const { requestId, ...body } = validate(Keyed, await readJson(request));
         return send(200, { admission: await pal.chats.submit(chat.id, requestId, body, context) });

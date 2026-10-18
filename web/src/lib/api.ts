@@ -12,6 +12,8 @@ export type { RemovedWorkspace } from "../../../src/core/workspace-purge.ts";
 export type { ProjectMcp, ProjectMcpServer } from "../../../src/core/mcp-grants.ts";
 export type { GrantedFolder } from "../../../src/core/folders.ts";
 export type { Workspace, WorkspaceMode } from "../../../src/core/workspaces.ts";
+export type { MemoryItem, MemoryInput } from "../../../src/core/memory.ts";
+export type { ContextInfo } from "../../../src/core/context.ts";
 
 export type Effort = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 export type ChatGPTModel = { slug: string; displayName: string; supported: boolean; efforts: Effort[] };
@@ -132,6 +134,29 @@ export const api = {
       "GET",
       inWorkspace(`projects/${id}/changes?scope=${scope}`, workspace),
     ),
+  context: (id: string) => call<import("../../../src/core/context.ts").ContextInfo>("GET", `chats/${id}/context`),
+  memory: (id: string, workspace?: string) =>
+    call<{ items: import("../../../src/core/memory.ts").MemoryItem[] }>(
+      "GET",
+      inWorkspace(`projects/${id}/memory`, workspace),
+    ),
+  memorySave: (id: string, key: string, input: import("../../../src/core/memory.ts").MemoryInput, workspace?: string) =>
+    call<{ id: string }>("POST", `projects/${id}/memory`, { ...input, requestId: key, workspace }),
+  memoryCorrect: (
+    project: string,
+    id: string,
+    revision: number,
+    input: import("../../../src/core/memory.ts").MemoryInput,
+    workspace?: string,
+  ) => call<{ saved: true }>("PUT", `projects/${project}/memory/${id}`, { ...input, revision, workspace }),
+  memoryForget: (project: string, id: string, revision: number, workspace?: string) =>
+    call<{ forgotten: true }>("DELETE", `projects/${project}/memory/${id}`, { revision, workspace }),
+  memorySource: (project: string, id: string, workspace?: string) =>
+    call<Awaited<ReturnType<import("../../../src/core/memory.ts").ProjectMemory["source"]>>>(
+      "GET",
+      inWorkspace(`projects/${project}/memory/${id}/source`, workspace),
+    ),
+  memoryRebuild: (id: string) => call<{ rebuilt: true }>("POST", `projects/${id}/memory-index`),
   projectFolders: (id: string, workspace?: string) =>
     call<{ folders: import("../../../src/core/folders.ts").GrantedFolder[] }>(
       "GET",

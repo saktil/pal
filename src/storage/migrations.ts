@@ -278,6 +278,26 @@ export const MIGRATIONS: readonly Migration[] = [
       await transaction.exec("ALTER TABLE pal_mcp_servers ADD COLUMN stdio TEXT");
     },
   },
+  {
+    version: 17,
+    name: "curated_memory",
+    up: async (transaction) => {
+      await transaction.exec(`CREATE TABLE pal_memory (
+        id TEXT PRIMARY KEY, project_id TEXT NOT NULL, request_id TEXT NOT NULL,
+        digest TEXT NOT NULL, revision INTEGER NOT NULL, forgotten_at INTEGER,
+        UNIQUE (project_id, request_id)
+      ) STRICT`);
+      await transaction.exec("CREATE INDEX pal_memory_project ON pal_memory (project_id)");
+      await transaction.exec(`CREATE TABLE pal_memory_versions (
+        id TEXT NOT NULL REFERENCES pal_memory(id), revision INTEGER NOT NULL,
+        title TEXT NOT NULL, body TEXT NOT NULL, source TEXT NOT NULL, updated_at INTEGER NOT NULL,
+        PRIMARY KEY (id, revision)
+      ) STRICT`);
+      await transaction.exec(
+        "CREATE VIRTUAL TABLE pal_memory_fts USING fts5(id UNINDEXED, project_id UNINDEXED, revision UNINDEXED, title, body)",
+      );
+    },
+  },
 ];
 
 /**
