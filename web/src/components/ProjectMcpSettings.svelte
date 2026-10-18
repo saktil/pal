@@ -196,15 +196,6 @@
     max-width: calc(100% - 32px);
     max-height: calc(100dvh - 32px);
     overflow: auto;
-    background: var(--bg2);
-    color: var(--tx);
-    border: 1px solid var(--line2);
-    border-radius: 10px;
-    padding: 18px;
-    box-shadow: 0 24px 64px rgba(0, 0, 0, 0.55);
-  }
-  dialog::backdrop {
-    background: rgba(0, 0, 0, 0.55);
   }
   .head,
   .row {

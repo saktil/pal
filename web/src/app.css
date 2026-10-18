@@ -1,30 +1,44 @@
-/* Tokens and component classes copied from the approved Claude Design export (Workspace prototype). */
+/* Pal's "Visor" system: ink-navy surfaces from the mascot's visor, its ribbon blue for actions and cyan for focus and
+   live state. The blue→cyan→magenta ribbon gradient is reserved for an agent run in progress. */
 :root {
-  --bg0: #0e0e0f;
-  --bg1: #141415;
-  --bg2: #1a1a1c;
-  --bg3: #232325;
-  --bg4: #2c2c2f;
-  --line: #262628;
-  --line2: #343437;
-  --tx: #e8e8ea;
-  --tx2: #aeaeb4;
-  --tx3: #88888f;
-  --ac: #8ea4ff;
-  --acbg: #1e2340;
-  --acln: #46519a;
-  --ok: #8fcaa0;
-  --okbg: rgba(130, 200, 150, 0.12);
-  --wa: #e2b660;
-  --wabg: rgba(226, 182, 96, 0.12);
-  --er: #f0919c;
-  --erbg: rgba(240, 145, 156, 0.12);
-  --addbg: rgba(120, 180, 110, 0.14);
-  --addtx: #a9d39f;
-  --delbg: rgba(232, 120, 130, 0.14);
-  --deltx: #f3a9b1;
-  --sans: "IBM Plex Sans", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
-  --mono: "IBM Plex Mono", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  color-scheme: dark;
+  --bg0: #07090f;
+  --bg1: #0b0e16;
+  --bg2: #121624;
+  --bg3: #1a1f30;
+  --bg4: #242a3e;
+  --line: #1d2232;
+  --line2: #2b3247;
+  --tx: #e8eaf3;
+  --tx2: #a6acc0;
+  --tx3: #7c839c;
+  --ac: #8ba6ff;
+  --acbg: rgba(59, 102, 255, 0.14);
+  --acln: #3651b8;
+  --ribbon: #3b66ff;
+  --ribbon-hi: #5579ff;
+  --glint: #52d6ff;
+  --bloom: #e14bf5;
+  --ribbon-gradient: linear-gradient(90deg, var(--ribbon), var(--glint) 55%, var(--bloom));
+  --ok: #7fd6a3;
+  --okbg: rgba(127, 214, 163, 0.12);
+  --wa: #f1bb63;
+  --wabg: rgba(241, 187, 99, 0.11);
+  --waln: #5c4a2a;
+  --er: #ff8f9d;
+  --erbg: rgba(255, 143, 157, 0.11);
+  --erln: #66343c;
+  --addbg: rgba(127, 214, 163, 0.13);
+  --addtx: #a6e2bd;
+  --delbg: rgba(255, 143, 157, 0.13);
+  --deltx: #ffb2bc;
+  --shadow: 0 16px 40px rgba(2, 4, 12, 0.6), 0 2px 6px rgba(2, 4, 12, 0.4);
+  --scrim: rgba(3, 5, 10, 0.62);
+  --sans: "Atkinson Hyperlegible Next Variable", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: "Atkinson Hyperlegible Mono Variable", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
+  --fast: 120ms;
+  --mid: 190ms;
 }
 * {
   box-sizing: border-box;
@@ -35,12 +49,13 @@ body {
   height: 100%;
 }
 body {
-  background: #0b0b0c;
+  background: var(--bg1);
   color: var(--tx);
   font-family: var(--sans);
   font-size: 14px;
   line-height: 1.5;
   -webkit-font-smoothing: antialiased;
+  font-optical-sizing: auto;
   overflow: hidden;
 }
 button,
@@ -57,12 +72,15 @@ button:disabled {
   cursor: not-allowed;
 }
 :focus-visible {
-  outline: 2px solid var(--ac);
-  outline-offset: 1px;
+  outline: 2px solid var(--glint);
+  outline-offset: 2px;
+}
+::selection {
+  background: rgba(82, 214, 255, 0.28);
 }
 * {
   scrollbar-width: thin;
-  scrollbar-color: #343437 transparent;
+  scrollbar-color: var(--line2) transparent;
 }
 svg.i {
   width: 16px;
@@ -92,31 +110,39 @@ svg.i {
   justify-content: center;
   gap: 6px;
   height: 30px;
-  padding: 0 10px;
-  border-radius: 6px;
+  padding: 0 11px;
+  border-radius: 8px;
   border: 1px solid var(--line2);
   background: var(--bg2);
   color: var(--tx);
   font-size: 13px;
-  font-weight: 500;
+  font-weight: 550;
   white-space: nowrap;
   flex: 0 0 auto;
+  transition:
+    background-color var(--fast) var(--ease),
+    border-color var(--fast) var(--ease),
+    color var(--fast) var(--ease),
+    transform var(--fast) var(--ease);
 }
 .b:hover:not(:disabled) {
   background: var(--bg3);
-  border-color: #46464b;
+  border-color: #3a4260;
+}
+.b:active:not(:disabled) {
+  transform: translateY(1px) scale(0.98);
 }
 .b:disabled {
-  opacity: 0.45;
+  opacity: 0.42;
 }
 .b.p {
-  background: var(--ac);
-  border-color: var(--ac);
-  color: #0d1024;
+  background: var(--ribbon);
+  border-color: var(--ribbon);
+  color: #fff;
 }
 .b.p:hover:not(:disabled) {
-  background: #a9b9ff;
-  border-color: #a9b9ff;
+  background: var(--ribbon-hi);
+  border-color: var(--ribbon-hi);
 }
 .b.q {
   background: transparent;
@@ -127,16 +153,20 @@ svg.i {
   background: var(--bg3);
   color: var(--tx);
 }
+.b.q[aria-expanded="true"] {
+  background: var(--bg3);
+  color: var(--tx);
+}
 .b.d {
   color: var(--er);
 }
 .b.dz {
-  background: #80313b;
-  border-color: #9a3f4a;
+  background: #8a2f3c;
+  border-color: #a23d4b;
   color: #fff;
 }
 .b.dz:hover:not(:disabled) {
-  background: #8d3742;
+  background: #9a3644;
 }
 .b.i {
   width: 30px;
@@ -146,6 +176,7 @@ svg.i {
   height: 26px;
   font-size: 12.5px;
   padding: 0 8px;
+  border-radius: 7px;
 }
 .b.sm.i {
   width: 26px;
@@ -159,20 +190,23 @@ svg.i {
 .seg {
   display: inline-flex;
   border: 1px solid var(--line2);
-  border-radius: 7px;
+  border-radius: 9px;
   padding: 2px;
   gap: 2px;
   background: var(--bg1);
 }
 .segb {
   height: 24px;
-  padding: 0 9px;
+  padding: 0 10px;
   border: 0;
-  border-radius: 5px;
+  border-radius: 7px;
   background: transparent;
   color: var(--tx2);
   font-size: 12.5px;
-  font-weight: 500;
+  font-weight: 550;
+  transition:
+    background-color var(--fast) var(--ease),
+    color var(--fast) var(--ease);
 }
 .segb:hover:not(:disabled) {
   color: var(--tx);
@@ -188,16 +222,19 @@ svg.i {
 .row {
   display: flex;
   align-items: center;
-  gap: 8px;
+  gap: 9px;
   width: 100%;
-  min-height: 30px;
-  padding: 5px 8px;
+  min-height: 32px;
+  padding: 5px 9px;
   border: 0;
-  border-radius: 6px;
+  border-radius: 8px;
   background: transparent;
   color: var(--tx2);
   text-align: left;
-  font-size: 13px;
+  font-size: 13.5px;
+  transition:
+    background-color var(--fast) var(--ease),
+    color var(--fast) var(--ease);
 }
 .row:hover {
   background: var(--bg2);
@@ -211,11 +248,12 @@ svg.i {
   flex-direction: column;
   align-items: flex-start;
   gap: 0;
-  padding: 6px 8px 6px 28px;
+  padding: 6px 9px 6px 30px;
 }
 .cmeta {
-  font-size: 11.5px;
+  font-size: 12px;
   color: var(--tx3);
+  font-variant-numeric: tabular-nums;
 }
 .cmeta.ac {
   color: var(--ac);
@@ -224,22 +262,21 @@ svg.i {
   color: var(--wa);
 }
 .lbl {
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
+  font-size: 12px;
+  font-weight: 650;
+  letter-spacing: 0.01em;
   color: var(--tx3);
-  padding: 10px 8px 4px;
+  padding: 12px 9px 4px;
 }
 .pill {
   display: inline-flex;
   align-items: center;
   gap: 4px;
   height: 20px;
-  padding: 0 7px;
-  border-radius: 10px;
+  padding: 0 8px;
+  border-radius: 999px;
   font-size: 11.5px;
-  font-weight: 500;
+  font-weight: 600;
   background: var(--bg3);
   color: var(--tx2);
   white-space: nowrap;
@@ -268,16 +305,23 @@ svg.i {
 .f {
   background: var(--bg1);
   border: 1px solid var(--line2);
-  border-radius: 6px;
+  border-radius: 8px;
   padding: 7px 10px;
-  font-size: 13px;
+  font-size: 13.5px;
   width: 100%;
   color: var(--tx);
+  transition:
+    border-color var(--fast) var(--ease),
+    box-shadow var(--fast) var(--ease);
+}
+.f::placeholder,
+textarea::placeholder {
+  color: var(--tx3);
 }
 .f:focus {
   outline: none;
-  border-color: var(--ac);
-  box-shadow: 0 0 0 1px var(--ac);
+  border-color: var(--glint);
+  box-shadow: 0 0 0 3px rgba(82, 214, 255, 0.16);
 }
 .f:disabled {
   opacity: 0.5;
@@ -292,7 +336,7 @@ svg.i {
   background: transparent;
   color: var(--tx2);
   font-size: 13px;
-  font-weight: 500;
+  font-weight: 550;
   white-space: nowrap;
 }
 .tab:hover {
@@ -300,7 +344,7 @@ svg.i {
 }
 .tab[aria-selected="true"] {
   color: var(--tx);
-  border-bottom-color: var(--ac);
+  border-bottom-color: var(--glint);
 }
 .cnt {
   font: 500 11px var(--mono);
@@ -314,7 +358,7 @@ svg.i {
   align-items: center;
   gap: 5px;
   font: 12px var(--mono);
-  color: var(--tx2);
+  color: var(--tx3);
   white-space: nowrap;
   max-width: 260px;
   overflow: hidden;
@@ -332,13 +376,13 @@ svg.i {
   background: transparent;
   color: var(--tx3);
   font-size: 11.5px;
-  font-weight: 500;
+  font-weight: 550;
 }
 .mtab[aria-current="true"] {
   color: var(--tx);
 }
 .mtab[aria-current="true"] svg {
-  color: var(--ac);
+  color: var(--glint);
 }
 .frow {
   display: flex;
@@ -359,21 +403,21 @@ svg.i {
   background: var(--bg3);
 }
 .sublbl {
-  font-size: 11.5px;
+  font-size: 12px;
   color: var(--tx3);
   padding: 6px 12px 2px;
 }
 .code {
   font-family: var(--mono);
-  font-size: 0.88em;
+  font-size: 0.9em;
   background: var(--bg3);
   padding: 1px 5px;
-  border-radius: 4px;
+  border-radius: 5px;
   overflow-wrap: anywhere;
 }
 .fref {
   font-family: var(--mono);
-  font-size: 0.88em;
+  font-size: 0.9em;
   color: var(--ac);
   background: transparent;
   border: 0;
@@ -392,14 +436,15 @@ svg.i {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  height: 26px;
-  padding: 0 3px 0 8px;
+  height: 28px;
+  padding: 0 3px 0 9px;
   border: 1px solid var(--line2);
-  border-radius: 6px;
+  border-radius: 8px;
   background: var(--bg3);
-  font: 12px var(--mono);
+  font: 12.5px var(--mono);
   color: var(--tx);
   max-width: 100%;
+  animation: rise var(--mid) var(--ease);
 }
 .chip svg.i {
   width: 13px;
@@ -409,10 +454,10 @@ svg.i {
 .chipx {
   display: inline-grid;
   place-items: center;
-  width: 20px;
-  height: 20px;
+  width: 22px;
+  height: 22px;
   border: 0;
-  border-radius: 4px;
+  border-radius: 6px;
   background: transparent;
   color: var(--tx3);
   padding: 0;
@@ -426,23 +471,23 @@ svg.i {
   z-index: 40;
   background: var(--bg2);
   border: 1px solid var(--line2);
-  border-radius: 9px;
-  box-shadow: 0 14px 36px rgba(0, 0, 0, 0.5);
+  border-radius: 12px;
+  box-shadow: var(--shadow);
   padding: 6px;
   max-height: 420px;
   overflow: auto;
+  transform-origin: var(--origin, bottom left);
+  animation: pop-in var(--mid) var(--ease);
 }
 .poph {
-  font-size: 11px;
-  font-weight: 600;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
+  font-size: 12px;
+  font-weight: 650;
   color: var(--tx3);
-  padding: 4px 10px 6px;
+  padding: 6px 10px 6px;
 }
 .popn {
   margin: 6px 10px 4px;
-  font-size: 12px;
+  font-size: 12.5px;
   color: var(--tx3);
 }
 .opt {
@@ -451,13 +496,14 @@ svg.i {
   align-items: flex-start;
   gap: 1px;
   width: 100%;
-  padding: 7px 10px;
+  padding: 8px 10px;
   border: 0;
-  border-radius: 6px;
+  border-radius: 8px;
   background: transparent;
   color: var(--tx);
   text-align: left;
-  font-size: 13px;
+  font-size: 13.5px;
+  transition: background-color var(--fast) var(--ease);
 }
 .opt:hover:not(:disabled) {
   background: var(--bg3);
@@ -469,21 +515,25 @@ svg.i {
   opacity: 0.55;
 }
 .optd {
-  font-size: 12px;
+  font-size: 12.5px;
   color: var(--tx3);
-  line-height: 1.4;
+  line-height: 1.45;
 }
 .cbx {
   border: 1px solid var(--line2);
-  border-radius: 10px;
+  border-radius: 16px;
   background: var(--bg2);
   padding: 8px;
   display: flex;
   flex-direction: column;
   gap: 6px;
+  transition:
+    border-color var(--mid) var(--ease),
+    box-shadow var(--mid) var(--ease);
 }
 .cbx:focus-within {
-  border-color: var(--acln);
+  border-color: #3a4566;
+  box-shadow: 0 0 0 4px rgba(59, 102, 255, 0.08);
 }
 .cta {
   width: 100%;
@@ -491,8 +541,8 @@ svg.i {
   border: 0;
   background: transparent;
   color: var(--tx);
-  padding: 4px 6px 2px;
-  font-size: 14px;
+  padding: 6px 8px 2px;
+  font-size: 15px;
   line-height: 1.5;
   outline: none;
   max-height: 220px;
@@ -502,24 +552,25 @@ svg.i {
   align-items: center;
   gap: 10px;
   width: 100%;
-  padding: 9px 12px;
+  padding: 8px 12px;
   border: 0;
   background: transparent;
   color: var(--tx2);
   font-size: 13px;
   text-align: left;
-  border-radius: 8px;
+  border-radius: 10px;
+  transition: background-color var(--fast) var(--ease);
 }
 .acth:hover {
   background: var(--bg2);
 }
 .out {
   margin: 2px 0 2px 24px;
-  padding: 6px 10px;
+  padding: 8px 11px;
   background: var(--bg0);
   border: 1px solid var(--line);
-  border-radius: 6px;
-  font: 12px/1.55 var(--mono);
+  border-radius: 8px;
+  font: 12.5px/1.55 var(--mono);
   color: var(--tx2);
   white-space: pre-wrap;
   overflow-wrap: anywhere;
@@ -529,7 +580,7 @@ svg.i {
   height: 14px;
   border-radius: 50%;
   border: 2px solid var(--line2);
-  border-top-color: var(--ac);
+  border-top-color: var(--glint);
   flex: 0 0 auto;
   display: inline-block;
 }
@@ -551,10 +602,39 @@ svg.i {
     opacity: 0.45;
   }
 }
+@keyframes pop-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px) scale(0.98);
+  }
+}
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(6px);
+  }
+}
+@keyframes fade {
+  from {
+    opacity: 0;
+  }
+}
+@keyframes slide-left {
+  from {
+    transform: translateX(-24px);
+    opacity: 0.4;
+  }
+}
+@keyframes slide-right {
+  from {
+    transform: translateX(24px);
+    opacity: 0.4;
+  }
+}
 .callout {
-  padding: 8px 10px;
-  border-radius: 7px;
-  font-size: 12.5px;
+  padding: 9px 12px;
+  border-radius: 10px;
+  font-size: 13px;
   line-height: 1.5;
   border: 1px solid var(--line2);
   background: var(--bg2);
@@ -562,11 +642,11 @@ svg.i {
 }
 .callout.er {
   background: var(--erbg);
-  border-color: #5e3439;
+  border-color: var(--erln);
 }
 .callout.wa {
   background: var(--wabg);
-  border-color: #5a4a2c;
+  border-color: var(--waln);
 }
 .callout.ac {
   background: var(--acbg);
@@ -605,26 +685,41 @@ svg.i {
   inset: 0;
   border: 0;
   padding: 0;
-  background: rgba(0, 0, 0, 0.5);
+  background: var(--scrim);
   z-index: 25;
   cursor: default;
+  animation: fade var(--mid) var(--ease);
+}
+dialog {
+  background: var(--bg2);
+  color: var(--tx);
+  border: 1px solid var(--line2);
+  border-radius: 14px;
+  padding: 20px;
+  box-shadow: var(--shadow);
+}
+dialog[open] {
+  animation: pop-in var(--mid) var(--ease);
+}
+dialog::backdrop {
+  background: var(--scrim);
 }
 .h2 {
-  font-size: 16px;
-  font-weight: 600;
+  font-size: 18px;
+  font-weight: 700;
+  letter-spacing: -0.01em;
   margin: 0;
 }
 .h3 {
-  font-size: 11.5px;
-  font-weight: 600;
-  letter-spacing: 0.06em;
-  text-transform: uppercase;
+  font-size: 12.5px;
+  font-weight: 650;
+  letter-spacing: 0.01em;
   color: var(--tx3);
   margin: 0;
 }
 .sub {
   margin: 0;
-  font-size: 12.5px;
+  font-size: 13px;
   color: var(--tx3);
 }
 .setrow {
@@ -632,19 +727,19 @@ svg.i {
   align-items: center;
   justify-content: space-between;
   gap: 16px;
-  padding: 12px 0;
+  padding: 14px 0;
   border-bottom: 1px solid var(--line);
   flex-wrap: wrap;
 }
 .setl {
-  font-size: 13.5px;
-  font-weight: 500;
+  font-size: 14px;
+  font-weight: 600;
   display: flex;
   align-items: center;
   gap: 8px;
 }
 .setd {
-  font-size: 12.5px;
+  font-size: 13px;
   color: var(--tx3);
   margin-top: 2px;
 }
@@ -652,7 +747,7 @@ svg.i {
   display: flex;
   flex-direction: column;
   gap: 4px;
-  font-size: 12px;
+  font-size: 12.5px;
   color: var(--tx3);
   flex: 1 1 150px;
   min-width: 0;
@@ -661,7 +756,7 @@ svg.i {
   display: inline-flex;
   align-items: center;
   gap: 6px;
-  font-size: 13px;
+  font-size: 13.5px;
   color: var(--tx2);
   min-height: 32px;
 }
@@ -669,9 +764,9 @@ svg.i {
   display: flex;
   flex-direction: column;
   gap: 10px;
-  padding: 12px;
+  padding: 14px;
   border: 1px solid var(--line);
-  border-radius: 8px;
+  border-radius: 12px;
   background: var(--bg1);
 }
 .srcrow {
@@ -681,7 +776,7 @@ svg.i {
   justify-content: space-between;
   padding: 7px 0;
   border-bottom: 1px solid var(--line);
-  font-size: 13px;
+  font-size: 13.5px;
   min-width: 0;
 }
 .swi {
@@ -696,6 +791,7 @@ svg.i {
   cursor: pointer;
   flex: 0 0 auto;
   margin: 0;
+  transition: background-color var(--mid) var(--ease);
 }
 .swi::after {
   content: "";
@@ -706,18 +802,21 @@ svg.i {
   height: 14px;
   border-radius: 50%;
   background: var(--tx2);
-  transition: transform 0.15s;
+  transition: transform var(--mid) var(--ease);
 }
 .swi:checked {
-  background: var(--acln);
-  border-color: var(--ac);
+  background: var(--ribbon);
+  border-color: var(--ribbon);
 }
 .swi:checked::after {
   transform: translateX(14px);
   background: #fff;
 }
+input[type="radio"],
+input[type="checkbox"]:not(.swi) {
+  accent-color: var(--ribbon);
+}
 input[type="radio"] {
-  accent-color: var(--ac);
   width: 16px;
   height: 16px;
   margin: 0;

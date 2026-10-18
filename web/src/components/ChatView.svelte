@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { tick } from "svelte";
   import {
     api,
     ApiError,
@@ -27,6 +28,7 @@
   import InternetSources from "./InternetSources.svelte";
   import WorkspaceMode from "./WorkspaceMode.svelte";
   import { renderMarkdown } from "../lib/markdown.ts";
+  import { rise } from "../lib/motion.ts";
   import { app, navigate, refreshChatGPT, refreshProjects, viewport } from "../lib/state.svelte.ts";
 
   let { chat, project, onNewChat }: { chat: ChatSummary; project: Project; onNewChat: (mode: Mode) => Promise<void> } =
@@ -97,6 +99,11 @@
   /** Texts this page queued, by submission, so a queued item can show what it says. */
   let queuedTexts: Record<number, string> = $state({});
   const phone = $derived(viewport() === "phone");
+  /** Set once the history has rendered, so only items arriving afterwards animate in. */
+  let settled = $state(false);
+  $effect(() => {
+    if (stream?.loaded && !settled) void tick().then(() => (settled = true));
+  });
 
   $effect(() => {
     const current = new ChatStream(chat.id);
@@ -420,22 +427,13 @@
 </script>
 
 <section aria-label="Chat">
-  {#if !phone}
-    <header>
-      <div class="titles">
-        <div class="project">{project.name}</div>
-        <h1>{chat.title ?? "New chat"}</h1>
-      </div>
-      <span class="wsitem" title={root}><Icon name="folder" />{root}</span>
-    </header>
-  {/if}
-
   <div class="scroller">
     <div class="transcript" style:padding-inline={phone ? "12px" : "20px"}>
       {#if stream?.loaded && items.length === 0}
         <div class="empty">
           <h2>Start the conversation</h2>
-          {#if ready}<p>Pal works in <span class="mono">{root}</span>. Ask a question or describe what you need.</p>
+          {#if ready}<p>Ask a question or describe what you need.</p>
+            <p class="wsitem" title={root}><Icon name="folder" /><span class="ellipsis">{root}</span></p>
           {:else}<p>This chat's folder is not ready. No local folder was substituted.</p>{/if}
           {#if workspace?.mode === "worktree" && ready}<p>
               Detached worktree from <span class="mono">{workspace.base?.slice(0, 12)}</span>. Source dirt was not
@@ -448,153 +446,155 @@
         </div>
       {/if}
       {#each items as item (item.id)}
-        {#if item.kind === "user"}
-          <div class="user">
-            <div class="bubble">{item.text}</div>
-            {#if item.attachments.length > 0}
-              <div class="chips end">
-                {#each item.attachments as attachment (attachment.id)}
-                  <span class="chip plain"
-                    ><Icon name="file" />{attachment.name}<span class="dim">{size(attachment.size)}</span></span
-                  >
-                {/each}
-              </div>
-            {/if}
-            <span class="at">{time(item.at)}</span>
-          </div>
-        {:else if item.kind === "note"}
-          <div class="note"><Icon name="info" /><span>{item.text}</span></div>
-        {:else if item.kind === "mcp"}
-          <InternetSources receipt={item.receipt} />
-        {:else if item.kind === "approval"}
-          {@const approval = item.approval}
-          <div class="appr" class:settled={approval.state !== "pending"} role="group" aria-label="Approval request">
-            <div class="apph">
-              <Icon name={approval.state === "pending" ? "warn" : "term"} />{(approval.tool === "browser_act"
-                ? browserHeads
-                : heads)[approval.state]}
-            </div>
-            <code class="mono cmd">{approval.command}</code>
-            <p class="why">
-              {#if approval.tool === "browser_act"}
-                Browser page <span class="mono">{approval.cwd}</span> · timeout {approval.timeout} s · exact action in the
-                sandboxed project browser. Inspect after any interruption.
-              {:else}
-                In <span class="mono">{approval.cwd}</span> · timeout {approval.timeout} s · runs as the Pal host user, not
-                in a sandbox.
-              {/if}
-            </p>
-            {#if approval.state === "pending"}
-              <p class="why">
-                Waits until {time(approval.expiresAt)} at most; Stop ends it. Nothing runs until you approve.
-              </p>
-              <div class="acts">
-                <button class="b p" disabled={deciding !== undefined} onclick={() => decide(approval, "approve")}
-                  >Approve once</button
-                >
-                <button class="b" disabled={deciding !== undefined} onclick={() => decide(approval, "deny")}
-                  >Deny</button
-                >
-              </div>
-            {:else}
-              <div class="why">{outcome(approval)}</div>
-            {/if}
-          </div>
-        {:else if item.kind === "shell"}
-          <details class="activity">
-            <summary class="acth"
-              ><Icon name="term" /><span class="grow">Host command <span class="dim">· not sandboxed</span></span>
-              <span class="pill" class:er={item.receipt.timedOut || (item.receipt.exitCode ?? 0) !== 0}>
-                {item.receipt.timedOut
-                  ? "Timed out"
-                  : item.receipt.exitCode !== undefined
-                    ? `Exit ${item.receipt.exitCode}`
-                    : "Pending receipt"}
-              </span>
-            </summary>
-            <div class="small dim mono ellipsis" title={item.receipt.cwd}>{item.receipt.cwd}</div>
-            <pre class="out">{item.receipt.command}</pre>
-            {#if item.receipt.output !== undefined}<pre class="out">{item.receipt.output}</pre>{/if}
-            {#if item.receipt.truncated}<p class="small dim">Output truncated to the last 64 KiB.</p>{/if}
-            {#if item.receipt.status !== "finished"}<p class="small dim">
-                No completion receipt yet. If interrupted, inspect the workspace before retrying.
-              </p>{/if}
-          </details>
-        {:else}
-          {#if item.steps.length > 0}
-            {@const open = openSteps[item.id] === true}
-            <div class="activity">
-              <button class="acth" aria-expanded={open} onclick={() => (openSteps[item.id] = !open)}>
-                {#if item.live && item.steps.some((step) => step.result === undefined)}
-                  <span class="ring spin" aria-hidden="true"></span>
-                {:else}
-                  <Icon name="run" />
-                {/if}
-                <span class="grow">
-                  <span class="strong"
-                    >{item.steps.length === 1 ? "Ran a script" : `Ran ${item.steps.length} scripts`}</span
-                  >
-                  {#if item.steps.some((step) => step.result?.isError)}<span class="dim"> · with errors</span>{/if}
-                </span>
-                <span class="dim small">{open ? "Hide" : "Show"}</span>
-                <Icon name={open ? "chevD" : "chevR"} />
-              </button>
-              {#if open}
-                <ol>
-                  {#each item.steps as step (step.id)}
-                    <li>
-                      <div class="steprow">
-                        <Icon name="run" /><span class="dim">{step.name}</span>
-                        {#if step.result === undefined}<span class="pill">Running</span>
-                        {:else if step.result.isError}<span class="pill er">Failed</span>
-                        {:else}<span class="pill ok">Done</span>{/if}
-                      </div>
-                      {#if step.code !== undefined}<pre class="out">{step.code}</pre>{/if}
-                      {#each step.result?.calls ?? [] as call (call.id)}
-                        <div class="steprow call">
-                          <Icon name={call.name.startsWith("mcp__") ? "globe" : "run"} />
-                          <span>{toolLabel(call.name)}</span>
-                          <span class="mono args">{call.args}</span>
-                          {#if call.status === "ok"}<span class="pill ok">Done</span>
-                          {:else if call.status === "running"}<span class="pill">Interrupted</span>
-                          {:else}<span class="pill er">{call.status === "cancelled" ? "Cancelled" : "Failed"}</span
-                            >{/if}
-                        </div>
-                        {#if call.error}<div class="dim small call">{call.error}</div>{/if}
-                      {/each}
-                      {#if step.result !== undefined}<pre class="out">{step.result.text}</pre>{/if}
-                    </li>
+        <div class="item" in:rise={{ enabled: settled && (item.kind !== "assistant" || item.live) }}>
+          {#if item.kind === "user"}
+            <div class="user">
+              <div class="bubble">{item.text}</div>
+              {#if item.attachments.length > 0}
+                <div class="chips end">
+                  {#each item.attachments as attachment (attachment.id)}
+                    <span class="chip plain"
+                      ><Icon name="file" />{attachment.name}<span class="dim">{size(attachment.size)}</span></span
+                    >
                   {/each}
-                </ol>
+                </div>
               {/if}
+              <span class="at">{time(item.at)}</span>
             </div>
-          {/if}
-          {#if item.texts.length > 0 || item.error !== undefined || item.stopped || item.live}
-            <div class="assistant">
-              {#each item.texts as text, index (index)}
-                <!-- Sanitized by renderMarkdown: no raw HTML from the model survives. -->
-                <!-- eslint-disable-next-line svelte/no-at-html-tags -->
-                <div class="md">{@html renderMarkdown(text)}</div>
-              {/each}
-              {#if item.live && item.texts.length === 0 && item.steps.length === 0}
-                <div class="thinking"><span class="ring spin" aria-hidden="true"></span>Thinking…</div>
-              {/if}
-              {#if item.error !== undefined}
-                {#if item.error.includes("subscription_sharing_usage_limit_exceeded")}
-                  <div class="callout wa" role="alert">
-                    <strong>ChatGPT usage limit reached.</strong> Pal paused instead of retrying. Check
-                    <a href={USAGE_URL} target="_blank" rel="noopener noreferrer">ChatGPT settings → Usage</a>, then
-                    send again.
-                  </div>
+          {:else if item.kind === "note"}
+            <div class="note"><Icon name="info" /><span>{item.text}</span></div>
+          {:else if item.kind === "mcp"}
+            <InternetSources receipt={item.receipt} />
+          {:else if item.kind === "approval"}
+            {@const approval = item.approval}
+            <div class="appr" class:settled={approval.state !== "pending"} role="group" aria-label="Approval request">
+              <div class="apph">
+                <Icon name={approval.state === "pending" ? "warn" : "term"} />{(approval.tool === "browser_act"
+                  ? browserHeads
+                  : heads)[approval.state]}
+              </div>
+              <code class="mono cmd">{approval.command}</code>
+              <p class="why">
+                {#if approval.tool === "browser_act"}
+                  Browser page <span class="mono">{approval.cwd}</span> · timeout {approval.timeout} s · exact action in the
+                  sandboxed project browser. Inspect after any interruption.
                 {:else}
-                  <div class="callout er" role="alert"><strong>The model request failed.</strong> {item.error}</div>
+                  In <span class="mono">{approval.cwd}</span> · timeout {approval.timeout} s · runs as the Pal host user,
+                  not in a sandbox.
                 {/if}
+              </p>
+              {#if approval.state === "pending"}
+                <p class="why">
+                  Waits until {time(approval.expiresAt)} at most; Stop ends it. Nothing runs until you approve.
+                </p>
+                <div class="acts">
+                  <button class="b p" disabled={deciding !== undefined} onclick={() => decide(approval, "approve")}
+                    >Approve once</button
+                  >
+                  <button class="b" disabled={deciding !== undefined} onclick={() => decide(approval, "deny")}
+                    >Deny</button
+                  >
+                </div>
+              {:else}
+                <div class="why">{outcome(approval)}</div>
               {/if}
-              {#if item.stopped}<div class="note"><Icon name="stop" /><span>Stopped.</span></div>{/if}
-              {#if !item.live}<span class="at">{time(item.at)}</span>{/if}
             </div>
+          {:else if item.kind === "shell"}
+            <details class="activity">
+              <summary class="acth"
+                ><Icon name="term" /><span class="grow">Host command <span class="dim">· not sandboxed</span></span>
+                <span class="pill" class:er={item.receipt.timedOut || (item.receipt.exitCode ?? 0) !== 0}>
+                  {item.receipt.timedOut
+                    ? "Timed out"
+                    : item.receipt.exitCode !== undefined
+                      ? `Exit ${item.receipt.exitCode}`
+                      : "Pending receipt"}
+                </span>
+              </summary>
+              <div class="small dim mono ellipsis" title={item.receipt.cwd}>{item.receipt.cwd}</div>
+              <pre class="out">{item.receipt.command}</pre>
+              {#if item.receipt.output !== undefined}<pre class="out">{item.receipt.output}</pre>{/if}
+              {#if item.receipt.truncated}<p class="small dim">Output truncated to the last 64 KiB.</p>{/if}
+              {#if item.receipt.status !== "finished"}<p class="small dim">
+                  No completion receipt yet. If interrupted, inspect the workspace before retrying.
+                </p>{/if}
+            </details>
+          {:else}
+            {#if item.steps.length > 0}
+              {@const open = openSteps[item.id] === true}
+              <div class="activity">
+                <button class="acth" aria-expanded={open} onclick={() => (openSteps[item.id] = !open)}>
+                  {#if item.live && item.steps.some((step) => step.result === undefined)}
+                    <span class="ring spin" aria-hidden="true"></span>
+                  {:else}
+                    <Icon name="run" />
+                  {/if}
+                  <span class="grow">
+                    <span class="strong"
+                      >{item.steps.length === 1 ? "Ran a script" : `Ran ${item.steps.length} scripts`}</span
+                    >
+                    {#if item.steps.some((step) => step.result?.isError)}<span class="dim"> · with errors</span>{/if}
+                  </span>
+                  <span class="dim small">{open ? "Hide" : "Show"}</span>
+                  <Icon name={open ? "chevD" : "chevR"} />
+                </button>
+                {#if open}
+                  <ol>
+                    {#each item.steps as step (step.id)}
+                      <li>
+                        <div class="steprow">
+                          <Icon name="run" /><span class="dim">{step.name}</span>
+                          {#if step.result === undefined}<span class="pill">Running</span>
+                          {:else if step.result.isError}<span class="pill er">Failed</span>
+                          {:else}<span class="pill ok">Done</span>{/if}
+                        </div>
+                        {#if step.code !== undefined}<pre class="out">{step.code}</pre>{/if}
+                        {#each step.result?.calls ?? [] as call (call.id)}
+                          <div class="steprow call">
+                            <Icon name={call.name.startsWith("mcp__") ? "globe" : "run"} />
+                            <span>{toolLabel(call.name)}</span>
+                            <span class="mono args">{call.args}</span>
+                            {#if call.status === "ok"}<span class="pill ok">Done</span>
+                            {:else if call.status === "running"}<span class="pill">Interrupted</span>
+                            {:else}<span class="pill er">{call.status === "cancelled" ? "Cancelled" : "Failed"}</span
+                              >{/if}
+                          </div>
+                          {#if call.error}<div class="dim small call">{call.error}</div>{/if}
+                        {/each}
+                        {#if step.result !== undefined}<pre class="out">{step.result.text}</pre>{/if}
+                      </li>
+                    {/each}
+                  </ol>
+                {/if}
+              </div>
+            {/if}
+            {#if item.texts.length > 0 || item.error !== undefined || item.stopped || item.live}
+              <div class="assistant">
+                {#each item.texts as text, index (index)}
+                  <!-- Sanitized by renderMarkdown: no raw HTML from the model survives. -->
+                  <!-- eslint-disable-next-line svelte/no-at-html-tags -->
+                  <div class="md">{@html renderMarkdown(text)}</div>
+                {/each}
+                {#if item.live && item.texts.length === 0 && item.steps.length === 0}
+                  <div class="thinking"><span class="ring spin" aria-hidden="true"></span>Thinking…</div>
+                {/if}
+                {#if item.error !== undefined}
+                  {#if item.error.includes("subscription_sharing_usage_limit_exceeded")}
+                    <div class="callout wa" role="alert">
+                      <strong>ChatGPT usage limit reached.</strong> Pal paused instead of retrying. Check
+                      <a href={USAGE_URL} target="_blank" rel="noopener noreferrer">ChatGPT settings → Usage</a>, then
+                      send again.
+                    </div>
+                  {:else}
+                    <div class="callout er" role="alert"><strong>The model request failed.</strong> {item.error}</div>
+                  {/if}
+                {/if}
+                {#if item.stopped}<div class="note"><Icon name="stop" /><span>Stopped.</span></div>{/if}
+                {#if !item.live}<span class="at">{time(item.at)}</span>{/if}
+              </div>
+            {/if}
           {/if}
-        {/if}
+        </div>
       {/each}
     </div>
   </div>
@@ -721,7 +721,7 @@
       {/if}
       {#if error !== undefined}<div class="callout er" role="alert">{error}</div>{/if}
 
-      <div class="cbx">
+      <div class="cbx" class:running={stream?.running}>
         {#if attachments.length > 0 || uploading > 0}
           <div class="chips">
             {#each attachments as attachment (attachment.id)}
@@ -816,10 +816,10 @@
     border-top: 1px solid var(--line);
   }
   .appr {
-    border: 1px solid #5a4a2c;
+    border: 1px solid var(--waln);
     background: var(--wabg);
-    border-radius: 8px;
-    padding: 12px 14px;
+    border-radius: 12px;
+    padding: 14px 16px;
     display: flex;
     flex-direction: column;
     gap: 8px;
@@ -876,34 +876,6 @@
     flex-direction: column;
     position: relative;
   }
-  header {
-    flex: 0 0 auto;
-    display: flex;
-    align-items: center;
-    gap: 8px 12px;
-    padding: 8px 12px 8px 14px;
-    min-height: 56px;
-    border-bottom: 1px solid var(--line);
-    flex-wrap: wrap;
-  }
-  .titles {
-    flex: 1 1 200px;
-    min-width: 0;
-  }
-  .project {
-    font-size: 12px;
-    color: var(--tx3);
-    line-height: 1.3;
-  }
-  h1 {
-    margin: 0;
-    font-size: 15px;
-    font-weight: 600;
-    line-height: 1.35;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-  }
   .scroller {
     flex: 1;
     min-height: 0;
@@ -913,30 +885,39 @@
   }
   .transcript {
     width: 100%;
-    max-width: 780px;
+    max-width: 760px;
     margin: 0 auto;
-    padding-top: 20px;
-    padding-bottom: 14px;
+    padding-top: 28px;
+    padding-bottom: 18px;
     display: flex;
     flex-direction: column;
-    gap: 18px;
+    gap: 22px;
+  }
+  .item {
+    display: flex;
+    flex-direction: column;
+    gap: 10px;
   }
   .empty {
-    padding: 40px 0 16px;
+    padding: 56px 0 16px;
     color: var(--tx2);
     display: flex;
     flex-direction: column;
-    gap: 6px;
+    gap: 8px;
   }
   .empty h2 {
-    margin: 0;
-    font-size: 16px;
+    margin: 0 0 4px;
+    font-size: 24px;
     color: var(--tx);
-    font-weight: 600;
+    font-weight: 700;
+    letter-spacing: -0.02em;
   }
   .empty p {
     margin: 0;
     max-width: 520px;
+  }
+  .empty .wsitem {
+    max-width: 100%;
   }
   .user {
     align-self: flex-end;
@@ -947,16 +928,30 @@
     gap: 6px;
   }
   .bubble {
-    background: var(--bg3);
-    border: 1px solid var(--line2);
-    border-radius: 10px;
-    padding: 9px 13px;
+    background: rgba(59, 102, 255, 0.13);
+    border: 1px solid rgba(85, 121, 255, 0.24);
+    border-radius: 16px 16px 6px 16px;
+    padding: 10px 14px;
+    font-size: 15px;
+    line-height: 1.55;
     white-space: pre-wrap;
     overflow-wrap: anywhere;
   }
+  /* Times stay in the accessible text; on hover-capable screens they appear with the message they belong to. */
   .at {
     font-size: 11.5px;
     color: var(--tx3);
+    font-variant-numeric: tabular-nums;
+    transition: opacity var(--fast) var(--ease);
+  }
+  @media (hover: hover) {
+    .at {
+      opacity: 0;
+    }
+    .item:hover .at,
+    .item:focus-within .at {
+      opacity: 1;
+    }
   }
   .note {
     display: flex;
@@ -967,7 +962,7 @@
   }
   .activity {
     border: 1px solid var(--line);
-    border-radius: 8px;
+    border-radius: 12px;
     background: var(--bg1);
   }
   .activity ol {
@@ -1024,7 +1019,8 @@
     display: flex;
     flex-direction: column;
     gap: 8px;
-    line-height: 1.6;
+    font-size: 15px;
+    line-height: 1.65;
   }
   .thinking {
     display: flex;
@@ -1037,7 +1033,28 @@
     overflow-wrap: anywhere;
   }
   .md :global(p) {
-    margin: 0 0 8px;
+    margin: 0 0 10px;
+  }
+  .md :global(:is(h1, h2, h3, h4)) {
+    margin: 18px 0 8px;
+    font-weight: 700;
+    letter-spacing: -0.01em;
+    line-height: 1.3;
+  }
+  .md :global(:is(h1, h2)) {
+    font-size: 18px;
+  }
+  .md :global(:is(h3, h4)) {
+    font-size: 15.5px;
+  }
+  .md :global(:first-child) {
+    margin-top: 0;
+  }
+  .md :global(blockquote) {
+    margin: 0 0 10px;
+    padding-left: 12px;
+    border-left: 2px solid var(--line2);
+    color: var(--tx2);
   }
   .md :global(p:last-child) {
     margin-bottom: 0;
@@ -1055,11 +1072,11 @@
     border-radius: 4px;
   }
   .md :global(pre) {
-    margin: 0 0 8px;
-    padding: 8px 10px;
+    margin: 0 0 10px;
+    padding: 10px 12px;
     background: var(--bg0);
     border: 1px solid var(--line);
-    border-radius: 6px;
+    border-radius: 10px;
     overflow-x: auto;
   }
   .md :global(pre code) {
@@ -1075,7 +1092,7 @@
     flex: 0 0 auto;
   }
   .dockin {
-    max-width: 780px;
+    max-width: 760px;
     margin: 0 auto;
     position: relative;
     display: flex;
@@ -1102,15 +1119,37 @@
     display: flex;
     align-items: center;
     gap: 10px;
-    padding: 6px 6px 6px 12px;
-    border: 1px solid var(--line2);
-    border-radius: 8px;
-    background: var(--bg2);
+    padding: 0 2px 0 6px;
     font-size: 13px;
+    color: var(--tx);
+    animation: rise var(--mid) var(--ease);
+  }
+  .cbx {
+    position: relative;
+  }
+  /* The signature ribbon: present only while the agent runs, drifting so a live run reads at a glance. */
+  .cbx.running::before {
+    content: "";
+    position: absolute;
+    top: -1px;
+    left: 18px;
+    right: 18px;
+    height: 2px;
+    border-radius: 2px;
+    background: linear-gradient(90deg, var(--ribbon), var(--glint), var(--bloom), var(--glint), var(--ribbon)) 0 0 /
+      200% 100%;
+    animation:
+      fade var(--mid) var(--ease),
+      ribbon 2.8s linear infinite;
+  }
+  @keyframes ribbon {
+    to {
+      background-position: -200% 0;
+    }
   }
   .queue {
     border: 1px dashed var(--line2);
-    border-radius: 8px;
+    border-radius: 12px;
     padding: 6px 6px 6px 12px;
     display: flex;
     flex-direction: column;

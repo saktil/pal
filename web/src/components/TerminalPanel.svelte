@@ -109,7 +109,7 @@
         cols: 80,
         rows: 24,
         scrollback: 1000,
-        fontFamily: '"IBM Plex Mono", monospace',
+        fontFamily: '"Atkinson Hyperlegible Mono Variable", monospace',
         fontSize: 12,
         theme: { background: "#0d0d0e", foreground: "#e8e8ea", cursor: "#8ea4ff", selectionBackground: "#46519a" },
         disableStdin: true,

@@ -69,18 +69,50 @@
     padding: 24px 20px;
   }
   h1 {
-    font-size: 22px;
-    font-weight: 500;
-    margin: 0 0 16px;
+    font-size: 28px;
+    font-weight: 750;
+    letter-spacing: -0.025em;
+    margin: 12px 0 16px;
   }
   ol {
+    list-style: none;
     display: flex;
-    gap: 24px;
-    padding-left: 20px;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin: 0;
+    padding: 0;
+    counter-reset: step;
+  }
+  li {
+    counter-increment: step;
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    padding: 3px 12px 3px 3px;
+    border: 1px solid var(--line2);
+    border-radius: 999px;
     color: var(--tx3);
+    font-size: 13px;
+    font-weight: 550;
+  }
+  li::before {
+    content: counter(step);
+    display: grid;
+    place-items: center;
+    width: 22px;
+    height: 22px;
+    border-radius: 50%;
+    background: var(--bg3);
     font-size: 12px;
+    font-weight: 700;
   }
   [aria-current="step"] {
-    color: var(--ac);
+    color: var(--tx);
+    border-color: var(--acln);
+    background: var(--acbg);
+  }
+  [aria-current="step"]::before {
+    background: var(--ribbon);
+    color: #fff;
   }
 </style>

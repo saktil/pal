@@ -47,19 +47,24 @@
 </script>
 
 <aside aria-label="Projects and chats">
-  {#if onClose !== undefined}
-    <div class="close">
+  <div class="brand">
+    <span class="wordmark">pal</span>
+    {#if onClose !== undefined}
       <button class="b i q" aria-label="Close projects" onclick={onClose}><Icon name="x" /></button>
-    </div>
-  {/if}
+    {/if}
+  </div>
   <div class="actions">
     <button class="b grow" onclick={() => target && onNewChat(target.id)} disabled={target === undefined}>
       <Icon name="plus" />New chat
     </button>
-    <button class="b" onclick={onCreateProject}><Icon name="folderPlus" />Project</button>
   </div>
   <nav aria-label="Projects">
-    <div class="lbl">Projects</div>
+    <div class="navhead">
+      <div class="lbl">Projects</div>
+      <button class="b i q sm" aria-label="New project" title="New project" onclick={onCreateProject}
+        ><Icon name="folderPlus" /></button
+      >
+    </div>
     {#if app.projects.length === 0}<p class="none">No projects yet.</p>{/if}
     {#each app.projects as project (project.id)}
       {@const open = !collapsed[project.id]}
@@ -75,13 +80,13 @@
             {/if}
           </button>
           <button
-            class="b i q sm"
+            class="b i q sm reveal"
             aria-label={`New chat in ${project.name}`}
             onclick={() => onNewChat(project.id)}
             disabled={project.state !== "ready"}><Icon name="plus" /></button
           >
           <button
-            class="b i q sm"
+            class="b i q sm reveal"
             aria-label={`Remove project ${project.name}`}
             onclick={() => (removing = { kind: "project", id: project.id, name: project.name })}
             ><Icon name="trash" /></button
@@ -99,17 +104,19 @@
                   <span class="title">{chat.title ?? "New chat"}</span>
                   <span class="cmeta">{relative(chat.createdAt)}</span>
                 </button>
-                <button
-                  class="b i q sm"
-                  aria-label={`Rename chat ${chat.title ?? "New chat"}`}
-                  onclick={() => onRenameChat(chat)}><Icon name="edit" /></button
-                >
-                <button
-                  class="b i q sm"
-                  aria-label={`Delete chat ${chat.title ?? "New chat"}`}
-                  onclick={() => (removing = { kind: "chat", id: chat.id, name: chat.title ?? "New chat" })}
-                  ><Icon name="trash" /></button
-                >
+                <span class="acts">
+                  <button
+                    class="b i q sm"
+                    aria-label={`Rename chat ${chat.title ?? "New chat"}`}
+                    onclick={() => onRenameChat(chat)}><Icon name="edit" /></button
+                  >
+                  <button
+                    class="b i q sm"
+                    aria-label={`Delete chat ${chat.title ?? "New chat"}`}
+                    onclick={() => (removing = { kind: "chat", id: chat.id, name: chat.title ?? "New chat" })}
+                    ><Icon name="trash" /></button
+                  >
+                </span>
               </li>
             {/each}
           </ul>
@@ -147,15 +154,24 @@
     height: 100%;
     background: var(--bg0);
   }
-  .close {
+  .brand {
     display: flex;
-    justify-content: flex-end;
-    padding: 8px 8px 0;
+    align-items: center;
+    gap: 8px;
+    min-height: 56px;
+    padding: 10px 10px 4px 18px;
+  }
+  .wordmark {
+    flex: 1;
+    font-size: 21px;
+    font-weight: 750;
+    letter-spacing: -0.03em;
+    line-height: 1;
   }
   .actions {
     display: flex;
     gap: 6px;
-    padding: 12px 12px 8px;
+    padding: 8px 12px 6px;
   }
   .grow {
     flex: 1;
@@ -166,21 +182,53 @@
     overflow: auto;
     padding: 0 8px 8px;
   }
+  .navhead {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding-right: 2px;
+  }
+  .navhead .lbl {
+    padding-bottom: 6px;
+  }
   .none {
     margin: 4px 8px;
     font-size: 13px;
     color: var(--tx3);
   }
   .project {
-    margin-bottom: 4px;
+    margin-bottom: 6px;
   }
   li {
+    position: relative;
     display: flex;
     align-items: center;
+    border-radius: 8px;
+    transition: background-color var(--fast) var(--ease);
+  }
+  li:hover,
+  li:focus-within {
+    background: var(--bg2);
+  }
+  li:has(.chatrow[aria-current="true"]) {
+    background: var(--bg3);
+  }
+  li .chatrow,
+  li .chatrow:hover,
+  li .chatrow[aria-current="true"] {
+    background: transparent;
+  }
+  .acts {
+    display: flex;
+    background: inherit;
+    border-radius: 8px;
   }
   .chatrow {
     flex: 1;
     min-width: 0;
+    flex-direction: row;
+    align-items: center;
+    gap: 8px;
   }
   .head {
     display: flex;
@@ -189,7 +237,7 @@
   }
   .name {
     color: var(--tx);
-    font-weight: 500;
+    font-weight: 650;
   }
   .name :global(svg) {
     color: var(--tx3);
@@ -202,9 +250,6 @@
     text-overflow: ellipsis;
     white-space: nowrap;
   }
-  .title {
-    width: 100%;
-  }
   ul {
     list-style: none;
     margin: 0;
@@ -212,6 +257,26 @@
     display: flex;
     flex-direction: column;
     gap: 1px;
+  }
+  /* Row actions stay reachable by keyboard and touch, but only draw attention where the owner is pointing. */
+  @media (hover: hover) and (pointer: fine) {
+    .reveal,
+    .acts {
+      opacity: 0;
+      transition: opacity var(--fast) var(--ease);
+    }
+    li:hover .acts,
+    li:focus-within .acts,
+    .head:hover .reveal,
+    .head:focus-within .reveal {
+      opacity: 1;
+    }
+    /* Over the chat's time instead of beside it, so titles keep the full row width. */
+    .acts {
+      position: absolute;
+      right: 4px;
+      padding-left: 4px;
+    }
   }
   .foot {
     padding: 8px;

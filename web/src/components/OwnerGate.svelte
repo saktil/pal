@@ -100,12 +100,17 @@
   }
   h1 {
     margin: 0;
-    font-size: 18px;
-    font-weight: 600;
+    font-size: 26px;
+    font-weight: 750;
+    letter-spacing: -0.02em;
   }
   p {
-    margin: 0;
+    margin: 0 0 6px;
     color: var(--tx2);
+  }
+  /* Stacked fields; the shared field style is meant for wrapping rows. */
+  .fl {
+    flex: none;
   }
   .b.p {
     align-self: flex-start;

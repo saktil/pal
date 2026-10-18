@@ -216,7 +216,8 @@
     position: fixed;
     inset: 0;
     z-index: 60;
-    background: rgba(0, 0, 0, 0.55);
+    animation: fade var(--mid) var(--ease);
+    background: var(--scrim);
     display: flex;
     align-items: center;
     justify-content: center;
@@ -231,8 +232,10 @@
     flex-direction: column;
     background: var(--bg2);
     border: 1px solid var(--line2);
-    border-radius: 12px;
-    box-shadow: 0 24px 64px rgba(0, 0, 0, 0.55);
+    border-radius: 14px;
+    box-shadow: var(--shadow);
+    animation: pop-in var(--mid) var(--ease);
+    transform-origin: center;
   }
   .phone {
     padding: 0;

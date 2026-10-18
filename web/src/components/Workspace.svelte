@@ -142,7 +142,7 @@
         <div
           class="side"
           class:drawer={size !== "desktop"}
-          style:width={size === "desktop" ? "252px" : size === "phone" ? "86%" : "300px"}
+          style:width={size === "desktop" ? "264px" : size === "phone" ? "86%" : "300px"}
         >
           <Sidebar
             currentChatId={chatId}
@@ -162,23 +162,38 @@
         {#if app.route.view === "settings"}
           <Settings tab={app.route.tab} {onSignOut} />
         {:else if located !== undefined}
-          <div class="workspace-tools">
-            {#key located.project.id}<ProjectMcpSettings project={located.project} />{/key}
+          {@const root = located.chat.workspace?.root ?? located.project.root}
+          <header class="chathead" class:compact={size === "phone"}>
             {#if size === "tablet"}<button
                 class="b i q"
                 aria-label="Projects and chats"
                 onclick={() => (drawerRoute = app.route)}><Icon name="menu" /></button
               >{/if}
-            {#each panelButtons as item (item.id)}
-              {#if enabledPanels.has(item.id)}
-                <button
-                  class="b sm q"
-                  aria-expanded={panel && panelView === item.id}
-                  onclick={() => togglePanel(item.id)}><Icon name={item.icon} />{item.id}</button
-                >
-              {/if}
-            {/each}
-          </div>
+            {#if size !== "phone"}
+              <div class="titles">
+                <h1>{located.chat.title ?? "New chat"}</h1>
+                <div class="where" title={root}>
+                  <span>{located.project.name}</span><span class="mono path">{root}</span>
+                </div>
+              </div>
+            {/if}
+            <div class="tools">
+              {#key located.project.id}<ProjectMcpSettings project={located.project} />{/key}
+              {#each panelButtons as item (item.id)}
+                {#if enabledPanels.has(item.id)}
+                  <button
+                    class="b sm q"
+                    class:i={size !== "desktop"}
+                    aria-label={size === "desktop" ? undefined : item.id}
+                    title={size === "desktop" ? undefined : item.id}
+                    aria-expanded={panel && panelView === item.id}
+                    onclick={() => togglePanel(item.id)}
+                    ><Icon name={item.icon} />{#if size === "desktop"}{item.id}{/if}</button
+                  >
+                {/if}
+              {/each}
+            </div>
+          </header>
           <div class="workarea" class:terminal-open={panel && panelView === "Terminal"}>
             <div class="chat-area">
               {#key located.chat.id}<ChatView
@@ -353,7 +368,8 @@
     top: 0;
     bottom: 0;
     left: 0;
-    box-shadow: 16px 0 40px rgba(0, 0, 0, 0.5);
+    box-shadow: var(--shadow);
+    animation: slide-left var(--mid) var(--ease);
   }
   main {
     flex: 1;
@@ -365,13 +381,54 @@
   .banner {
     margin: 8px 12px 0;
   }
-  .workspace-tools {
+  .chathead {
+    flex: 0 0 auto;
     display: flex;
-    flex-wrap: wrap;
+    align-items: center;
+    gap: 8px 12px;
+    min-height: 56px;
+    padding: 8px 10px 8px 20px;
+    border-bottom: 1px solid var(--line);
+  }
+  .chathead.compact {
+    min-height: 0;
+    padding: 4px 6px;
+  }
+  .titles {
+    flex: 1 1 0;
+    min-width: 0;
+  }
+  .titles h1 {
+    margin: 0;
+    font-size: 16px;
+    font-weight: 700;
+    letter-spacing: -0.01em;
+    line-height: 1.3;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .where {
+    display: flex;
+    gap: 8px;
+    min-width: 0;
+    font-size: 12.5px;
+    color: var(--tx3);
+    white-space: nowrap;
+  }
+  .where .path {
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    font-size: 12px;
+  }
+  .tools {
+    display: flex;
     align-items: center;
     justify-content: flex-end;
-    padding: 4px 8px;
-    border-bottom: 1px solid var(--line);
+    gap: 2px;
+    margin-left: auto;
+    flex-wrap: wrap;
   }
   .workarea {
     flex: 1;
@@ -403,6 +460,7 @@
     border-left: 1px solid var(--line);
     background: var(--bg1);
     z-index: 26;
+    animation: fade var(--mid) var(--ease);
   }
   .panelhead {
     display: flex;
@@ -414,8 +472,8 @@
   }
   .panelhead h2 {
     flex: 1;
-    font-size: 13px;
-    font-weight: 600;
+    font-size: 14px;
+    font-weight: 700;
     margin: 0;
   }
   .panel-scrim {
@@ -423,7 +481,8 @@
     inset: 0;
     z-index: 25;
     border: 0;
-    background: rgba(0, 0, 0, 0.5);
+    background: var(--scrim);
+    animation: fade var(--mid) var(--ease);
   }
   @media (max-width: 1099px) {
     .workspace-panel.terminal-panel {
@@ -433,7 +492,8 @@
       position: absolute;
       inset: 0 0 0 auto;
       width: 70%;
-      box-shadow: -16px 0 40px rgba(0, 0, 0, 0.5);
+      box-shadow: var(--shadow);
+      animation: slide-right var(--mid) var(--ease);
     }
   }
   @media (max-width: 699px) {
@@ -459,8 +519,9 @@
   }
   .intro h1 {
     margin: 0;
-    font-size: 18px;
-    font-weight: 600;
+    font-size: 22px;
+    font-weight: 700;
+    letter-spacing: -0.015em;
   }
   .intro p {
     margin: 0;

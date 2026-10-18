@@ -59,15 +59,6 @@
   dialog {
     width: 470px;
     max-width: calc(100% - 32px);
-    background: var(--bg2);
-    color: var(--tx);
-    border: 1px solid var(--line2);
-    border-radius: 10px;
-    padding: 18px;
-    box-shadow: 0 24px 64px rgba(0, 0, 0, 0.5);
-  }
-  dialog::backdrop {
-    background: rgba(0, 0, 0, 0.55);
   }
   form {
     display: flex;
