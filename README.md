@@ -128,3 +128,8 @@ Details: [docs/security.md](docs/security.md).
 TypeScript on Node.js 24, [Pi](https://github.com/earendil-works/pi) Durable, AI and Code Mode, SQLite (Node's
 built-in `node:sqlite`), Svelte 5 and Vite, fff, node-pty and xterm.js, Playwright for the browser runtime and tests,
 and Nix for reproducible builds.
+
+## License
+
+Pal is licensed under the [Apache License, Version 2.0](LICENSE). Bundled agent skills under `.agents/skills/` keep
+their own licenses.
