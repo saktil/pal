@@ -17,6 +17,8 @@ export type FixtureBehavior = {
   responses: "ok" | "truncated" | "usage_limit" | "script";
   /** In `script` mode, the first response calls `codemode` with this script; the follow-up answers in text. */
   script: string;
+  /** The assistant's text answer. */
+  reply: string;
 };
 
 async function body(request: IncomingMessage): Promise<string> {
@@ -42,6 +44,7 @@ export async function startOpenAIFixture() {
     scope: DIRECT_SCOPE,
     responses: "ok",
     script: "return 1;",
+    reply: "Hello",
   };
   const authorizations: URLSearchParams[] = [];
   const tokenRequests: URLSearchParams[] = [];
@@ -152,7 +155,7 @@ export async function startOpenAIFixture() {
       const done = {
         ...message,
         status: "completed",
-        content: [{ type: "output_text", text: "Hello", annotations: [] }],
+        content: [{ type: "output_text", text: behavior.reply, annotations: [] }],
       };
       const usage = { input_tokens: 3, output_tokens: 1, total_tokens: 4 };
       const events: object[] = [created];
@@ -198,7 +201,13 @@ export async function startOpenAIFixture() {
       } else {
         events.push(
           { type: "response.output_item.added", output_index: 0, item: message },
-          { type: "response.output_text.delta", output_index: 0, content_index: 0, item_id: "msg_1", delta: "Hello" },
+          {
+            type: "response.output_text.delta",
+            output_index: 0,
+            content_index: 0,
+            item_id: "msg_1",
+            delta: behavior.reply,
+          },
         );
         if (behavior.responses !== "truncated") {
           events.push(

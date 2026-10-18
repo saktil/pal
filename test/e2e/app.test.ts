@@ -194,35 +194,49 @@ describe("Pal in a browser", () => {
     const trigger = page.getByRole("button", { name: /^Model and reasoning/ });
     await trigger.click();
     const card = page.getByRole("dialog", { name: "Model and reasoning" });
-    const levels = card.getByRole("radiogroup", { name: "Reasoning effort" });
-    const checked = levels.getByRole("radio", { checked: true });
-    const chosen = async () => (await checked.textContent())?.trim();
-    // Opening focuses the chosen level; keys move only between levels this model supports, choosing as they go.
-    await expect.poll(() => checked.evaluate((node) => node === document.activeElement)).toBe(true);
-    expect(await chosen()).toBe("Off");
-    expect(await trigger.getAttribute("aria-label")).toContain("reasoning off");
-    await page.keyboard.press("ArrowDown");
-    await expect.poll(() => trigger.getAttribute("aria-label")).toContain(", low");
+    const slider = card.getByRole("slider", { name: "Reasoning effort" });
+    // The knob is taller than the track and the fill ends under its center, so no fill edge shows around it.
+    const covered = () =>
+      card.locator(".track").evaluate((track) => {
+        const box = (selector: string) => {
+          const node = track.querySelector(selector);
+          if (node === null) throw new Error(`missing ${selector}`);
+          return node.getBoundingClientRect();
+        };
+        const [rail, fill, knob] = [track.getBoundingClientRect(), box(".fill"), box(".knob")];
+        return (
+          Math.abs(fill.right - (knob.left + knob.width / 2)) < 1 && knob.top < rail.top && knob.bottom > rail.bottom
+        );
+      });
+    // Opening focuses the stepped control; keys move only between levels this model supports.
+    await expect.poll(() => slider.evaluate((node) => node === document.activeElement)).toBe(true);
+    expect(await slider.getAttribute("aria-valuetext")).toBe("Off");
+    expect(await card.locator(".dot").count()).toBe(5);
+    await expect.poll(covered).toBe(true);
+    await page.keyboard.press("ArrowRight");
+    await expect.poll(() => trigger.getAttribute("aria-label")).toContain("reasoning low");
     // The model's own top level is reachable, not just Pal's former four.
     await page.keyboard.press("End");
-    await expect.poll(chosen).toBe("Extra high");
-    await expect.poll(() => trigger.getAttribute("aria-label")).toContain(", extra high");
-    await page.keyboard.press("ArrowUp");
-    await expect.poll(chosen).toBe("High");
-    await expect.poll(() => trigger.getAttribute("aria-label")).toContain(", high");
+    await expect.poll(() => slider.getAttribute("aria-valuetext")).toBe("Extra high");
+    await expect.poll(() => trigger.getAttribute("aria-label")).toContain("reasoning extra high");
+    await expect.poll(covered).toBe(true);
+    // A press lands on the step drawn under the pointer.
+    const medium = await card.locator(".dot").nth(2).boundingBox();
+    if (medium === null) throw new Error("the Medium step is not rendered");
+    await page.mouse.click(medium.x + medium.width / 2, medium.y + medium.height / 2);
+    await expect.poll(() => slider.getAttribute("aria-valuetext")).toBe("Medium");
+    await expect.poll(() => trigger.getAttribute("aria-label")).toContain("reasoning medium");
+    await page.keyboard.press("ArrowRight");
+    await expect.poll(() => slider.getAttribute("aria-valuetext")).toBe("High");
+    await expect.poll(() => trigger.getAttribute("aria-label")).toContain("reasoning high");
     await page.reload();
     await trigger.click();
-    await expect.poll(chosen).toBe("High");
-    // Every level is named; a click chooses one directly.
-    expect((await levels.getByRole("radio").allTextContents()).map((text) => text.trim())).toEqual([
-      "Off",
-      "Low",
-      "Medium",
-      "High",
-      "Extra high",
-    ]);
+    await expect.poll(() => slider.getAttribute("aria-valuetext")).toBe("High");
+    // The header names the model and the level, as the slider moves.
+    expect(await card.getByRole("button", { name: /^Choose model/ }).textContent()).toContain("High");
+    await expect.poll(covered).toBe(true);
     await shoot("reasoning-1440");
-    // The model header above the levels opens the real model list, with this chat's model chosen.
+    // The model header above the slider opens the real model list, with this chat's model chosen.
     await card.getByRole("button", { name: /^Choose model/ }).click();
     const list = page.getByRole("dialog", { name: "Choose model" });
     expect(await list.getByRole("radio", { checked: true }).count()).toBe(1);
@@ -237,6 +251,38 @@ describe("Pal in a browser", () => {
     expect(fixture.apiRequests.filter((call) => call.path === "/v1/responses").at(-1)?.body.reasoning).toMatchObject({
       effort: "high",
     });
+  });
+
+  it("colors code blocks and copies them from the header", async () => {
+    const code = 'package main\n\nfunc main() {\n\tfmt.Println("hi") // greet\n}';
+    fixture.behavior.reply = `Save this as \`main.go\`:\n\n\`\`\`go\n${code}\n\`\`\``;
+    try {
+      await page.getByLabel("Message").fill("write a small go program");
+      await page.getByRole("button", { name: "Send" }).click();
+      const block = page.locator(".md .code").last();
+      await block.waitFor();
+      expect((await block.locator(".codehead").textContent())?.trim()).toBe("goCopy");
+      expect(await block.locator(".hl-k").allTextContents()).toEqual(["package", "func"]);
+      expect(await block.locator(".hl-f").allTextContents()).toEqual(["main", "Println"]);
+      expect(await block.locator(".hl-s").allTextContents()).toEqual(['"hi"']);
+      expect(await block.locator(".hl-c").allTextContents()).toEqual(["// greet"]);
+      // Keywords take the theme's blue; everything else keeps its own color, and tabs are four columns.
+      expect(
+        await block
+          .locator(".hl-k")
+          .first()
+          .evaluate((node) => getComputedStyle(node).color),
+      ).toBe("rgb(122, 165, 255)");
+      expect(await block.locator("code").evaluate((node) => getComputedStyle(node).tabSize)).toBe("4");
+      await page.context().grantPermissions(["clipboard-read", "clipboard-write"], { origin: base });
+      const copy = block.locator("button[data-copy]");
+      await copy.click();
+      await expect.poll(() => copy.textContent()).toBe("Copied");
+      expect(await page.evaluate(() => navigator.clipboard.readText())).toBe(code);
+      await shoot("code-1440");
+    } finally {
+      fixture.behavior.reply = "Hello";
+    }
   });
 
   it("collapses popover motion when the owner prefers reduced motion", async () => {

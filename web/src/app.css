@@ -1,5 +1,6 @@
-/* Pal's "Graphite" system: neutral near-black surfaces, hierarchy from type weight and surface steps, and almost no
-   hue. The primary action is the only bright element; red, green and amber appear only for status and diffs. */
+/* Pal's "Graphite" system: neutral near-black surfaces and hierarchy from type weight and surface steps, with one blue
+   for what you act on (primary actions, links, focus, live state). Red, green and amber appear only for status and diffs;
+   the syntax colors only inside code. */
 :root {
   color-scheme: dark;
   --bg0: #08080a;
@@ -13,13 +14,13 @@
   --tx: #ececee;
   --tx2: #a3a3ab;
   --tx3: #85858e;
-  --ac: #e4e4e7;
-  --acbg: rgba(255, 255, 255, 0.06);
-  --acln: #3f3f46;
-  --primary: #ececee;
-  --primary-hi: #ffffff;
-  --on-primary: #0e0e10;
-  --focus: #a1a1aa;
+  --ac: #7aa5ff;
+  --acbg: rgba(122, 165, 255, 0.12);
+  --acln: rgba(122, 165, 255, 0.4);
+  --primary: #376ae8;
+  --primary-hi: #3062dc;
+  --on-primary: #ffffff;
+  --focus: #7aa5ff;
   --ok: #86c29d;
   --okbg: rgba(134, 194, 157, 0.1);
   --wa: #d8b06c;
@@ -35,7 +36,15 @@
   --delbg: rgba(230, 147, 156, 0.1);
   --deltx: #f0b9c0;
   --selection: rgba(255, 255, 255, 0.16);
-  --focus-ring: rgba(255, 255, 255, 0.07);
+  --focus-ring: rgba(122, 165, 255, 0.14);
+  --syn-k: #7aa5ff;
+  --syn-s: #9fd17a;
+  --syn-n: #f5a46c;
+  --syn-c: #7c8296;
+  --syn-f: #78d3f5;
+  --syn-t: #c1a0f7;
+  --syn-p: #72d6c7;
+  --syn-m: #e2b46e;
   --bubble: #1c1c1f;
   --bubble-line: #26262a;
   --shadow: 0 14px 36px rgba(0, 0, 0, 0.55), 0 1px 3px rgba(0, 0, 0, 0.4);
@@ -60,13 +69,13 @@
   --tx: #111113;
   --tx2: #4b4b53;
   --tx3: #6b6b73;
-  --ac: #18181b;
-  --acbg: rgba(0, 0, 0, 0.05);
-  --acln: #c4c4ca;
-  --primary: #18181b;
-  --primary-hi: #000000;
-  --on-primary: #fafafa;
-  --focus: #52525b;
+  --ac: #2b5fd9;
+  --acbg: rgba(43, 95, 217, 0.08);
+  --acln: rgba(43, 95, 217, 0.35);
+  --primary: #2b5fd9;
+  --primary-hi: #2352c4;
+  --on-primary: #ffffff;
+  --focus: #2b5fd9;
   --ok: #1f7a4a;
   --okbg: rgba(31, 122, 74, 0.08);
   --wa: #8a5800;
@@ -82,7 +91,15 @@
   --delbg: rgba(180, 35, 47, 0.07);
   --deltx: #9b1c27;
   --selection: rgba(0, 0, 0, 0.12);
-  --focus-ring: rgba(0, 0, 0, 0.06);
+  --focus-ring: rgba(43, 95, 217, 0.14);
+  --syn-k: #2b5fd9;
+  --syn-s: #3c7520;
+  --syn-n: #a85400;
+  --syn-c: #646b80;
+  --syn-f: #0a6c87;
+  --syn-t: #7a3fd0;
+  --syn-p: #0c6e66;
+  --syn-m: #865800;
   --bubble: #f0f0f2;
   --bubble-line: #e3e3e7;
   --shadow: 0 14px 36px rgba(17, 17, 19, 0.12), 0 1px 3px rgba(17, 17, 19, 0.08);
@@ -392,7 +409,7 @@ textarea::placeholder {
 }
 .tab[aria-selected="true"] {
   color: var(--tx);
-  border-bottom-color: var(--tx);
+  border-bottom-color: var(--ac);
 }
 .cnt {
   font: 500 11px var(--mono);
@@ -430,7 +447,7 @@ textarea::placeholder {
   color: var(--tx);
 }
 .mtab[aria-current="true"] svg {
-  color: var(--tx);
+  color: var(--ac);
 }
 .frow {
   display: flex;
@@ -628,7 +645,7 @@ textarea::placeholder {
   height: 14px;
   border-radius: 50%;
   border: 2px solid var(--line2);
-  border-top-color: var(--tx2);
+  border-top-color: var(--ac);
   flex: 0 0 auto;
   display: inline-block;
 }

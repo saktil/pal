@@ -29,6 +29,7 @@
   import InternetSources from "./InternetSources.svelte";
   import ModelControl, { type Group } from "./ModelControl.svelte";
   import WorkspaceMode from "./WorkspaceMode.svelte";
+  import { codeCopy } from "../lib/copy.ts";
   import { renderMarkdown } from "../lib/markdown.ts";
   import { rise } from "../lib/motion.ts";
   import { app, navigate, refreshChatGPT, refreshProjects, viewport } from "../lib/state.svelte.ts";
@@ -559,7 +560,7 @@
                 {#each item.texts as text, index (index)}
                   <!-- Sanitized by renderMarkdown: no raw HTML from the model survives. -->
                   <!-- eslint-disable-next-line svelte/no-at-html-tags -->
-                  <div class="md">{@html renderMarkdown(text)}</div>
+                  <div class="md" {@attach codeCopy}>{@html renderMarkdown(text)}</div>
                 {/each}
                 {#if item.live && item.texts.length === 0 && item.steps.length === 0}
                   <div class="thinking"><span class="ring spin" aria-hidden="true"></span>Thinking…</div>
@@ -971,18 +972,97 @@
     padding: 1px 5px;
     border-radius: 4px;
   }
-  .md :global(pre) {
+  .md :global(.code) {
     margin: 0 0 10px;
-    padding: 10px 12px;
     background: var(--bg0);
     border: 1px solid var(--line);
     border-radius: 10px;
+  }
+  /* The header stays in view while a long block scrolls past, so Copy is always one click away. */
+  .md :global(.codehead) {
+    position: sticky;
+    top: 0;
+    z-index: 1;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 4px 6px 4px 14px;
+    border-bottom: 1px solid var(--line);
+    border-radius: 10px 10px 0 0;
+    background: var(--bg2);
+    color: var(--tx3);
+    font-family: var(--mono);
+    font-size: 12px;
+  }
+  .md :global(.codecopy) {
+    display: inline-flex;
+    align-items: center;
+    gap: 6px;
+    min-height: 28px;
+    padding: 0 8px;
+    border: 0;
+    border-radius: 6px;
+    background: transparent;
+    color: var(--tx2);
+    font: 500 12.5px var(--sans);
+    cursor: pointer;
+    transition:
+      background-color var(--fast) var(--ease),
+      color var(--fast) var(--ease);
+  }
+  .md :global(.codecopy:hover) {
+    background: var(--bg4);
+    color: var(--tx);
+  }
+  .md :global(.codecopy svg) {
+    width: 14px;
+    height: 14px;
+  }
+  .md :global(pre) {
+    margin: 0;
+    padding: 12px 14px;
     overflow-x: auto;
   }
   .md :global(pre code) {
     background: transparent;
     padding: 0;
-    font-size: 12.5px;
+    font-size: 13px;
+    line-height: 1.6;
+    tab-size: 4;
+  }
+  .md :global(.hl-k) {
+    color: var(--syn-k);
+  }
+  .md :global(.hl-s) {
+    color: var(--syn-s);
+  }
+  .md :global(.hl-n) {
+    color: var(--syn-n);
+  }
+  .md :global(.hl-c) {
+    color: var(--syn-c);
+    font-style: italic;
+  }
+  .md :global(.hl-f) {
+    color: var(--syn-f);
+  }
+  .md :global(.hl-t) {
+    color: var(--syn-t);
+  }
+  .md :global(.hl-p) {
+    color: var(--syn-p);
+  }
+  .md :global(.hl-m) {
+    color: var(--syn-m);
+  }
+  .md :global(.hl-a) {
+    color: var(--addtx);
+    background: var(--addbg);
+  }
+  .md :global(.hl-d) {
+    color: var(--deltx);
+    background: var(--delbg);
   }
   .md :global(a),
   .callout a {
@@ -1017,7 +1097,7 @@
   .cbx {
     position: relative;
   }
-  /* A quiet sheen along the composer's top edge, present only while the agent runs. */
+  /* A blue sheen along the composer's top edge, present only while the agent runs. */
   .cbx.live::before {
     content: "";
     position: absolute;
@@ -1026,7 +1106,7 @@
     right: 18px;
     height: 2px;
     border-radius: 2px;
-    background: linear-gradient(90deg, transparent, var(--tx2), transparent) 0 0 / 50% 100% no-repeat;
+    background: linear-gradient(90deg, transparent, var(--ac), transparent) 0 0 / 50% 100% no-repeat;
     animation:
       fade var(--mid) var(--ease),
       sheen 2.8s linear infinite;
