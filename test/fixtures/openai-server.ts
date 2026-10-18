@@ -156,8 +156,10 @@ export async function startOpenAIFixture() {
       };
       const usage = { input_tokens: 3, output_tokens: 1, total_tokens: 4 };
       const events: object[] = [created];
-      // The script has run when the newest input item is its result (a function or custom grammar tool output).
-      const latest = (apiRequests.at(-1)?.body.input as { type?: string }[] | undefined)?.at(-1);
+      // Dynamic prompt updates may follow the tool result without starting a new user turn.
+      const latest = (apiRequests.at(-1)?.body.input as { type?: string; role?: string }[] | undefined)?.findLast(
+        (item) => item.role !== "developer" && item.role !== "system",
+      );
       const answered = latest?.type === "custom_tool_call_output" || latest?.type === "function_call_output";
       if (behavior.responses === "script" && !answered) {
         const call = {

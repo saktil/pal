@@ -12,6 +12,7 @@ import { createApi } from "../../src/core/api.ts";
 import { openPal, type Pal } from "../../src/core/app.ts";
 import { startServer } from "../../src/core/server.ts";
 import { startMcpFixture } from "../fixtures/mcp-server.ts";
+import { startCachedMcp } from "../fixtures/cached-mcp.ts";
 import { STDIO_FIXTURE } from "../fixtures/stdio-server.ts";
 import { browse, startOpenAIFixture } from "../fixtures/openai-server.ts";
 
@@ -513,6 +514,98 @@ describe("Pal in a browser", () => {
     expect(await failed.getByRole("link").count()).toBe(0);
     await page.getByRole("status").filter({ hasText: "Running" }).waitFor({ state: "detached" });
     fixture.behavior.responses = "ok";
+  });
+
+  it("shows persistent cache age and requested live bypass without claiming an origin recrawl", async () => {
+    const root = await realpath(await mkdtemp(join(tmpdir(), "pal-cache-browser-")));
+    const f = await startCachedMcp(root, fixture.endpoints);
+    const server = await startServer({
+      host: "127.0.0.1",
+      port: 0,
+      version: "cache-e2e",
+      webRoot,
+      api: createApi(f.pal),
+    });
+    const origin = `http://127.0.0.1:${(server.address() as AddressInfo).port}`;
+    const view = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+    const errors: string[] = [];
+    view.on("pageerror", (error) => errors.push(error.message));
+    try {
+      const token = await f.pal.owner.setup(f.pal.owner.setupToken, "cache browser fixture");
+      await view.context().addCookies([{ name: "pal_session", value: token, url: origin }]);
+      await f.pal.mcp.finishReview(false);
+      await view.goto(origin);
+      await view.getByRole("button", { name: "Sign in with ChatGPT" }).click();
+      const authUrl = await view.getByRole("link", { name: "Open ChatGPT sign-in" }).getAttribute("href");
+      if (authUrl === null) throw new Error("no cache fixture sign-in link");
+      await browse(authUrl);
+      await view.getByRole("heading", { name: "Create your first project" }).waitFor();
+      await view.getByRole("button", { name: "Create project" }).click();
+      await view.getByLabel("Project name").fill("Cache browser fixture");
+      await view
+        .getByRole("dialog", { name: "Create project" })
+        .getByRole("button", { name: "Create project" })
+        .click();
+      await view.getByRole("heading", { name: "Start the conversation" }).waitFor();
+      fixture.behavior.responses = "script";
+      fixture.behavior.script = 'return await tools.mcp__exa__web_search_exa({query:"durable"});';
+      const submit = async (text: string, answer: number) => {
+        await view.getByLabel("Message").fill(text);
+        const accepted = view.waitForResponse((r) => r.url().endsWith("/inputs") && r.request().method() === "POST");
+        await view.getByRole("button", { name: "Send" }).click();
+        expect((await accepted).status()).toBe(200);
+        await view.getByText("Hello", { exact: true }).nth(answer).waitFor();
+        await view.getByRole("status").filter({ hasText: "Running" }).waitFor({ state: "detached" });
+      };
+      const cards = view.getByRole("region", { name: "Exa web_search_exa sources" });
+      await submit("lookup a fixture source", 0);
+      const stored = await f.pal.store.database.get<{ fetched_at: number }>("SELECT fetched_at FROM pal_mcp_cache");
+      if (stored === undefined) throw new Error("missing browser cache entry");
+      const fetchedAt = new Date(stored.fetched_at).toISOString();
+      expect(await cards.nth(0).innerText()).toContain("Not cached at lookup");
+      await submit("repeat that lookup", 1);
+      const cached = cards.nth(1);
+      await cached.getByText("Cached at lookup", { exact: false }).waitFor();
+      expect(f.fixture.calls).toHaveLength(1);
+      expect(JSON.stringify(fixture.apiRequests.at(-1)?.body)).toContain("mcp__exa__web_search_exa: Pal cache hit");
+      const times = await cached
+        .locator("time")
+        .evaluateAll((nodes) => nodes.map((node) => node.getAttribute("datetime")));
+      expect(times[1]).toBe(fetchedAt);
+      const cachedText = await cached.innerText();
+      expect(cachedText).toContain("Age at lookup:");
+      expect(cachedText).toContain("This was not a live lookup.");
+      await view.reload();
+      await cached.waitFor();
+      expect(await cached.innerText()).toBe(cachedText);
+      expect(
+        await cached.locator("time").evaluateAll((nodes) => nodes.map((node) => node.getAttribute("datetime"))),
+      ).toEqual(times);
+      for (const width of [1440, 768, 390]) {
+        await view.setViewportSize({ width, height: 900 });
+        await cached.scrollIntoViewIfNeeded();
+        expect(await view.evaluate("document.documentElement.scrollWidth <= innerWidth")).toBe(true);
+        expect(await cached.evaluate((el) => el.scrollWidth <= el.clientWidth)).toBe(true);
+        if (shots !== undefined) await view.screenshot({ path: join(shots, `internet-cache-${width}.png`) });
+      }
+      await view.setViewportSize({ width: 1440, height: 900 });
+      fixture.behavior.script = 'return await tools.mcp__exa__web_search_exa({query:"durable",_pal_freshness:"live"});';
+      await submit("get a live response instead", 2);
+      const bypass = cards.nth(2);
+      await bypass.getByText("Pal's cache was bypassed as requested.", { exact: false }).waitFor();
+      expect(await bypass.innerText()).toContain("does not prove an origin recrawl");
+      expect(await bypass.innerText()).toContain("Not cached at lookup");
+      expect(f.fixture.calls).toHaveLength(2);
+      expect(f.fixture.calls.at(-1)?.arguments).toEqual({ query: "durable", objective: "durable" });
+      expect(errors).toEqual([]);
+    } finally {
+      fixture.behavior.responses = "ok";
+      await view.context().close();
+      server.closeAllConnections();
+      await new Promise<void>((resolve) => server.close(() => resolve()));
+      await f.close();
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   it("narrows project internet tools, rejects stale settings and fits every viewport", async () => {

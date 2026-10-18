@@ -1,4 +1,24 @@
 import type { CallToolResult } from "@earendil-works/pi-mcp";
+import { defineDoc } from "@earendil-works/pi-durable";
+
+export type McpCacheInfo = { hit: boolean; fetchedAt: number; expiresAt: number; bypassed: boolean };
+type Lookup = {
+  server: string;
+  tool: string;
+  receivedAt: number;
+  fetchedAt: number;
+  hit: boolean;
+  bypassed: boolean;
+  isError: boolean;
+};
+export const McpProvenance = defineDoc({
+  kind: "pal.mcpProvenance",
+  version: 1,
+  scope: "conversation",
+  history: "rewindable",
+  fork: "asOf",
+  initial: () => ({ lookups: [] as Lookup[] }),
+});
 
 export type McpSource = { url: string; title: string; kind: "reported" | "requested" };
 export type McpReceipt = {
@@ -12,6 +32,7 @@ export type McpReceipt = {
   library: string;
   isError: boolean;
   sources: McpSource[];
+  cache?: McpCacheInfo;
 };
 
 /** Best-effort reported links, never instructions or proof that a linked page was fetched. */

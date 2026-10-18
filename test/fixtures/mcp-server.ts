@@ -71,11 +71,13 @@ export async function startMcpFixture() {
     status: number | undefined;
     beforeCall: ((call: Call) => Promise<void>) | undefined;
     result: CallToolResult | undefined;
+    headers: Record<string, string>;
   } = {
     tools: structuredClone(TOOLS),
     status: undefined,
     beforeCall: undefined,
     result: undefined,
+    headers: {},
   };
   const server = createServer(async (request, response) => {
     requests.push({ path: request.url ?? "", headers: request.headers });
@@ -100,7 +102,7 @@ export async function startMcpFixture() {
     }
 
     let result: unknown;
-    const headers: Record<string, string> = { "content-type": "application/json" };
+    const headers: Record<string, string> = { "content-type": "application/json", ...state.headers };
     if (message.method === "initialize") {
       headers["mcp-session-id"] = randomUUID();
       result = {

@@ -92,6 +92,46 @@ async function setup() {
 const tryCall = (call: string) => `try { return await ${call}; } catch (error) { return "error: " + error.message; }`;
 
 describe("MCP connections", () => {
+  it.each(["credential", "schema", "endpoint"])("pins a prepared tool binding across a %s change", async (change) => {
+    const { manager, add, registry, fixture, script } = await setup();
+    const server = await add();
+    await manager.test(server.id);
+    await manager.approve(server.id, ["search"]);
+    await manager.setEnabled(server.id, true);
+    const prepared = registry
+      .snapshot()
+      .tools()
+      .find(({ tool }) => tool.name === `mcp__${server.id}__search`)?.tool;
+    if (prepared === undefined) throw new Error("missing prepared tool");
+    if (change === "credential") await manager.setKey(server.id, "fixture-new-prepared-key");
+    if (change === "schema") {
+      const listed = fixture.state.tools[0];
+      if (listed === undefined) throw new Error("missing fixture tool");
+      listed.description = "New definition";
+      await manager.test(server.id);
+      await manager.approve(server.id, ["search"]);
+    }
+    if (change === "endpoint") {
+      await manager.update(server.id, {
+        name: server.name,
+        url: fixture.url + "?new-recipient",
+        auth: { kind: "none" },
+        private: true,
+      });
+      await manager.test(server.id);
+      await manager.approve(server.id, ["search"]);
+      await manager.setEnabled(server.id, true);
+    }
+    await expect(
+      prepared.execute({ query: "durable" }, { conversationId: 1 as ConversationId } as ToolExecutionApi, context),
+    ).rejects.toThrow(/not granted|changed/);
+    expect(fixture.calls).toEqual([]);
+    expect(
+      await script(`return (await tools.mcp__${server.id}__search({query:"durable"})).results[0].title;`),
+    ).toContain("Durable agents");
+    expect(fixture.calls).toHaveLength(1);
+  });
+
   it("does not revive an in-flight result when an owner removes then restores the same tool approval", async () => {
     const { manager, add, script, fixture } = await setup();
     const server = await add();

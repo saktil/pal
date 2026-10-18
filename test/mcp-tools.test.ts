@@ -3,7 +3,7 @@ import { createModels, fauxAssistantMessage, fauxProvider, fauxText, fauxToolCal
 import { createRegistry, defineExtension, Harness, MemoryStorage } from "@earendil-works/pi-durable";
 import { afterEach, describe, expect, it } from "vitest";
 import { createPalCodemode } from "../src/pi/codemode.ts";
-import { mcpTools } from "../src/pi/mcp-tools.ts";
+import { mcpTools, supportsCacheControl, type McpConnection } from "../src/pi/mcp-tools.ts";
 
 const cleanups: (() => Promise<unknown>)[] = [];
 afterEach(async () => {
@@ -22,11 +22,13 @@ const SEARCH = {
   },
 };
 
-async function run(defaults: Record<string, Record<string, string>>) {
+async function run(defaults: Record<string, Record<string, string>>, live = false) {
   const received: Record<string, unknown>[] = [];
-  const connection = {
-    call: async (_remote: string, args: Record<string, unknown>) => {
+  const controls: ("live" | undefined)[] = [];
+  const connection: McpConnection = {
+    call: async (_remote, args, _api, _context, freshness) => {
       received.push(args);
+      controls.push(freshness);
       return { content: [{ type: "text" as const, text: "result" }] };
     },
   };
@@ -38,7 +40,7 @@ async function run(defaults: Record<string, Record<string, string>>) {
   const faux = fauxProvider();
   const models = createModels();
   models.setProvider(faux.provider);
-  const code = `try { return await tools.mcp__exa__web_search_exa({ query: "Citami Sinaga" }); } catch (error) { return "ERROR: " + error.message; }`;
+  const code = `try { return await tools.mcp__exa__web_search_exa({ query: "versioned docs"${live ? ', _pal_freshness: "live"' : ""} }); } catch (error) { return "ERROR: " + error.message; }`;
   faux.setResponses([
     fauxAssistantMessage(fauxToolCall("codemode", { code }), { stopReason: "toolUse" }),
     fauxAssistantMessage(fauxText("Done.")),
@@ -52,14 +54,31 @@ async function run(defaults: Record<string, Record<string, string>>) {
   const result = messages.find((message) => message.role === "toolResult");
   const output =
     result?.role === "toolResult" ? result.content.map((b) => (b.type === "text" ? b.text : "")).join("") : "";
-  return { received, output };
+  return { received, controls, output };
 }
 
 describe("MCP tool argument defaults", () => {
+  it("strips Pal's live-cache control before forwarding validated remote arguments", async () => {
+    const { received, controls, output } = await run({ web_search_exa: { objective: "query" } }, true);
+    expect(output).not.toContain("ERROR");
+    expect(received).toEqual([{ query: "versioned docs", objective: "versioned docs" }]);
+    expect(controls).toEqual(["live"]);
+  });
+
+  it("keeps complex/colliding schemas live-only instead of relaxing their constraints", () => {
+    expect(supportsCacheControl(SEARCH)).toBe(true);
+    for (const inputSchema of [
+      { ...SEARCH.inputSchema, properties: { _pal_freshness: { type: "string" } } },
+      { ...SEARCH.inputSchema, maxProperties: 2 },
+      { ...SEARCH.inputSchema, allOf: [{ additionalProperties: false }] },
+    ])
+      expect(supportsCacheControl({ ...SEARCH, inputSchema })).toBe(false);
+  });
+
   it("fills a reviewed preset's omitted required argument instead of failing validation", async () => {
     const { received, output } = await run({ web_search_exa: { objective: "query" } });
     expect(output).not.toContain("ERROR");
-    expect(received).toEqual([{ query: "Citami Sinaga", objective: "Citami Sinaga" }]);
+    expect(received).toEqual([{ query: "versioned docs", objective: "versioned docs" }]);
   });
 
   it("without a default, the call fails validation before reaching the server", async () => {

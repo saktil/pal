@@ -14,9 +14,34 @@ export type McpToolDefinition = {
   readonly outputSchema?: Record<string, unknown>;
 };
 
+export const MCP_FRESHNESS = "_pal_freshness";
+
+/** Complex or colliding schemas stay live-only rather than weakening their remote constraints. */
+export function supportsCacheControl(tool: McpToolDefinition): boolean {
+  const schema = tool.inputSchema;
+  const properties = schema.properties;
+  return (
+    schema.type === "object" &&
+    properties !== null &&
+    typeof properties === "object" &&
+    !Array.isArray(properties) &&
+    !Object.hasOwn(properties, MCP_FRESHNESS) &&
+    !(Array.isArray(schema.required) && schema.required.includes(MCP_FRESHNESS)) &&
+    Object.keys(schema).every((key) =>
+      ["type", "properties", "required", "additionalProperties", "description", "title", "$schema"].includes(key),
+    )
+  );
+}
+
 /** Calls one server's tools; the caller decides connection, limits and whether the tool may still run. */
 export type McpConnection = {
-  call(remote: string, args: Record<string, unknown>, api: ToolExecutionApi, context: Context): Promise<CallToolResult>;
+  call(
+    remote: string,
+    args: Record<string, unknown>,
+    api: ToolExecutionApi,
+    context: Context,
+    freshness?: "live",
+  ): Promise<CallToolResult>;
 };
 
 /**
@@ -62,6 +87,13 @@ export function mcpTools(
         };
       }
     }
+    const cacheControl = replay === "safe" && supportsCacheControl(tool);
+    if (cacheControl)
+      properties[MCP_FRESHNESS] = {
+        type: "string",
+        const: "live",
+        description: "Pal-only: bypass its query cache for a requested live lookup. Not sent to the MCP server.",
+      };
     return defineTool({
       name: mcpToolName(server, tool.remote),
       description: tool.description,
@@ -77,11 +109,13 @@ export function mcpTools(
       replay,
       outputLimits: { maxBytes: 64 * 1024, maxLines: 2000 },
       execute: async (args, api, context) => {
-        const sent = { ...args };
+        const { _pal_freshness: palFreshness, ...remoteArgs } = args;
+        const sent = cacheControl ? remoteArgs : { ...args };
+        const freshness = cacheControl && palFreshness === "live" ? "live" : undefined;
         for (const [name, source] of Object.entries(filled)) {
           if (sent[name] === undefined && typeof sent[source] === "string") sent[name] = sent[source];
         }
-        const result = safeMcpResult(await connection.call(tool.remote, sent, api, context));
+        const result = safeMcpResult(await connection.call(tool.remote, sent, api, context, freshness));
         return {
           output: toLlmContent(result),
           isError: result.isError === true,

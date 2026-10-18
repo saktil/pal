@@ -298,6 +298,19 @@ export const MIGRATIONS: readonly Migration[] = [
       );
     },
   },
+  {
+    version: 18,
+    name: "mcp_query_cache",
+    up: async (transaction) => {
+      await transaction.exec(`CREATE TABLE pal_mcp_cache (
+        key TEXT PRIMARY KEY, project_id TEXT NOT NULL, server_id TEXT NOT NULL,
+        fetched_at INTEGER NOT NULL, expires_at INTEGER NOT NULL, last_used INTEGER NOT NULL,
+        bytes INTEGER NOT NULL CHECK (bytes BETWEEN 1 AND 262144), value TEXT NOT NULL,
+        CHECK (bytes = length(CAST(value AS BLOB))),
+        CHECK (expires_at > fetched_at AND expires_at - fetched_at <= 86400000)
+      ) STRICT`);
+    },
+  },
 ];
 
 /**
