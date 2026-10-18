@@ -34,7 +34,8 @@
   const filesPanel = () => import("./FilesPanel.svelte");
   const terminalPanel = () => import("./TerminalPanel.svelte");
   const contextPanel = () => import("./ContextPanel.svelte");
-  type PanelView = "Changes" | "Files" | "Terminal" | "Context";
+  const browserPanel = () => import("./BrowserPanel.svelte");
+  type PanelView = "Changes" | "Files" | "Terminal" | "Context" | "Browser";
   let panelView = $state<PanelView>("Changes");
   /** A file Files asked Changes to open. */
   let diffPath: string | undefined = $state();
@@ -83,7 +84,13 @@
 
 <svelte:window
   onkeydown={(event) => {
-    if (event.key === "Escape" && panelView !== "Terminal" && document.querySelector("dialog[open]") === null)
+    // Terminal and Browser pass Escape to the shell or page.
+    if (
+      event.key === "Escape" &&
+      panelView !== "Terminal" &&
+      panelView !== "Browser" &&
+      document.querySelector("dialog[open]") === null
+    )
       panelRoute = undefined;
   }}
 />
@@ -159,6 +166,11 @@
             >
             <button
               class="b sm q"
+              aria-expanded={panel && panelView === "Browser"}
+              onclick={() => togglePanel("Browser")}><Icon name="globe" />Browser</button
+            >
+            <button
+              class="b sm q"
               aria-expanded={panel && panelView === "Terminal"}
               onclick={() => togglePanel("Terminal")}><Icon name="term" />Terminal</button
             >
@@ -202,6 +214,11 @@
                         }}
                       />
                     {:catch failure}<p role="alert">Couldn’t load terminal: {String(failure)}</p>{/await}
+                  {:else if panelView === "Browser"}
+                    {#await browserPanel()}<p role="status">Loading browser…</p>
+                    {:then { default: BrowserPanel }}
+                      {#key located.project.id}<BrowserPanel project={located.project} />{/key}
+                    {:catch failure}<p role="alert">Couldn't load the browser: {String(failure)}</p>{/await}
                   {:else if panelView === "Context"}
                     {#await contextPanel()}<p role="status">Loading context…</p>
                     {:then { default: ContextPanel }}

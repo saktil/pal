@@ -2,6 +2,8 @@
 import { execFile } from "node:child_process";
 import { promisify } from "node:util";
 import { mkdir, mkdtemp, readFile, realpath, rename, rm, stat, symlink, writeFile } from "node:fs/promises";
+import { once } from "node:events";
+import { createServer } from "node:http";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -10,6 +12,7 @@ import { type Browser, chromium, type Page } from "playwright-core";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { createApi } from "../../src/core/api.ts";
 import { openPal, type Pal } from "../../src/core/app.ts";
+import { browserRuntime } from "../../src/core/browser.ts";
 import { startServer } from "../../src/core/server.ts";
 import { startMcpFixture } from "../fixtures/mcp-server.ts";
 import { startCachedMcp } from "../fixtures/cached-mcp.ts";
@@ -25,6 +28,9 @@ const shots = process.env.PAL_E2E_SCREENSHOTS;
 let fixture: Awaited<ReturnType<typeof startOpenAIFixture>>;
 let mcp: Awaited<ReturnType<typeof startMcpFixture>>;
 let provider: Awaited<ReturnType<typeof startProviderFixture>>;
+/** A loopback site for the owner browser, and the paths it served. */
+let site: number;
+const visited: string[] = [];
 let pal: Pal;
 let dataRoot: string;
 let base: string;
@@ -40,10 +46,34 @@ beforeAll(async () => {
   cleanups.push(mcp.close);
   provider = await startProviderFixture();
   cleanups.push(provider.close);
+  const pages = createServer((request, response) => {
+    visited.push(request.url ?? "/");
+    response.setHeader("content-type", "text/html");
+    response.end(
+      `<title>Fixture ${request.url}</title><style>body{margin:0}</style>` +
+        `<button style="position:absolute;left:0;top:0;width:200px;height:100px" onclick="location='/clicked'">go</button>` +
+        `<form action="/submit" style="position:absolute;top:150px"><input name="q"></form>`,
+    );
+  });
+  pages.listen(0, "127.0.0.1");
+  await once(pages, "listening");
+  site = (pages.address() as AddressInfo).port;
+  cleanups.push(() => new Promise((resolve) => pages.close(resolve)));
+  const packagedBrowser = browserRuntime();
   dataRoot = await realpath(await mkdtemp(join(tmpdir(), "pal-e2e-")));
   cleanups.push(() => rm(dataRoot, { recursive: true, force: true }));
   pal = await openPal(
-    { dataRoot, installRoot: "/nonexistent-install", endpoints: fixture.endpoints, providerOrigin: provider.origin },
+    {
+      dataRoot,
+      installRoot: "/nonexistent-install",
+      endpoints: fixture.endpoints,
+      providerOrigin: provider.origin,
+      // No user service manager in the build sandbox: the browser runs without its scope here, and only this site.
+      browser: {
+        runtime: packagedBrowser === undefined ? undefined : { ...packagedBrowser, scope: null },
+        egress: { allowPrivate: true, ports: new Set([site]) },
+      },
+    },
     context,
   );
   cleanups.push(() => pal.close());
@@ -53,7 +83,7 @@ beforeAll(async () => {
     version: "e2e",
     webRoot,
     api: createApi(pal),
-    upgrade: (request, socket, head) => pal.terminals.upgrade(request, socket, head),
+    upgrade: (request, socket, head) => pal.upgrade(request, socket, head),
   });
   cleanups.push(() => {
     server.closeAllConnections();
@@ -1864,6 +1894,67 @@ describe("Pal in a browser", () => {
     expect(provider.requests.at(-1)?.path).toBe("/compat/v1/chat/completions");
     expect(provider.requests.at(-1)?.body.model).toBe("local-b");
     await pal.providers.setEnabled("compatible", false);
+    await pal.chats.remove(chat.id, context);
+  });
+
+  it("opens the project's own browser, drives a page by pointer and fits a phone", async () => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    const project = (await pal.projects.list())[0];
+    if (project === undefined) throw new Error("missing project");
+    const chat = await pal.chats.createChat("e2e-browser-chat", { projectId: project.id }, context);
+    await page.goto(`${base}/#/chat/${chat.id}`);
+    await page.reload();
+    await page.getByRole("button", { name: "Browser", exact: true }).click();
+    const panel = page.getByRole("complementary", { name: "Workspace panel" });
+    await panel.getByRole("button", { name: "Open browser" }).click();
+    await panel.getByText("You control this browser").waitFor();
+    await panel.getByLabel("Address").fill(`http://127.0.0.1:${site}/`);
+    await panel.getByRole("button", { name: "Go", exact: true }).click();
+    await expect.poll(() => visited.includes("/")).toBe(true);
+    const view = panel.getByRole("img", { name: /^Page:/ });
+    await view.waitFor();
+    await expect
+      .poll(() => view.evaluate((image) => image instanceof HTMLImageElement && image.naturalWidth > 0))
+      .toBe(true);
+    const box = await view.boundingBox();
+    if (box === null) throw new Error("no page view");
+    // The frame is the 1280×800 page scaled to the panel; the page's button covers its top-left 200×100.
+    await page.mouse.click(box.x + (box.width * 50) / 1280, box.y + (box.height * 40) / 800);
+    await expect.poll(() => visited.includes("/clicked")).toBe(true);
+    await panel.getByRole("tab", { name: "Fixture /clicked" }).waitFor();
+    await expect
+      .poll(() => view.evaluate((image) => image instanceof HTMLImageElement && image.naturalWidth > 0))
+      .toBe(true);
+    await shoot("browser-1440");
+    await page.setViewportSize({ width: 390, height: 844 });
+    expect(await page.evaluate("document.documentElement.scrollWidth <= innerWidth")).toBe(true);
+    await panel.getByLabel("Page size").selectOption("Phone");
+    await expect
+      .poll(() => view.evaluate((image) => (image instanceof HTMLImageElement ? image.naturalWidth : 0)))
+      .toBe(390);
+    await view.scrollIntoViewIfNeeded();
+    const phoneBox = await view.boundingBox();
+    if (phoneBox === null) throw new Error("no phone page view");
+    await page.mouse.click(phoneBox.x + (phoneBox.width * 20) / 390, phoneBox.y + (phoneBox.height * 160) / 844);
+    await panel.getByRole("textbox", { name: "Type into the page" }).fill("phone");
+    await panel.getByRole("button", { name: "Type", exact: true }).click();
+    await panel.getByRole("button", { name: "Enter", exact: true }).click();
+    await expect.poll(() => visited.includes("/submit?q=phone")).toBe(true);
+    await shoot("browser-390");
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await panel.getByRole("button", { name: "Close browser" }).click();
+    await panel.getByRole("button", { name: "Open browser" }).waitFor();
+    expect((await pal.browsers.status(project.id)).running).toBe(false);
+    await panel.getByRole("button", { name: "Open browser" }).click();
+    await panel.getByText("You control this browser").waitFor();
+    await panel.getByRole("button", { name: "Clear browser data…" }).click();
+    const confirmation = page.getByRole("alertdialog", { name: "Clear browser data?" });
+    await confirmation.getByRole("button", { name: "Cancel", exact: true }).click();
+    expect((await pal.browsers.status(project.id)).running).toBe(true);
+    await panel.getByRole("button", { name: "Clear browser data…" }).click();
+    await confirmation.getByRole("button", { name: "Clear browser data", exact: true }).click();
+    await panel.getByRole("button", { name: "Open browser" }).waitFor();
+    expect((await pal.browsers.status(project.id)).running).toBe(false);
     await pal.chats.remove(chat.id, context);
   });
 

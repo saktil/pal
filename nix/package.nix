@@ -12,9 +12,33 @@
   autoPatchelfHook,
   node-gyp,
   python3,
+  bubblewrap,
+  socat,
+  systemd,
+  playwright-driver,
+  makeFontsConf,
+  dejavu_fonts,
 }:
 let
   root = ../.;
+  # The owner's sandboxed browser (Linux only): the headless shell matching the pinned playwright-core, bubblewrap and
+  # socat for the network-less sandbox, coreutils for its relay and fonts so pages render text.
+  browsers = playwright-driver.browsers.override {
+    withChromium = false;
+    withChromiumHeadlessShell = true;
+    withFirefox = false;
+    withWebkit = false;
+    withFfmpeg = false;
+  };
+  headlessShell = "${browsers}/chromium_headless_shell-${playwright-driver.browsersJSON.chromium-headless-shell.revision}/chrome-headless-shell-linux64/chrome-headless-shell";
+  browserEnv = lib.optionalAttrs stdenv.hostPlatform.isLinux {
+    PAL_CHROMIUM = headlessShell;
+    PAL_BWRAP = lib.getExe bubblewrap;
+    PAL_SOCAT = lib.getExe socat;
+    PAL_SYSTEMD_RUN = "${systemd}/bin/systemd-run";
+    PAL_COREUTILS = "${coreutils}/bin";
+    PAL_FONTCONFIG = "${makeFontsConf { fontDirectories = [ dejavu_fonts ]; }}";
+  };
   # Explicit whitelist: private handoff docs, .design, credentials and runtime data never enter a derivation.
   manifests = [
     (root + "/package.json")
@@ -84,13 +108,14 @@ stdenv.mkDerivation (finalAttrs: {
     cp -r dist node_modules package.json $out/lib/pal/
     makeWrapper ${lib.getExe nodejs_24} $out/bin/pal --add-flags $out/lib/pal/dist/main.js \
       --prefix PATH : ${lib.makeBinPath [ bash coreutils git nodejs_24 ]} \
-      --set PAL_BASH ${lib.getExe bash} --set PAL_TIMEOUT ${coreutils}/bin/timeout
+      --set PAL_BASH ${lib.getExe bash} --set PAL_TIMEOUT ${coreutils}/bin/timeout \
+      ${lib.concatStringsSep " " (lib.mapAttrsToList (name: value: "--set ${name} ${value}") browserEnv)}
     runHook postInstall
   '';
 
   passthru = {
     inherit (finalAttrs) pnpmDeps;
-    inherit buildNodePty;
+    inherit buildNodePty browserEnv;
   };
 
   meta = {

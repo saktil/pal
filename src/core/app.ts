@@ -1,4 +1,6 @@
+import type { IncomingMessage } from "node:http";
 import { join } from "node:path";
+import type { Duplex } from "node:stream";
 import type { Context } from "@earendil-works/chord";
 import { createModels, type Models } from "@earendil-works/pi-ai";
 import { type AgentChange, type ConversationId, createRegistry, Harness } from "@earendil-works/pi-durable";
@@ -16,6 +18,7 @@ import { StdioPrograms } from "../pi/mcp-stdio.ts";
 import { loadMasterKey, SqliteCredentialStore } from "../storage/credentials.ts";
 import { openStore, type Store } from "../storage/store.ts";
 import { CommandApprovals } from "./approvals.ts";
+import { type BrowserRuntime, browserRuntime, ProjectBrowsers } from "./browser.ts";
 import { ChatService } from "./chats.ts";
 import { ChatContext } from "./context.ts";
 import { Changes } from "./changes.ts";
@@ -38,6 +41,11 @@ export type PalOptions = {
   readonly endpoints?: ChatGPTEndpoints;
   /** Replaces the scheme and host of every API-key provider's endpoints; tests point it at a loopback fixture. */
   readonly providerOrigin?: string;
+  /** The owner browser's programs and egress policy; omitted, they come from the package environment. */
+  readonly browser?: {
+    readonly runtime: BrowserRuntime | undefined;
+    readonly egress?: { readonly allowPrivate?: boolean; readonly ports?: ReadonlySet<number> };
+  };
   /** How long a command waits for the owner's answer; tests shorten it. */
   readonly approvalTtlMs?: number;
 };
@@ -67,6 +75,10 @@ export type Pal = {
   /** Shared lazy fff indexes for project folders. */
   readonly search: ProjectSearch;
   readonly terminals: Terminals;
+  /** The owner's sandboxed per-project browsers. */
+  readonly browsers: ProjectBrowsers;
+  /** Route a WebSocket upgrade to the browser or Terminal it names. */
+  upgrade(request: IncomingMessage, socket: Duplex, head: Buffer, publicOrigin?: string): Promise<void>;
   readonly workspacePurge: WorkspacePurge;
   close(): Promise<void>;
 };
@@ -97,6 +109,7 @@ export async function openPal(options: PalOptions, context: Context): Promise<Pa
   let sandbox: { close(): Promise<void> } | undefined;
   let mcp: McpManager | undefined;
   let terminals: Terminals | undefined;
+  let browsers: ProjectBrowsers | undefined;
   let workspaces: Workspaces | undefined;
   let approvals: CommandApprovals | undefined;
   // The Harness, once open, owns the storage and closes it; scripts stop before their sandbox and connections do.
@@ -109,7 +122,7 @@ export async function openPal(options: PalOptions, context: Context): Promise<Pa
         await (harness === undefined ? store.close() : harness.close(context));
       } finally {
         search.close();
-        await Promise.all([commands.close(), terminals?.close()]);
+        await Promise.all([commands.close(), terminals?.close(), browsers?.close()]);
         await Promise.all([sandbox?.close(), mcp?.close()]);
       }
     })());
@@ -253,6 +266,15 @@ export async function openPal(options: PalOptions, context: Context): Promise<Pa
     const owner = new Owner(database);
     const reviews = changes;
     terminals = new Terminals(openedProjects, owner, (root) => reviews.capture(root), openedWorkspaces);
+    const openedBrowsers = new ProjectBrowsers({
+      dataRoot: options.dataRoot,
+      projects: openedProjects,
+      owner,
+      runtime: options.browser === undefined ? browserRuntime() : options.browser.runtime,
+      ...(options.browser?.egress === undefined ? {} : { egress: options.browser.egress }),
+    });
+    browsers = openedBrowsers;
+    const humanTerminals = terminals;
     const uploads = await Uploads.open(database, options.dataRoot);
     const openedChats = await ChatService.open(
       {
@@ -302,6 +324,11 @@ export async function openPal(options: PalOptions, context: Context): Promise<Pa
         folder: (project, id, workspaceId) => folders.owner(project, id, workspaceId),
       }),
       terminals,
+      browsers: openedBrowsers,
+      upgrade: (request, socket, head, publicOrigin) =>
+        openedBrowsers.handles(request)
+          ? openedBrowsers.upgrade(request, socket, head, publicOrigin)
+          : humanTerminals.upgrade(request, socket, head, publicOrigin),
       search,
       workspacePurge: new WorkspacePurge(database, options.dataRoot, locks),
       close,

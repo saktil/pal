@@ -296,6 +296,7 @@ export function createApi(pal: Pal, publicOrigin?: string) {
 
     if (resource === "sign-out" && path.length === 1 && method === "POST") {
       pal.terminals.revoke(cookie(request, SESSION_COOKIE));
+      pal.browsers.revoke(cookie(request, SESSION_COOKIE));
       await pal.owner.signOut(cookie(request, SESSION_COOKIE));
       response.setHeader("set-cookie", `${SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0`);
       return send(200, { signedIn: false });
@@ -460,6 +461,17 @@ export function createApi(pal: Pal, publicOrigin?: string) {
         return send(200, { closed: true });
       }
     }
+    if (resource === "projects" && id !== undefined && action === "browser") {
+      if (path.length === 3 && method === "GET") return send(200, await pal.browsers.status(id));
+      if (path.length === 4 && path[3] === "close" && method === "POST") {
+        await pal.browsers.stop(id);
+        return send(200, await pal.browsers.status(id));
+      }
+      if (path.length === 4 && path[3] === "profile" && method === "DELETE") {
+        await pal.browsers.clear(id);
+        return send(200, await pal.browsers.status(id));
+      }
+    }
     if (resource === "projects" && id !== undefined && (action === "files" || action === "file") && path.length === 3) {
       if (method !== "GET") throw new HttpError(405, "method_not_allowed", "the Files panel is read-only");
       const relative = url.searchParams.get("path") ?? "";
@@ -572,7 +584,8 @@ export function createApi(pal: Pal, publicOrigin?: string) {
       await pal.folders.forgetProject(id);
       if (removing !== undefined) await pal.search.forget(removing.root);
       pal.mcp.revokeProject(id);
-      await Promise.all([pal.terminals.removeProject(id), pal.chats.abortDeleted(context)]);
+      // The project's browser profile holds its site logins; it goes with the project.
+      await Promise.all([pal.terminals.removeProject(id), pal.chats.abortDeleted(context), pal.browsers.clear(id)]);
       return send(200, { removed: true });
     }
     if (resource === "projects" && id !== undefined && action === "uploads" && method === "POST") {

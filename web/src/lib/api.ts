@@ -265,6 +265,11 @@ export const api = {
   closeTerminal: (project: string, id: string) =>
     call<{ closed: true }>("DELETE", `projects/${project}/terminals/${id}`),
   removeProject: (id: string) => call<{ removed: true }>("DELETE", `projects/${id}`),
+  browser: (project: string) => call<{ available: boolean; running: boolean }>("GET", `projects/${project}/browser`),
+  closeBrowser: (project: string) =>
+    call<{ available: boolean; running: boolean }>("POST", `projects/${project}/browser/close`),
+  clearBrowser: (project: string) =>
+    call<{ available: boolean; running: boolean }>("DELETE", `projects/${project}/browser/profile`),
   removedWorkspaces: () =>
     call<{ workspaces: import("../../../src/core/workspace-purge.ts").RemovedWorkspace[]; truncated: boolean }>(
       "GET",

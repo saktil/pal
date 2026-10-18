@@ -57,7 +57,7 @@ async function main(argv: readonly string[]): Promise<number> {
           publicOrigin,
           webRoot: existsSync(join(webRoot, "index.html")) ? webRoot : undefined,
           api: createApi(pal, publicOrigin),
-          upgrade: (request, socket, head) => pal.terminals.upgrade(request, socket, head, publicOrigin),
+          upgrade: (request, socket, head) => pal.upgrade(request, socket, head, publicOrigin),
         });
       } catch (error) {
         await pal.close();

@@ -33,6 +33,8 @@ describe("HTTP server", () => {
     expect(await response.json()).toEqual({ status: "ok", name: "pal", version: "1.2.3" });
     expect(response.headers.get("cache-control")).toBe("no-store");
     expect(response.headers.get("x-content-type-options")).toBe("nosniff");
+    expect(response.headers.get("content-security-policy")).toContain("img-src 'self' data: blob:;");
+    expect(response.headers.get("content-security-policy")).toContain("default-src 'self';");
 
     const head = await fetch(`${base}/api/health`, { method: "HEAD" });
     expect(head.status).toBe(200);

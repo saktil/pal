@@ -1,10 +1,13 @@
 # Browser tests of the built UI: the test derivation plus nixpkgs' matched Chromium. Screenshots at the design's
 # 1440/768/390 widths are kept in the output for review.
 {
+  lib,
+  bash,
   makeFontsConf,
   dejavu_fonts,
   playwright-driver,
   tests,
+  pal,
 }:
 tests.overrideAttrs {
   pname = "pal-e2e";
@@ -16,7 +19,10 @@ tests.overrideAttrs {
     };
     # The build sandbox has no font configuration, without which Chromium renders no text at all.
     FONTCONFIG_FILE = makeFontsConf { fontDirectories = [ dejavu_fonts ]; };
-  };
+    # The packaged owner browser runtime, so its sandbox and egress are tested with the exact programs Pal ships.
+    PAL_BASH = lib.getExe bash;
+  }
+  // pal.browserEnv;
   buildPhase = ''
     runHook preBuild
     pnpm build

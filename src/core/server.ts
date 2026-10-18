@@ -20,7 +20,7 @@ const BASE_HEADERS = {
   "x-frame-options": "DENY",
   // The UI ships its own scripts, styles and fonts; nothing loads from elsewhere.
   "content-security-policy":
-    "default-src 'self'; img-src 'self' data:; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'",
+    "default-src 'self'; img-src 'self' data: blob:; style-src 'self' 'unsafe-inline'; object-src 'none'; base-uri 'none'; frame-ancestors 'none'; form-action 'self'",
 };
 
 export function createRequestListener({ version, webRoot, api, publicOrigin }: ServerOptions): RequestListener {

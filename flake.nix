@@ -47,7 +47,7 @@
         # Chromium's macOS sandbox cannot start inside Nix's darwin build sandbox, and disabling it is not an option.
         // pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {
           browser = pkgs.callPackage ./nix/browser.nix { inherit pal; };
-          e2e = pkgs.callPackage ./nix/e2e.nix { inherit tests; };
+          e2e = pkgs.callPackage ./nix/e2e.nix { inherit tests pal; };
         }
       );
 
