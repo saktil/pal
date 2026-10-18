@@ -3,6 +3,7 @@
   import OwnerGate from "./components/OwnerGate.svelte";
   import Workspace from "./components/Workspace.svelte";
   import { api, type Session, signedOut } from "./lib/api.ts";
+  import { shownTheme } from "./lib/state.svelte.ts";
 
   let session: Session | undefined = $state();
   let failure: string | undefined = $state();
@@ -23,6 +24,14 @@
     };
     signedOut.addEventListener("signed-out", ended);
     return () => signedOut.removeEventListener("signed-out", ended);
+  });
+
+  $effect(() => {
+    const theme = shownTheme();
+    document.documentElement.dataset.theme = theme;
+    document
+      .querySelector('meta[name="theme-color"]')
+      ?.setAttribute("content", theme === "light" ? "#f7f8fc" : "#0b0e16");
   });
 
   async function signOut() {

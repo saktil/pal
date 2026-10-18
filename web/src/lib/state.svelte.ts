@@ -21,7 +21,24 @@ export const app = $state({
   width: window.innerWidth,
   sendWithEnter: readSetting("pal.sendWithEnter") !== "false",
   pet: { enabled: readSetting("pal.pet") !== "off", coat: readSetting("pal.petCoat") ?? "ginger" },
+  theme: themeSetting(readSetting("pal.theme")),
+  systemLight: matchMedia("(prefers-color-scheme: light)").matches,
 });
+
+/** Dark is Pal's default; System follows the device. Saved per browser. */
+export type Theme = "dark" | "light" | "system";
+function themeSetting(value: string | null): Theme {
+  return value === "light" || value === "system" ? value : "dark";
+}
+matchMedia("(prefers-color-scheme: light)").addEventListener("change", (event) => (app.systemLight = event.matches));
+export function shownTheme(): "dark" | "light" {
+  if (app.theme !== "system") return app.theme;
+  return app.systemLight ? "light" : "dark";
+}
+export function chooseTheme(theme: Theme): void {
+  app.theme = theme;
+  saveSetting("pal.theme", theme);
+}
 
 /** The composer pet is a per-browser choice: it changes nothing on the server or in any chat. */
 export type PetChoice = { enabled: boolean; coat: string };

@@ -300,6 +300,45 @@ describe("Pal in a browser", () => {
     await pet.waitFor();
   });
 
+  it("switches dark, light and system themes and keeps the choice in this browser", async () => {
+    const theme = () => page.evaluate(() => document.documentElement.dataset.theme);
+    const background = () => page.evaluate(() => getComputedStyle(document.body).backgroundColor);
+    // Dark stays the default even though this browser reports a light system preference.
+    expect(await page.evaluate(() => matchMedia("(prefers-color-scheme: light)").matches)).toBe(true);
+    expect(await theme()).toBe("dark");
+    expect(await background()).toBe("rgb(11, 14, 22)");
+    await page.goto(`${base}/#/settings/general`);
+    const group = page.getByRole("radiogroup", { name: "Theme" });
+    await group.getByRole("radio", { name: "Light" }).click();
+    await expect.poll(theme).toBe("light");
+    expect(await background()).toBe("rgb(247, 248, 252)");
+    await page.keyboard.press("ArrowRight");
+    await expect.poll(() => group.getByRole("radio", { name: "System" }).getAttribute("aria-checked")).toBe("true");
+    await page.emulateMedia({ colorScheme: "dark" });
+    try {
+      await expect.poll(theme).toBe("dark");
+      await page.emulateMedia({ colorScheme: "light" });
+      await expect.poll(theme).toBe("light");
+      await page.goto(chatUrl);
+      await page.reload();
+      await page.getByLabel("Message").waitFor();
+      expect(await theme()).toBe("light");
+      for (const width of [1440, 768, 390]) {
+        await page.setViewportSize({ width, height: 900 });
+        expect(await page.evaluate("document.documentElement.scrollWidth <= innerWidth")).toBe(true);
+        await shoot(`theme-light-${width}`);
+      }
+      await page.setViewportSize({ width: 1440, height: 900 });
+      await page.goto(`${base}/#/settings/general`);
+      await group.getByRole("radio", { name: "Dark" }).click();
+      await expect.poll(theme).toBe("dark");
+    } finally {
+      await page.emulateMedia({ colorScheme: null });
+    }
+    await page.goto(chatUrl);
+    await page.getByLabel("Message").waitFor();
+  });
+
   it("explains the usage limit instead of retrying", async () => {
     fixture.behavior.responses = "usage_limit";
     await page.getByLabel("Message").fill("again");

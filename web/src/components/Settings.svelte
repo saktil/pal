@@ -1,7 +1,16 @@
 <script lang="ts">
   import { api, ApiError, type ChatGPTState } from "../lib/api.ts";
   import Icon from "../lib/Icon.svelte";
-  import { app, navigate, refreshChatGPT, saveSetting, type SettingsTab, viewport } from "../lib/state.svelte.ts";
+  import {
+    app,
+    chooseTheme,
+    navigate,
+    refreshChatGPT,
+    saveSetting,
+    type SettingsTab,
+    type Theme,
+    viewport,
+  } from "../lib/state.svelte.ts";
   import McpSettings from "./McpSettings.svelte";
   import ProviderSettings from "./ProviderSettings.svelte";
   import WorkspaceCleanup from "./WorkspaceCleanup.svelte";
@@ -44,6 +53,23 @@
     } finally {
       busy = false;
     }
+  }
+
+  const themes: [Theme, string][] = [
+    ["dark", "Dark"],
+    ["light", "Light"],
+    ["system", "System"],
+  ];
+  /** Radio-group keys: arrows move the choice, like a native radio set. */
+  function themeKeys(event: KeyboardEvent) {
+    const step = { ArrowRight: 1, ArrowDown: 1, ArrowLeft: -1, ArrowUp: -1 }[event.key];
+    if (step === undefined) return;
+    event.preventDefault();
+    const at = themes.findIndex(([id]) => id === app.theme);
+    const next = themes[(at + step + themes.length) % themes.length];
+    if (next === undefined) return;
+    chooseTheme(next[0]);
+    (event.currentTarget as HTMLElement).querySelector<HTMLElement>(`[data-theme-option="${next[0]}"]`)?.focus();
   }
 
   const tabs = [
@@ -92,8 +118,20 @@
           </div>
           <div class="setrow">
             <div>
-              <div class="setl">Theme</div>
-              <div class="setd">Dark. A light theme isn't designed yet.</div>
+              <div class="setl" id="theme-label">Theme</div>
+              <div class="setd">Saved in this browser. System follows this device's light or dark setting.</div>
+            </div>
+            <div class="seg" role="radiogroup" aria-labelledby="theme-label" tabindex="-1" onkeydown={themeKeys}>
+              {#each themes as [id, label] (id)}
+                <button
+                  class="segb"
+                  role="radio"
+                  data-theme-option={id}
+                  aria-checked={app.theme === id}
+                  tabindex={app.theme === id ? 0 : -1}
+                  onclick={() => chooseTheme(id)}>{label}</button
+                >
+              {/each}
             </div>
           </div>
           <div class="setrow">

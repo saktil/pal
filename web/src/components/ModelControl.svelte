@@ -385,7 +385,9 @@
     border-radius: 50%;
     background: #fff;
     border: 0;
-    box-shadow: 0 1px 4px rgba(2, 4, 12, 0.5);
+    box-shadow:
+      0 1px 4px rgba(2, 4, 12, 0.5),
+      0 0 0 1px var(--line2);
     transition: transform var(--fast) var(--ease);
   }
   input[type="range"]::-moz-range-thumb {
@@ -394,7 +396,9 @@
     border-radius: 50%;
     background: #fff;
     border: 0;
-    box-shadow: 0 1px 4px rgba(2, 4, 12, 0.5);
+    box-shadow:
+      0 1px 4px rgba(2, 4, 12, 0.5),
+      0 0 0 1px var(--line2);
   }
   input[type="range"]:active::-webkit-slider-thumb {
     transform: scale(0.92);

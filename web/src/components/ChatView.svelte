@@ -828,8 +828,8 @@
     gap: 6px;
   }
   .bubble {
-    background: rgba(59, 102, 255, 0.13);
-    border: 1px solid rgba(85, 121, 255, 0.24);
+    background: var(--bubble);
+    border: 1px solid var(--bubble-line);
     border-radius: 16px 16px 6px 16px;
     padding: 10px 14px;
     font-size: 15px;

@@ -3,7 +3,7 @@
   import type { Terminal } from "@xterm/xterm";
   import { api, type Project, type TerminalInfo, type Workspace } from "../lib/api.ts";
   import Icon from "../lib/Icon.svelte";
-  import { viewport } from "../lib/state.svelte.ts";
+  import { shownTheme, viewport } from "../lib/state.svelte.ts";
 
   const FONT = "Atkinson Hyperlegible Mono Variable";
   /** ANSI colors tuned to Pal's ink background: each normal color stays legible as text, bright ones step up. */
@@ -31,6 +31,31 @@
     brightCyan: "#8be6f7",
     brightWhite: "#f4f6fb",
   };
+  /** The daylight counterpart: dark inks on paper, each at least 4.5:1 against it. */
+  const LIGHT_THEME = {
+    background: "#fbfcfe",
+    foreground: "#1d2233",
+    cursor: "#2a4fd6",
+    cursorAccent: "#fbfcfe",
+    selectionBackground: "#c9d6ff",
+    selectionInactiveBackground: "#e1e7f5",
+    black: "#1d2233",
+    red: "#c22d3f",
+    green: "#17773f",
+    yellow: "#8a5b00",
+    blue: "#2a4fd6",
+    magenta: "#9535c4",
+    cyan: "#08758f",
+    white: "#6b7286",
+    brightBlack: "#5b6377",
+    brightRed: "#cf3346",
+    brightGreen: "#18803f",
+    brightYellow: "#9a6700",
+    brightBlue: "#3b5ff0",
+    brightMagenta: "#9b3fd0",
+    brightCyan: "#08788f",
+    brightWhite: "#4e566b",
+  };
 
   let {
     project,
@@ -51,6 +76,12 @@
   let error: string | undefined = $state();
   const active = $derived(terminals.find((terminal) => terminal.id === selected));
   const root = $derived(workspace?.root ?? project.root);
+  const palette = $derived(shownTheme() === "light" ? LIGHT_THEME : THEME);
+  // A theme change recolors the open shell in place; it is not a new session.
+  $effect(() => {
+    const theme = palette;
+    if (runtime !== undefined) runtime.terminal.options.theme = theme;
+  });
   /** On-screen keys only where a physical keyboard is unlikely; desktop shells take keys directly. */
   const touchKeys = $derived(viewport() !== "desktop" || matchMedia("(pointer: coarse)").matches);
   let runtime: { terminal: Terminal; ws: WebSocket; epoch: number } | undefined;
@@ -146,7 +177,7 @@
         fontSize: 13,
         lineHeight: 1.2,
         fontWeightBold: 700,
-        theme: THEME,
+        theme: palette,
         cursorStyle: "block",
         cursorInactiveStyle: "outline",
         cursorBlink: !matchMedia("(prefers-reduced-motion: reduce)").matches,
@@ -308,7 +339,7 @@
   </div>
   {#if error}<div class="callout er" role="alert">{error}</div>{/if}
   {#if !active}<p class="empty">No terminal sessions. A new shell starts only when you request it.</p>{/if}
-  <div class="surface" class:inactive={!active} bind:this={surface}></div>
+  <div class="surface" class:inactive={!active} style:background={palette.background} bind:this={surface}></div>
   {#if active && touchKeys}
     <div class="keys" role="toolbar" aria-label="Terminal keys">
       <button class="b sm" disabled={!control} onclick={() => key("\x1b")}>Esc</button>
