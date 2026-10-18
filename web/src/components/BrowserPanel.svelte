@@ -143,7 +143,15 @@
   function point(event: MouseEvent): { x: number; y: number } | undefined {
     if (image === undefined || view === undefined) return undefined;
     const rect = image.getBoundingClientRect();
-    if (rect.width === 0 || rect.height === 0) return undefined;
+    if (
+      rect.width === 0 ||
+      rect.height === 0 ||
+      event.clientX < rect.left ||
+      event.clientX >= rect.right ||
+      event.clientY < rect.top ||
+      event.clientY >= rect.bottom
+    )
+      return undefined;
     const x = ((event.clientX - rect.left) / rect.width) * view.viewport.width;
     const y = ((event.clientY - rect.top) / rect.height) * view.viewport.height;
     return {
@@ -153,6 +161,8 @@
   }
   function pointer(event: PointerEvent, action: "down" | "up" | "move") {
     if (!view?.control) return;
+    const at = point(event);
+    if (at === undefined) return;
     if (action === "move") {
       // Hover needs moves, but a pointer floods; one every 50 ms is enough.
       if (Date.now() - lastMove < 50) return;
@@ -161,8 +171,6 @@
       event.preventDefault();
       keyboard?.focus({ preventScroll: true });
     }
-    const at = point(event);
-    if (at === undefined) return;
     send({
       type: "mouse",
       action,
@@ -490,6 +498,7 @@
     border-radius: 8px;
     background: var(--bg0);
     min-height: 200px;
+    flex: 1;
     display: flex;
     align-items: flex-start;
     justify-content: center;
@@ -503,6 +512,7 @@
   .view img {
     display: block;
     max-width: 100%;
+    max-height: 100%;
     height: auto;
     user-select: none;
   }

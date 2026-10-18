@@ -1934,12 +1934,19 @@ describe("Pal in a browser", () => {
       .toBe(390);
     await view.scrollIntoViewIfNeeded();
     const phoneBox = await view.boundingBox();
-    if (phoneBox === null) throw new Error("no phone page view");
+    const windowBox = await view.locator("..").boundingBox();
+    if (phoneBox === null || windowBox === null) throw new Error("no phone page view");
+    expect(phoneBox.height).toBeLessThanOrEqual(windowBox.height);
+    // Letterboxing is not part of the remote page; clicking it must not be clamped onto a page button.
+    expect(phoneBox.x - windowBox.x).toBeGreaterThan(10);
+    const clicks = visited.filter((path) => path === "/clicked").length;
+    await page.mouse.click(windowBox.x + 5, phoneBox.y + (phoneBox.height * 40) / 844);
     await page.mouse.click(phoneBox.x + (phoneBox.width * 20) / 390, phoneBox.y + (phoneBox.height * 160) / 844);
     await panel.getByRole("textbox", { name: "Type into the page" }).fill("phone");
     await panel.getByRole("button", { name: "Type", exact: true }).click();
     await panel.getByRole("button", { name: "Enter", exact: true }).click();
     await expect.poll(() => visited.includes("/submit?q=phone")).toBe(true);
+    expect(visited.filter((path) => path === "/clicked")).toHaveLength(clicks);
     await shoot("browser-390");
     await page.setViewportSize({ width: 1440, height: 900 });
     await panel.getByRole("button", { name: "Close browser" }).click();
