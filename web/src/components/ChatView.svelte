@@ -24,8 +24,10 @@
     textOf,
   } from "../lib/chat.svelte.ts";
   import Icon from "../lib/Icon.svelte";
+  import AddMenu from "./AddMenu.svelte";
   import CommandMode from "./CommandMode.svelte";
   import InternetSources from "./InternetSources.svelte";
+  import ModelControl, { type Group } from "./ModelControl.svelte";
   import WorkspaceMode from "./WorkspaceMode.svelte";
   import { renderMarkdown } from "../lib/markdown.ts";
   import { rise } from "../lib/motion.ts";
@@ -79,7 +81,6 @@
   let provider: string | null = $state(null);
   let effort: Effort = $state("off");
   let choosing = $state(false);
-  const efforts = ["off", "low", "medium", "high"] as const;
   let draft = $state("");
   let composer: HTMLTextAreaElement | undefined = $state();
   /** Add text the owner chose elsewhere (a terminal selection, a file reference) to the draft; never sends it. */
@@ -90,9 +91,7 @@
   let pending: { key: string; text: string; files: string } | undefined;
   let attachments: Upload[] = $state([]);
   let uploading = $state(0);
-  let fileInput: HTMLInputElement | undefined = $state();
   let whenBusy: "followUp" | "steer" = $state("followUp");
-  let picker = $state(false);
   let sending = $state(false);
   let error: string | undefined = $state();
   let openSteps: Record<string, boolean> = $state({});
@@ -119,8 +118,6 @@
   const items = $derived.by(() => build(stream?.entries ?? [], stream?.partial, stream?.approvals ?? []));
   const awaiting = $derived((stream?.approvals ?? []).some((approval) => approval.state === "pending"));
   const connected = $derived(app.chatgpt?.account != null);
-  type Choice = { provider: string; id: string; name: string; efforts: readonly Effort[] };
-  type Group = { provider: string; name: string; billing: string; choices: Choice[] };
   /** ChatGPT first, then each API-key provider the owner enabled; nothing else is offered. */
   const groups = $derived<Group[]>([
     {
@@ -145,20 +142,6 @@
         })),
       })),
   ]);
-  const SHOWN_PER_PROVIDER = 50;
-  let query = $state("");
-  const matching = $derived(
-    groups.map((group) => {
-      const words = query.trim().toLowerCase();
-      return words === ""
-        ? group
-        : {
-            ...group,
-            choices: group.choices.filter((choice) => `${choice.name} ${choice.id}`.toLowerCase().includes(words)),
-          };
-    }),
-  );
-  const searchable = $derived(groups.reduce((total, group) => total + group.choices.length, 0) > 12);
   const effective = $derived(
     model !== null ? { provider: provider ?? "openai", modelId: model } : (app.chatgpt?.default ?? null),
   );
@@ -169,7 +152,6 @@
   );
   const providerName = $derived(groups.find((group) => group.provider === effective?.provider)?.name);
   const modelName = $derived(current?.name ?? effective?.modelId ?? "Choose model");
-  const supportedEfforts = $derived(current?.efforts ?? []);
   /** The chat's provider can take a message now: signed-in ChatGPT, or an enabled API-key provider. */
   const usable = $derived(
     effective !== null &&
@@ -315,7 +297,6 @@
 
   async function chooseModel(choice: { provider: string; id: string }, level?: Effort) {
     if (choosing) return;
-    if (level === undefined) picker = false;
     choosing = true;
     try {
       const chosen = await api.setChatModel(chat.id, choice.id, level, choice.provider);
@@ -389,8 +370,8 @@
     return "The run stopped before you answered. Nothing was run.";
   }
 
-  async function upload(files: FileList | null) {
-    for (const file of files ?? []) {
+  async function upload(files: File[]) {
+    for (const file of files) {
       uploading += 1;
       try {
         attachments = [...attachments, await api.upload(project.id, file)];
@@ -400,7 +381,6 @@
         uploading -= 1;
       }
     }
-    if (fileInput !== undefined) fileInput.value = "";
   }
 
   function size(bytes: number): string {
@@ -409,7 +389,8 @@
   }
 
   function onKey(event: KeyboardEvent) {
-    if (event.key === "Enter" && !event.shiftKey && app.sendWithEnter && !phone) {
+    // Enter that confirms an input method's composition is not a send.
+    if (event.key === "Enter" && !event.shiftKey && !event.isComposing && app.sendWithEnter && !phone) {
       event.preventDefault();
       void send();
     }
@@ -601,71 +582,6 @@
 
   <div class="dock" style:padding={phone ? "0 12px 10px" : "0 20px 16px"}>
     <div class="dockin">
-      {#if picker}
-        <div class="pop" role="dialog" aria-label="Choose model" style:width={phone ? "100%" : "460px"}>
-          <div class="poph">Model for this chat</div>
-          {#if searchable}
-            <input
-              class="f search"
-              type="search"
-              placeholder="Search models"
-              aria-label="Search models"
-              bind:value={query}
-            />
-          {/if}
-          <div class="models">
-            {#each matching as group (group.provider)}
-              <div class="grouph"><span>{group.name}</span><span class="optd">{group.billing}</span></div>
-              {#if group.provider === "openai" && !connected}
-                <p class="popn">Sign in with ChatGPT to list your models.</p>
-              {:else if effective !== null && group.provider !== effective.provider}
-                <p class="popn">Choosing one sends this chat's history to {group.name} with your next message.</p>
-              {/if}
-              <div role="radiogroup" aria-label={`${group.name} models`}>
-                {#each group.choices.slice(0, SHOWN_PER_PROVIDER) as choice (choice.id)}
-                  <button
-                    class="opt"
-                    role="radio"
-                    aria-checked={choice.provider === effective?.provider && choice.id === effective.modelId}
-                    disabled={choosing}
-                    onclick={() => chooseModel(choice)}
-                  >
-                    <span>{choice.name}</span><span class="mono optd">{choice.id}</span>
-                  </button>
-                {/each}
-              </div>
-              {#if group.choices.length > SHOWN_PER_PROVIDER}
-                <p class="popn">Showing {SHOWN_PER_PROVIDER} of {group.choices.length}. Search to find others.</p>
-              {:else if group.choices.length === 0 && query.trim() !== ""}
-                <p class="popn">No {group.name} model matches.</p>
-              {/if}
-            {/each}
-          </div>
-          <div class="reasoning">
-            <span>Reasoning effort</span>
-            <div class="seg" role="radiogroup" aria-label="Reasoning effort">
-              {#each efforts as level (level)}
-                <button
-                  class="segb"
-                  role="radio"
-                  aria-checked={effort === level}
-                  disabled={choosing || current === undefined || !supportedEfforts.includes(level)}
-                  onclick={() => current !== undefined && chooseModel(current, level)}
-                  >{level[0]?.toUpperCase()}{level.slice(1)}</button
-                >
-              {/each}
-            </div>
-            <p class="optd">Current: {effort}. Applies to this chat; unavailable levels are disabled.</p>
-          </div>
-          <div class="defaults">
-            {#if isDefault}<span class="optd">New chats start with this model.</span>
-            {:else}<button class="b sm" disabled={effective === null || !usable} onclick={useForNewChats}
-                >Use for new chats</button
-              >{/if}
-          </div>
-        </div>
-      {/if}
-
       {#if !ready}
         <div class="callout wa" role="status">
           {workspace?.error ?? "Preparing this chat's working folder. Messages stay disabled until it is ready."}
@@ -721,7 +637,7 @@
       {/if}
       {#if error !== undefined}<div class="callout er" role="alert">{error}</div>{/if}
 
-      <div class="cbx" class:running={stream?.running}>
+      <div class="cbx" class:live={stream?.running}>
         {#if attachments.length > 0 || uploading > 0}
           <div class="chips">
             {#each attachments as attachment (attachment.id)}
@@ -750,24 +666,24 @@
           bind:value={draft}
           onkeydown={onKey}></textarea>
         <div class="tools">
-          <input
-            bind:this={fileInput}
-            class="sr"
-            type="file"
-            multiple
-            tabindex="-1"
-            aria-hidden="true"
-            onchange={(event) => upload(event.currentTarget.files)}
-          />
-          <button class="b q" aria-label="Upload from this device" onclick={() => fileInput?.click()}>
-            <Icon name="clip" />{#if !phone}<span>Upload from this device</span>{/if}
-          </button>
-          <button class="b q" aria-label="Choose model" aria-expanded={picker} onclick={() => (picker = !picker)}>
-            <Icon name="model" />{modelName}<Icon name="chevD" />
-          </button>
-          <WorkspaceMode {workspace} {onNewChat} />
+          <AddMenu onFiles={upload} />
           {#if workspace?.mode !== "read-only"}<CommandMode mode={stream?.mode} onChoose={chooseMode} />{/if}
+          <WorkspaceMode {workspace} {onNewChat} compact={phone} />
           <span class="grow"></span>
+          <ModelControl
+            {groups}
+            {effective}
+            {current}
+            {effort}
+            busy={choosing}
+            {connected}
+            {isDefault}
+            {usable}
+            compact={phone}
+            onModel={(choice) => chooseModel(choice)}
+            onEffort={(level) => (current === undefined ? Promise.resolve() : chooseModel(current, level))}
+            onDefault={useForNewChats}
+          />
           {#if stream?.running}
             <div class="seg" role="radiogroup" aria-label="While the agent is running">
               <button class="segb" role="radio" aria-checked={whenBusy === "steer"} onclick={() => (whenBusy = "steer")}
@@ -780,10 +696,14 @@
                 onclick={() => (whenBusy = "followUp")}>Queue</button
               >
             </div>
+            <button class="b p send busy" onclick={send} disabled={!canSend}>
+              <Icon name={whenBusy === "steer" ? "steer" : "send"} />{whenBusy === "steer" ? "Steer" : "Queue"}
+            </button>
+          {:else}
+            <button class="b p send" aria-label="Send" title="Send" onclick={send} disabled={!canSend}>
+              <Icon name="send" size={18} />
+            </button>
           {/if}
-          <button class="b p send" onclick={send} disabled={!canSend}>
-            <Icon name="send" />{stream?.running ? (whenBusy === "steer" ? "Steer" : "Queue") : "Send"}
-          </button>
         </div>
       </div>
     </div>
@@ -791,30 +711,6 @@
 </section>
 
 <style>
-  .search {
-    margin: 4px 10px 6px;
-    width: calc(100% - 20px);
-  }
-  .models {
-    max-height: min(300px, 40dvh);
-    overflow-y: auto;
-  }
-  .grouph {
-    display: flex;
-    flex-direction: column;
-    gap: 1px;
-    padding: 8px 10px 2px;
-    font-size: 12px;
-    font-weight: 600;
-    color: var(--tx2);
-  }
-  .grouph .optd {
-    font-weight: 400;
-  }
-  .defaults {
-    padding: 8px 10px 4px;
-    border-top: 1px solid var(--line);
-  }
   .appr {
     border: 1px solid var(--waln);
     background: var(--wabg);
@@ -859,14 +755,6 @@
     display: flex;
     gap: 8px;
     flex-wrap: wrap;
-  }
-  .reasoning {
-    display: flex;
-    flex-direction: column;
-    align-items: flex-start;
-    gap: 6px;
-    padding: 8px 10px 2px;
-    border-top: 1px solid var(--line);
   }
   section {
     flex: 1 1 0;
@@ -1099,16 +987,6 @@
     flex-direction: column;
     gap: 8px;
   }
-  .pop {
-    bottom: calc(100% + 6px);
-    left: 0;
-  }
-  .opt {
-    flex-direction: row;
-    justify-content: space-between;
-    align-items: baseline;
-    gap: 8px;
-  }
   .nowrap {
     display: flex;
     gap: 8px;
@@ -1128,7 +1006,7 @@
     position: relative;
   }
   /* The signature ribbon: present only while the agent runs, drifting so a live run reads at a glance. */
-  .cbx.running::before {
+  .cbx.live::before {
     content: "";
     position: absolute;
     top: -1px;
@@ -1167,8 +1045,20 @@
     gap: 2px;
     flex-wrap: wrap;
   }
-  .send {
+  .tools .seg {
     margin-left: 4px;
+  }
+  .send {
+    margin-left: 6px;
+    width: 34px;
+    height: 34px;
+    padding: 0;
+    border-radius: 50%;
+  }
+  .send.busy {
+    width: auto;
+    padding: 0 12px;
+    border-radius: 17px;
   }
   .chips {
     display: flex;

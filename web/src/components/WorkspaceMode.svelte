@@ -6,7 +6,13 @@
   let {
     workspace,
     onNewChat,
-  }: { workspace: Workspace | null | undefined; onNewChat: (mode: WorkspaceMode) => Promise<void> } = $props();
+    compact = false,
+  }: {
+    workspace: Workspace | null | undefined;
+    onNewChat: (mode: WorkspaceMode) => Promise<void>;
+    /** Icon only, for phone-width composers; the label stays in the accessible name and tooltip. */
+    compact?: boolean;
+  } = $props();
   const labels = { local: "Local", worktree: "Worktree", "read-only": "Read-only" };
   const mode = $derived(workspace?.mode ?? "local");
   const options = [
@@ -63,11 +69,12 @@
     class="b q"
     bind:this={opener}
     aria-label="Workspace mode"
+    title={`Workspace: ${labels[mode]}`}
     aria-expanded={open}
     disabled={busy}
     onclick={toggle}
   >
-    <Icon name={mode === "read-only" ? "lock" : "folder"} />{labels[mode]}<Icon name="chevD" />
+    <Icon name={mode === "read-only" ? "lock" : "folder"} />{#if !compact}{labels[mode]}<Icon name="chevD" />{/if}
   </button>
   {#if open}
     <div class="pop" role="dialog" aria-label="Workspace mode">

@@ -108,6 +108,15 @@ async function shoot(name: string): Promise<void> {
   if (shots !== undefined) await page.screenshot({ path: join(shots, `${name}.png`) });
 }
 
+/** The composer's model control opens on reasoning; its model header opens the model list. */
+async function openModelList(): Promise<void> {
+  await page.getByRole("button", { name: /^Model and reasoning/ }).click();
+  await page
+    .getByRole("dialog", { name: "Model and reasoning" })
+    .getByRole("button", { name: /^Choose model/ })
+    .click();
+}
+
 describe("Pal in a browser", () => {
   it("refuses to start without the terminal's setup link, then sets up the owner from it", async () => {
     await page.goto(base);
@@ -182,17 +191,31 @@ describe("Pal in a browser", () => {
   });
 
   it("keeps reasoning effort for this chat across reload and sends it to the model", async () => {
-    await page.getByRole("button", { name: "Choose model" }).click();
-    const high = page
-      .getByRole("radiogroup", { name: "Reasoning effort" })
-      .getByRole("radio", { name: "High", exact: true });
-    await high.click();
-    await expect.poll(() => high.getAttribute("aria-checked")).toBe("true");
+    const trigger = page.getByRole("button", { name: /^Model and reasoning/ });
+    await trigger.click();
+    const card = page.getByRole("dialog", { name: "Model and reasoning" });
+    const slider = card.getByRole("slider", { name: "Reasoning effort" });
+    // Opening focuses the stepped control; keys move only between levels this model supports.
+    await expect.poll(() => slider.evaluate((node) => node === document.activeElement)).toBe(true);
+    expect(await slider.getAttribute("aria-valuetext")).toBe("Off");
+    await page.keyboard.press("ArrowRight");
+    await expect.poll(() => trigger.getAttribute("aria-label")).toContain("reasoning low");
+    await page.keyboard.press("End");
+    await expect.poll(() => slider.getAttribute("aria-valuetext")).toBe("High");
+    await expect.poll(() => trigger.getAttribute("aria-label")).toContain("reasoning high");
     await page.reload();
-    await page.getByRole("button", { name: "Choose model" }).click();
-    await expect.poll(() => high.getAttribute("aria-checked")).toBe("true");
+    await trigger.click();
+    await expect.poll(() => slider.getAttribute("aria-valuetext")).toBe("High");
+    expect(await card.getByText("Off", { exact: true }).count()).toBe(1);
     await shoot("reasoning-1440");
-    await page.getByRole("button", { name: "Choose model" }).click();
+    // The model header above the slider opens the real model list, with this chat's model chosen.
+    await card.getByRole("button", { name: /^Choose model/ }).click();
+    const list = page.getByRole("dialog", { name: "Choose model" });
+    expect(await list.getByRole("radio", { checked: true }).count()).toBe(1);
+    await shoot("model-list-1440");
+    await page.keyboard.press("Escape");
+    await list.waitFor({ state: "detached" });
+    expect(await trigger.evaluate((node) => node === document.activeElement)).toBe(true);
     await page.getByLabel("Message").fill("reason carefully");
     await page.getByRole("button", { name: "Send" }).click();
     await page.getByText("Hello", { exact: true }).nth(1).waitFor();
@@ -200,6 +223,25 @@ describe("Pal in a browser", () => {
     expect(fixture.apiRequests.filter((call) => call.path === "/v1/responses").at(-1)?.body.reasoning).toMatchObject({
       effort: "high",
     });
+  });
+
+  it("collapses popover motion when the owner prefers reduced motion", async () => {
+    const trigger = page.getByRole("button", { name: /^Model and reasoning/ });
+    const seconds = () =>
+      page
+        .getByRole("dialog", { name: "Model and reasoning" })
+        .evaluate((node) => Number.parseFloat(getComputedStyle(node).animationDuration));
+    await trigger.click();
+    expect(await seconds()).toBeGreaterThan(0.1);
+    await page.keyboard.press("Escape");
+    await page.emulateMedia({ reducedMotion: "reduce" });
+    try {
+      await trigger.click();
+      expect(await seconds()).toBeLessThan(0.001);
+      await page.keyboard.press("Escape");
+    } finally {
+      await page.emulateMedia({ reducedMotion: null });
+    }
   });
 
   it("explains the usage limit instead of retrying", async () => {
@@ -841,12 +883,37 @@ describe("Pal in a browser", () => {
     page.off("pageerror", onError);
   });
 
-  it("uploads from this device and lets a script read the project folder", async () => {
-    await page.locator('input[type="file"]').setInputFiles({
-      name: "plan.txt",
-      mimeType: "text/plain",
-      buffer: Buffer.from("The launch is on Tuesday."),
-    });
+  it("adds device files from the composer's + menu and lets a script read the project folder", async () => {
+    const add = page.getByRole("button", { name: "Add", exact: true });
+    await add.focus();
+    await page.keyboard.press("Enter");
+    const menu = page.getByRole("menu", { name: "Add" });
+    // Only device files for now: no folders, plugins or other pictured actions.
+    expect(await menu.getByRole("menuitem").count()).toBe(1);
+    const item = menu.getByRole("menuitem", { name: /^Add file from this device/ });
+    await expect.poll(() => item.evaluate((node) => node === document.activeElement)).toBe(true);
+    for (const width of [1440, 768, 390]) {
+      await page.setViewportSize({ width, height: 900 });
+      expect(await page.evaluate("document.documentElement.scrollWidth <= innerWidth")).toBe(true);
+      const box = await menu.boundingBox();
+      expect(box !== null && box.x >= 0 && box.x + box.width <= width).toBe(true);
+      await shoot(`add-menu-${width}`);
+    }
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.keyboard.press("Escape");
+    await menu.waitFor({ state: "detached" });
+    expect(await add.evaluate((node) => node === document.activeElement)).toBe(true);
+    await page.keyboard.press("ArrowDown");
+    const chooser = page.waitForEvent("filechooser");
+    await page.keyboard.press("Enter");
+    const picked = await chooser;
+    expect(picked.isMultiple()).toBe(true);
+    await picked.setFiles([
+      { name: "plan.txt", mimeType: "text/plain", buffer: Buffer.from("The launch is on Tuesday.") },
+      { name: "draft.txt", mimeType: "text/plain", buffer: Buffer.from("Not for this message.") },
+    ]);
+    await page.getByRole("button", { name: "Remove draft.txt" }).click();
+    await page.getByRole("button", { name: "Remove draft.txt" }).waitFor({ state: "detached" });
     await page.getByRole("button", { name: "Remove plan.txt" }).waitFor();
     fixture.behavior.responses = "script";
     fixture.behavior.script = "return await tools.files_list({});";
@@ -857,6 +924,7 @@ describe("Pal in a browser", () => {
     await page.getByRole("status").filter({ hasText: "Running" }).waitFor({ state: "detached" });
     const sent = fixture.apiRequests.filter((call) => call.path === "/v1/responses");
     expect(JSON.stringify(sent.map((call) => call.body.input))).toContain("The launch is on Tuesday.");
+    expect(JSON.stringify(sent.map((call) => call.body.input))).not.toContain("Not for this message.");
     await page
       .getByRole("button", { name: /Ran a script/ })
       .last()
@@ -958,6 +1026,12 @@ describe("Pal in a browser", () => {
     await page.getByLabel("Message").fill("run after a reload");
     await page.getByRole("button", { name: "Send" }).click();
     await page.getByRole("group", { name: "Approval request" }).filter({ hasText: "reload.txt" }).waitFor();
+    // While a run waits, the composer offers exactly Steer or Queue for the next message.
+    const busy = page.getByRole("radiogroup", { name: "While the agent is running" });
+    expect(await busy.getByRole("radio").count()).toBe(2);
+    await page.getByRole("button", { name: "Queue", exact: true }).waitFor();
+    await busy.getByRole("radio", { name: "Steer" }).click();
+    await page.getByRole("button", { name: "Steer", exact: true }).waitFor();
     await page.reload();
     const reloaded = page.getByRole("group", { name: "Approval request" }).filter({ hasText: "reload.txt" });
     await reloaded.getByRole("button", { name: "Approve once" }).click();
@@ -1857,7 +1931,7 @@ describe("Pal in a browser", () => {
     const chat = await pal.chats.createChat("e2e-provider-chat", { projectId: project.id }, context);
     await page.goto(`${base}/#/chat/${chat.id}`);
     await page.reload();
-    await page.getByRole("button", { name: "Choose model" }).click();
+    await openModelList();
     const picker = page.getByRole("dialog", { name: "Choose model" });
     await picker.getByText("Pay per token from your OpenRouter credits.").waitFor();
     await picker.getByLabel("Search models").fill("deepseek-flash-latest");
@@ -1908,7 +1982,7 @@ describe("Pal in a browser", () => {
     const chat = await pal.chats.createChat("e2e-compatible-chat", { projectId: project.id }, context);
     await page.goto(`${base}/#/chat/${chat.id}`);
     await page.reload();
-    await page.getByRole("button", { name: "Choose model" }).click();
+    await openModelList();
     await page
       .getByRole("radiogroup", { name: "Local models models" })
       .getByRole("radio", { name: /local-b/ })
