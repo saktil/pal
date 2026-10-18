@@ -439,12 +439,20 @@ export class McpManager {
     if (this.#state(id).changing !== 0) throw new RequestConflict("this connection is changing; retry shortly");
     const listed = this.#live.get(id)?.discovered;
     if (listed === undefined) throw new McpConfigError("test the connection first, so its tools are listed");
-    server.approved = Object.fromEntries(
+    const approved = Object.fromEntries(
       listed.flatMap((tool) => (names.includes(tool.name) ? [[tool.name, approval(tool)]] : [])),
     );
-    await this.#save(server);
-    this.#refreshState(server);
-    this.#install();
+    if (stable(approved) === stable(server.approved)) return this.#view(server);
+    const live = this.#startChange(id);
+    try {
+      server.approved = approved;
+      await this.#save(server);
+      await this.#drop(id);
+      this.#refreshState(server);
+    } finally {
+      live.changing--;
+      this.#install();
+    }
     return this.#view(server);
   }
 

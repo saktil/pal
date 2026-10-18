@@ -92,6 +92,61 @@ async function setup() {
 const tryCall = (call: string) => `try { return await ${call}; } catch (error) { return "error: " + error.message; }`;
 
 describe("MCP connections", () => {
+  it("does not revive an in-flight result when an owner removes then restores the same tool approval", async () => {
+    const { manager, add, script, fixture } = await setup();
+    const server = await add();
+    await manager.test(server.id);
+    await manager.approve(server.id, ["search"]);
+    await manager.setEnabled(server.id, true);
+    const entered = Promise.withResolvers<undefined>(),
+      release = Promise.withResolvers<undefined>();
+    fixture.state.beforeCall = async () => {
+      entered.resolve(undefined);
+      await release.promise;
+    };
+    const pending = script(tryCall(`tools.mcp__${server.id}__search({query:"durable"})`));
+    try {
+      await entered.promise;
+      await manager.approve(server.id, []);
+      await manager.approve(server.id, ["search"]);
+    } finally {
+      release.resolve(undefined);
+    }
+    const outcome = await pending;
+    expect(outcome).toMatch(/changed|aborted|revoked/);
+    expect(outcome).not.toContain("Durable agents");
+    fixture.state.beforeCall = undefined;
+    expect(
+      await script(`return (await tools.mcp__${server.id}__search({query:"durable"})).results[0].title;`),
+    ).toContain("Durable agents");
+    expect(fixture.calls).toHaveLength(2);
+  });
+
+  it("keeps an unchanged approval idempotent without cancelling a permitted in-flight call", async () => {
+    const { manager, add, script, fixture, project } = await setup();
+    const server = await add();
+    await manager.test(server.id);
+    await manager.approve(server.id, ["search"]);
+    await manager.setEnabled(server.id, true);
+    const before = await manager.grants.decision(project.id, server.id, "search");
+    const entered = Promise.withResolvers<undefined>(),
+      release = Promise.withResolvers<undefined>();
+    fixture.state.beforeCall = async () => {
+      entered.resolve(undefined);
+      await release.promise;
+    };
+    const pending = script(tryCall(`tools.mcp__${server.id}__search({query:"durable"})`));
+    try {
+      await entered.promise;
+      await manager.approve(server.id, ["search"]);
+      expect(await manager.grants.decision(project.id, server.id, "search")).toEqual(before);
+    } finally {
+      release.resolve(undefined);
+    }
+    expect(await pending).toContain("Durable agents");
+    expect(fixture.calls).toHaveLength(1);
+  });
+
   it("clears a saved key before publishing a changed recipient, including interrupted credential deletion", async () => {
     const { manager, add, credentials, open, fixture } = await setup();
     const server = await add({ kind: "header", header: "x-api-key" });

@@ -1434,8 +1434,16 @@ describe("Pal in a browser", () => {
     await dialog.waitFor({ state: "detached" });
     await cleanup.getByRole("status").filter({ hasText: "Workspace deleted" }).waitFor();
     expect(await stat(project.root).catch(() => undefined)).toBeUndefined();
-    expect(await trigger.count()).toBe(0);
+    await trigger.waitFor({ state: "detached" });
+    const refreshed = page.waitForResponse(
+      (response) => response.url() === `${base}/api/removed-workspaces` && response.request().method() === "GET",
+    );
     await page.reload();
+    const response = await refreshed;
+    expect(response.status()).toBe(200);
+    expect(
+      ((await response.json()) as { workspaces: { id: string }[] }).workspaces.some((item) => item.id === project.id),
+    ).toBe(false);
     expect(await trigger.count()).toBe(0);
     await page.setViewportSize({ width: 1440, height: 900 });
     await page.goto(chatUrl);
