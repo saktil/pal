@@ -1,12 +1,13 @@
-import { api, type ChatGPTState, type Project, type ProvidersState } from "./api.ts";
+import { api, type ChatGPTState, type ExtensionView, type Project, type ProvidersState } from "./api.ts";
 
-export type SettingsTab = "general" | "models" | "mcp";
+export type SettingsTab = "general" | "models" | "mcp" | "extensions";
 export type Route = { view: "home" } | { view: "chat"; chatId: string } | { view: "settings"; tab: SettingsTab };
 
 function parseRoute(hash: string): Route {
   const [, view, id] = hash.replace(/^#/, "").split("/");
   if (view === "chat" && id !== undefined && id !== "") return { view: "chat", chatId: id };
-  if (view === "settings") return { view: "settings", tab: id === "models" || id === "mcp" ? id : "general" };
+  if (view === "settings")
+    return { view: "settings", tab: id === "models" || id === "mcp" || id === "extensions" ? id : "general" };
   return { view: "home" };
 }
 
@@ -16,6 +17,7 @@ export const app = $state({
   projects: [] as Project[],
   chatgpt: undefined as ChatGPTState | undefined,
   providers: undefined as ProvidersState | undefined,
+  extensions: undefined as ExtensionView | undefined,
   width: window.innerWidth,
   sendWithEnter: readSetting("pal.sendWithEnter") !== "false",
 });
@@ -50,6 +52,10 @@ export async function refreshChatGPT(): Promise<void> {
 
 export async function refreshProviders(): Promise<void> {
   app.providers = await api.providers();
+}
+
+export async function refreshExtensions(): Promise<void> {
+  app.extensions = await api.extensions();
 }
 
 function readSetting(key: string): string | null {

@@ -5,6 +5,7 @@
   import McpSettings from "./McpSettings.svelte";
   import ProviderSettings from "./ProviderSettings.svelte";
   import WorkspaceCleanup from "./WorkspaceCleanup.svelte";
+  import ExtensionSettings from "./ExtensionSettings.svelte";
 
   let { tab, onSignOut, embedded = false }: { tab: SettingsTab; onSignOut: () => void; embedded?: boolean } = $props();
 
@@ -49,6 +50,7 @@
     { id: "general", label: "General", icon: "gear" },
     { id: "models", label: "Models", icon: "model" },
     { id: "mcp", label: "MCP servers", icon: "plug" },
+    { id: "extensions", label: "Extensions", icon: "model" },
   ] as const;
 </script>
 
@@ -103,6 +105,8 @@
           </div>
         </div>
         <WorkspaceCleanup />
+      {:else if tab === "extensions"}
+        <ExtensionSettings />
       {:else if tab === "mcp"}
         <McpSettings />
       {:else}

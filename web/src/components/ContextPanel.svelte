@@ -18,6 +18,7 @@
 
   let { project, chat, workspace }: { project: Project; chat: ChatSummary; workspace?: Workspace | null } = $props();
   let info: ContextInfo | undefined = $state.raw();
+  let extensions: Awaited<ReturnType<typeof api.chatExtensions>> | undefined = $state.raw();
   let pinDraft: { revision: number; text: string } | undefined = $state();
   let pinStale = $state(false);
   let prompt: PromptInfo | undefined = $state.raw();
@@ -52,13 +53,15 @@
 
   async function load() {
     const current = ++generation;
-    const [context, memory, grants] = await Promise.all([
+    const [context, memory, grants, pins] = await Promise.all([
       api.context(chat.id),
       api.memory(project.id, workspace?.id),
       api.projectFolders(project.id, workspace?.id),
+      api.chatExtensions(chat.id),
     ]);
     if (current !== generation) return;
     info = context;
+    extensions = pins;
     items = memory.items;
     folders = grants.folders;
   }
@@ -330,6 +333,31 @@
           : `Context head entry #${info.head}. Original history remains retained.`}
       </p>
     </section>
+    {#if extensions}
+      <section aria-label="Extension pins">
+        <h3 class="h3">Extension pins</h3>
+        <p class="sub">
+          This chat keeps its selected built-ins. Defaults in Settings affect new chats only. Core authorization and
+          approval hooks always remain active.
+        </p>
+        <div class="row">
+          {#each extensions.selected as item (item.id)}<span class="pill mono">{item.id}@{item.version}</span>{/each}
+        </div>
+        <details>
+          <summary>Recent native request pins</summary>
+          <p class="sub">
+            Up to 100 recent transcript entries are inspected. Each request pins its immutable implementation; older
+            history remains in Pi.
+          </p>
+          {#each extensions.requests as pin (pin.task)}<pre
+              class="mono">{`Task ${pin.task} · ${pin.release}\n${pin.selected.map((item) => `${item.id}@${item.version}`).join(", ")}`}</pre>{:else}<p
+              class="sub"
+            >
+              No request pins yet.
+            </p>{/each}
+        </details>
+      </section>
+    {/if}
     <section aria-label="Curated memory">
       <div class="row">
         <h3 class="h3 grow">Curated memory</h3>

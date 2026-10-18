@@ -15,6 +15,7 @@ import { API_PROVIDERS, CompatibleBody, isApiProvider, ProviderConfigError } fro
 import { StdioConfigError, StdioServerBody } from "../pi/mcp-stdio.ts";
 import type { Pal } from "./app.ts";
 import { ApprovalDecision, CommandModeBody } from "./approvals.ts";
+import { ExtensionSelection } from "./extensions.ts";
 import { AdmissionStopped, ChatNotFound, ProjectUnavailable, type ChatSummary } from "./chats.ts";
 import { cookie, HttpError, isOwnOrigin, readJson, sendJson } from "./http.ts";
 import { OwnerError, SESSION_COOKIE, SESSION_MAX_AGE_SECONDS } from "./owner.ts";
@@ -300,6 +301,12 @@ export function createApi(pal: Pal, publicOrigin?: string) {
       await pal.owner.signOut(cookie(request, SESSION_COOKIE));
       response.setHeader("set-cookie", `${SESSION_COOKIE}=; Path=/; HttpOnly; SameSite=Strict; Max-Age=0`);
       return send(200, { signedIn: false });
+    }
+
+    if (resource === "extensions" && path.length === 1) {
+      if (method === "GET") return send(200, await pal.extensions.view());
+      if (method === "PUT")
+        return send(200, await pal.extensions.select(validate(ExtensionSelection, await readJson(request))));
     }
 
     if (resource === "chatgpt") {
@@ -661,6 +668,12 @@ export function createApi(pal: Pal, publicOrigin?: string) {
           effort: model === undefined ? "off" : clampThinkingLevel(model, agent.thinkingLevel),
         });
       }
+      if (action === "extensions" && path.length === 3 && method === "GET")
+        return send(200, {
+          release: pal.extensions.release,
+          selected: chat.extensions,
+          requests: await pal.extensions.pins(chat.conversationId, pal.harness, context),
+        });
       if (action === "context" && path.length === 3 && method === "GET")
         return send(200, await pal.context.inspect(chat, context));
       if (action === "context" && path.length === 4) {

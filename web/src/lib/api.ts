@@ -1,6 +1,8 @@
 // Typed calls to Pal's API. Shapes mirror src/core/api.ts responses.
 import type { ReviewScope } from "../../../src/core/changes.ts";
 import type { WorkspaceMode } from "../../../src/core/workspaces.ts";
+import type { ExtensionScope, ExtensionView, ExtensionRequestPin } from "../../../src/core/extensions.ts";
+export type { ExtensionScope, ExtensionView };
 import type { McpServerInput, McpServerView as McpServer } from "../../../src/pi/mcp.ts";
 export type { McpAuth, McpState } from "../../../src/pi/mcp.ts";
 export type { McpServer, McpServerInput };
@@ -43,6 +45,7 @@ export type ChatSummary = {
   createdAt: number;
   workspace?: import("../../../src/core/workspaces.ts").Workspace | null;
   commandMode?: import("../../../src/core/approvals.ts").CommandMode;
+  extensions: ExtensionScope["selected"];
 };
 
 const inWorkspace = (path: string, id?: string) => {
@@ -113,6 +116,14 @@ export const requestId = (): string =>
   Array.from(crypto.getRandomValues(new Uint8Array(16)), (byte) => byte.toString(16).padStart(2, "0")).join("");
 
 export const api = {
+  extensions: () => call<ExtensionView>("GET", "extensions"),
+  chatExtensions: (id: string) =>
+    call<{ release: string; selected: ExtensionScope["selected"]; requests: ExtensionRequestPin[] }>(
+      "GET",
+      `chats/${id}/extensions`,
+    ),
+  selectExtensions: (selected: ExtensionScope["selected"], digest: string) =>
+    call<ExtensionView>("PUT", "extensions", { selected, digest }),
   session: () => call<Session>("GET", "session"),
   setup: (token: string, passphrase: string) => call<{ signedIn: true }>("POST", "setup", { token, passphrase }),
   signIn: (passphrase: string) => call<{ signedIn: true }>("POST", "sign-in", { passphrase }),

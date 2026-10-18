@@ -1898,6 +1898,61 @@ describe("Pal in a browser", () => {
     await pal.chats.remove(chat.id, context);
   });
 
+  it("selects versioned built-ins for new chats without changing active chat contributions", async () => {
+    const before = await pal.extensions.view();
+    const project = (await pal.projects.list())[0];
+    if (project === undefined) throw new Error("missing project");
+    let chatId: string | undefined;
+    try {
+      await page.setViewportSize({ width: 1440, height: 900 });
+      await page.goto(`${base}/#/settings/extensions`);
+      await page.getByRole("heading", { name: "Extensions", exact: true }).waitFor();
+      const shell = page.getByRole("switch", { name: "Enable Host commands and Terminal for new chats" });
+      const remoteBrowser = page.getByRole("switch", { name: "Enable Project browser for new chats" });
+      await shell.focus();
+      await page.keyboard.press("Space");
+      await expect.poll(() => shell.isChecked(), { timeout: 5000 }).toBe(false);
+      await remoteBrowser.uncheck();
+      await expect.poll(() => remoteBrowser.isChecked(), { timeout: 5000 }).toBe(false);
+      await page.reload();
+      await shell.waitFor();
+      expect(await shell.isChecked()).toBe(false);
+      expect(await remoteBrowser.isChecked()).toBe(false);
+      await shoot("extensions-1440");
+      await page.setViewportSize({ width: 390, height: 844 });
+      expect(await page.evaluate("document.documentElement.scrollWidth <= innerWidth")).toBe(true);
+      await shoot("extensions-390");
+      await page.setViewportSize({ width: 1440, height: 900 });
+      await page.goto(chatUrl);
+      await page.getByRole("button", { name: "Browser", exact: true }).waitFor();
+      await page.getByRole("button", { name: "Terminal", exact: true }).waitFor();
+      const chat = await pal.chats.createChat("e2e-extension-chat", { projectId: project.id }, context);
+      chatId = chat.id;
+      await page.goto(`${base}/#/chat/${chat.id}`);
+      await page.reload();
+      await page.getByRole("button", { name: "Context", exact: true }).waitFor();
+      expect(await page.getByRole("button", { name: "Terminal", exact: true }).count()).toBe(0);
+      expect(await page.getByRole("button", { name: "Browser", exact: true }).count()).toBe(0);
+      const agent = await (await pal.harness.conversation(chat.conversationId, context))?.agent(context);
+      expect(agent?.callable.map((tool) => tool.name)).not.toContain("shell_run");
+      await page.getByLabel("Message").fill("pin this fixture request");
+      await page.getByRole("button", { name: "Send", exact: true }).click();
+      await page.getByText("Hello", { exact: true }).waitFor();
+      await page.getByRole("button", { name: "Context", exact: true }).click();
+      const pins = page.getByRole("region", { name: "Extension pins", exact: true });
+      await pins.getByText("files@1", { exact: true }).waitFor();
+      expect(await pins.getByText("shell@1", { exact: true }).count()).toBe(0);
+      await pins.getByText("Recent native request pins", { exact: true }).click();
+      await pins.getByText(/Task \d+ · development/).waitFor();
+      await shoot("extension-pins-1440");
+    } finally {
+      const current = await pal.extensions.view();
+      await pal.extensions.select({ selected: before.selected, digest: current.digest });
+      if (chatId !== undefined) await pal.chats.remove(chatId, context);
+      await page.setViewportSize({ width: 1440, height: 900 });
+    }
+  });
+
   it("opens the project's own browser, drives a page by pointer and fits a phone", async () => {
     await page.setViewportSize({ width: 1440, height: 900 });
     const project = (await pal.projects.list())[0];

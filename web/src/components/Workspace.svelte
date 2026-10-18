@@ -8,6 +8,7 @@
     refreshChatGPT,
     refreshProjects,
     refreshProviders,
+    refreshExtensions,
     type Route,
     viewport,
   } from "../lib/state.svelte.ts";
@@ -37,6 +38,13 @@
   const browserPanel = () => import("./BrowserPanel.svelte");
   type PanelView = "Changes" | "Files" | "Terminal" | "Context" | "Browser";
   let panelView = $state<PanelView>("Changes");
+  const panelButtons = [
+    { id: "Changes", icon: "edit" },
+    { id: "Files", icon: "folder" },
+    { id: "Context", icon: "read" },
+    { id: "Browser", icon: "globe" },
+    { id: "Terminal", icon: "term" },
+  ] as const;
   /** A file Files asked Changes to open. */
   let diffPath: string | undefined = $state();
   let chatView: { insertText(text: string): void } | undefined = $state();
@@ -55,8 +63,18 @@
     return undefined;
   });
 
+  const enabledPanels = $derived(
+    new Set(
+      (app.extensions?.catalog ?? [])
+        .filter((item) =>
+          located?.chat.extensions.some((choice) => choice.id === item.id && choice.version === item.version),
+        )
+        .flatMap((item) => [...item.panels]),
+    ),
+  );
+
   onMount(() => {
-    void Promise.all([refreshProjects(), refreshChatGPT(), refreshProviders()])
+    void Promise.all([refreshProjects(), refreshChatGPT(), refreshProviders(), refreshExtensions()])
       .catch((failure: unknown) => (error = failure instanceof Error ? failure.message : String(failure)))
       .finally(() => (loaded = true));
   });
@@ -151,29 +169,15 @@
                 aria-label="Projects and chats"
                 onclick={() => (drawerRoute = app.route)}><Icon name="menu" /></button
               >{/if}
-            <button
-              class="b sm q"
-              aria-expanded={panel && panelView === "Changes"}
-              onclick={() => togglePanel("Changes")}><Icon name="edit" />Changes</button
-            >
-            <button class="b sm q" aria-expanded={panel && panelView === "Files"} onclick={() => togglePanel("Files")}
-              ><Icon name="folder" />Files</button
-            >
-            <button
-              class="b sm q"
-              aria-expanded={panel && panelView === "Context"}
-              onclick={() => togglePanel("Context")}><Icon name="read" />Context</button
-            >
-            <button
-              class="b sm q"
-              aria-expanded={panel && panelView === "Browser"}
-              onclick={() => togglePanel("Browser")}><Icon name="globe" />Browser</button
-            >
-            <button
-              class="b sm q"
-              aria-expanded={panel && panelView === "Terminal"}
-              onclick={() => togglePanel("Terminal")}><Icon name="term" />Terminal</button
-            >
+            {#each panelButtons as item (item.id)}
+              {#if enabledPanels.has(item.id)}
+                <button
+                  class="b sm q"
+                  aria-expanded={panel && panelView === item.id}
+                  onclick={() => togglePanel(item.id)}><Icon name={item.icon} />{item.id}</button
+                >
+              {/if}
+            {/each}
           </div>
           <div class="workarea" class:terminal-open={panel && panelView === "Terminal"}>
             <div class="chat-area">
@@ -184,7 +188,7 @@
                   onNewChat={(mode) => newChat(located.project.id, mode)}
                 />{/key}
             </div>
-            {#if panel}
+            {#if panel && enabledPanels.has(panelView)}
               {#if size === "tablet"}<button
                   class="panel-scrim"
                   aria-label="Close workspace panel"

@@ -11,6 +11,7 @@ import {
 import type { SqliteDatabase } from "@earendil-works/pi-durable/storage/sqlite";
 import { type Static, Type } from "typebox";
 import { InvalidRequest, normalize, RequestConflict, validate } from "./requests.ts";
+import { extensionScope, selectedExtensions, type ExtensionScope } from "./extensions.ts";
 import { WorkspaceMode, workspaceMode } from "./workspaces.ts";
 
 export const MAX_INPUT_CHARS = 100_000;
@@ -56,6 +57,7 @@ export type ChatSummary = Chat & {
   readonly projectId: string;
   readonly title: string | null;
   readonly createdAt: number;
+  readonly extensions: ExtensionScope["selected"];
 };
 export type Admission = { readonly chatId: string; readonly requestId: string; readonly submissionId: SubmissionId };
 
@@ -77,7 +79,14 @@ export type ChatServiceOptions = {
   readonly database: SqliteDatabase;
   readonly harness: Harness;
   /** Agent settings for a new conversation in a project; undefined while the project is missing or not ready. */
-  readonly agentFor: (projectId: string, chatId?: string, mode?: WorkspaceMode) => Promise<AgentChange | undefined>;
+  readonly agentFor: (
+    projectId: string,
+    chatId?: string,
+    mode?: WorkspaceMode,
+    extensions?: string,
+  ) => Promise<AgentChange | undefined>;
+  /** Frozen with the chat record, before Pi conversation creation, so recovery cannot adopt newer defaults. */
+  readonly extensions?: () => Promise<string>;
   /** Device uploads a message may attach: checked before admission, turned into model content at submission. */
   readonly attachments?: {
     check(
@@ -129,8 +138,8 @@ export class ChatService {
 
   async list(projectId: string): Promise<ChatSummary[]> {
     const rows = await this.#guard((db) =>
-      db.all<{ id: string; title: string | null; conversation_id: ConversationId; created_at: number }>(
-        "SELECT id, title, conversation_id, created_at FROM pal_chats WHERE project_id = ? AND state = 'ready' AND deleted_at IS NULL ORDER BY created_at DESC, rowid DESC",
+      db.all<{ id: string; title: string | null; conversation_id: ConversationId; created_at: number; intent: string }>(
+        "SELECT id, title, conversation_id, created_at, intent FROM pal_chats WHERE project_id = ? AND state = 'ready' AND deleted_at IS NULL ORDER BY created_at DESC, rowid DESC",
         projectId,
       ),
     );
@@ -140,6 +149,7 @@ export class ChatService {
       title: row.title,
       conversationId: row.conversation_id,
       createdAt: row.created_at,
+      extensions: selectedExtensions(extensionScope(row.intent)),
     }));
   }
 
@@ -156,8 +166,14 @@ export class ChatService {
 
   async get(chatId: string): Promise<ChatSummary | undefined> {
     const row = await this.#guard((db) =>
-      db.get<{ project_id: string; title: string | null; conversation_id: ConversationId; created_at: number }>(
-        "SELECT project_id, title, conversation_id, created_at FROM pal_chats WHERE id = ? AND state = 'ready' AND deleted_at IS NULL",
+      db.get<{
+        project_id: string;
+        title: string | null;
+        conversation_id: ConversationId;
+        created_at: number;
+        intent: string;
+      }>(
+        "SELECT project_id, title, conversation_id, created_at, intent FROM pal_chats WHERE id = ? AND state = 'ready' AND deleted_at IS NULL",
         chatId,
       ),
     );
@@ -169,6 +185,7 @@ export class ChatService {
           title: row.title,
           conversationId: row.conversation_id,
           createdAt: row.created_at,
+          extensions: selectedExtensions(extensionScope(row.intent)),
         };
   }
 
@@ -177,14 +194,17 @@ export class ChatService {
     const title = body.title.trim();
     if (title === "") throw new InvalidRequest("enter a chat name");
     const renamed = await this.#guard((db) =>
-      db.get<ChatSummary>(
-        "UPDATE pal_chats SET title = ? WHERE id = ? AND state = 'ready' AND deleted_at IS NULL AND title IS ? RETURNING id, project_id AS projectId, conversation_id AS conversationId, title, created_at AS createdAt",
+      db.get<Omit<ChatSummary, "extensions"> & { intent: string }>(
+        "UPDATE pal_chats SET title = ? WHERE id = ? AND state = 'ready' AND deleted_at IS NULL AND title IS ? RETURNING id, project_id AS projectId, conversation_id AS conversationId, title, created_at AS createdAt, intent",
         title,
         chatId,
         body.expectedTitle,
       ),
     );
-    if (renamed !== undefined) return renamed;
+    if (renamed !== undefined) {
+      const { intent, ...chat } = renamed;
+      return { ...chat, extensions: selectedExtensions(extensionScope(intent)) };
+    }
     if ((await this.get(chatId)) === undefined) throw new ChatNotFound("no such chat");
     throw new RequestConflict("The chat name changed. Close and reopen this dialog before trying again.");
   }
@@ -211,15 +231,14 @@ export class ChatService {
   }
 
   async createChat(requestId: unknown, body: unknown, context: Context): Promise<Chat> {
-    const { key, intent, digest } = normalize(requestId, ChatBody, body, (value) => ({
-      projectId: value.projectId,
-      title: value.title ?? null,
-      ...(value.workspace === undefined || value.workspace === "local" ? {} : { workspace: value.workspace }),
-    }));
+    const { key, intent, digest } = normalize(requestId, ChatBody, body, chatIntent);
     const { projectId, title } = body as ChatBody;
     if ((await this.#options.agentFor(projectId)) === undefined) {
       throw new ProjectUnavailable(`project ${projectId} does not exist or is not ready`);
     }
+    const extensions = await this.#options.extensions?.();
+    const storedIntent =
+      extensions === undefined ? intent : JSON.stringify({ ...chatIntent(body as ChatBody), extensions });
     const row = await this.#guard((db) =>
       db.transaction(async (tx) => {
         const existing = await tx.get<ChatRow>(
@@ -233,7 +252,7 @@ export class ChatService {
           id,
           key,
           digest,
-          intent,
+          storedIntent,
           projectId,
           title ?? null,
           Date.now(),
@@ -316,7 +335,9 @@ export class ChatService {
       db.get<{ project_id: string; intent: string }>("SELECT project_id, intent FROM pal_chats WHERE id = ?", chatId),
     );
     const agent =
-      row === undefined ? undefined : await this.#options.agentFor(row.project_id, chatId, workspaceMode(row.intent));
+      row === undefined
+        ? undefined
+        : await this.#options.agentFor(row.project_id, chatId, workspaceMode(row.intent), extensionScope(row.intent));
     if (agent === undefined) throw new ProjectUnavailable(`chat ${chatId}'s project is not available`);
     const conversationId = await this.#guard(async () => {
       try {
@@ -422,6 +443,14 @@ export class ChatService {
       throw new AdmissionStopped("admission stopped after a storage failure", { cause: error });
     }
   }
+}
+
+function chatIntent(value: ChatBody) {
+  return {
+    projectId: value.projectId,
+    title: value.title ?? null,
+    ...(value.workspace === undefined || value.workspace === "local" ? {} : { workspace: value.workspace }),
+  };
 }
 
 type ChatRow = { id: string; digest: string; conversation_id: ConversationId | null; deleted_at: number | null };

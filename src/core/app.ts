@@ -21,6 +21,7 @@ import { CommandApprovals } from "./approvals.ts";
 import { BROWSER_NAMESPACE, browserTools } from "../pi/browser-tools.ts";
 import { type BrowserRuntime, browserRuntime, ProjectBrowsers } from "./browser.ts";
 import { ChatService } from "./chats.ts";
+import { BuiltinExtensions, releaseIdentity } from "./extensions.ts";
 import { ChatContext } from "./context.ts";
 import { Changes } from "./changes.ts";
 import { FILES_NAMESPACE, fileTools, projectFiles } from "./files.ts";
@@ -62,6 +63,7 @@ export type Pal = {
   readonly context: ChatContext;
   readonly chats: ChatService;
   readonly approvals: CommandApprovals;
+  readonly extensions: BuiltinExtensions;
   readonly chatgpt: ChatGPTConnection;
   readonly models: Models;
   /** Optional API-key providers the owner enabled beside ChatGPT. */
@@ -129,6 +131,16 @@ export async function openPal(options: PalOptions, context: Context): Promise<Pa
     })());
   try {
     const { database } = store;
+    const registry = createRegistry();
+    const extensions = await BuiltinExtensions.open(
+      database,
+      registry,
+      () => {
+        if (harness === undefined) throw new Error("the harness is not open");
+        return harness;
+      },
+      await releaseIdentity(options.installRoot),
+    );
     const credentials = new SqliteCredentialStore(
       database,
       await loadMasterKey(join(options.dataRoot, "credentials.key")),
@@ -190,8 +202,8 @@ export async function openPal(options: PalOptions, context: Context): Promise<Pa
       namespaces: [FILES_NAMESPACE, SHELL_NAMESPACE, MEMORY_NAMESPACE, BROWSER_NAMESPACE],
     });
     sandbox = codemode.sandbox;
-    const registry = createRegistry();
     for (const extension of codemode.extensions) registry.install(extension);
+    registry.install(extensions.extension);
     registry.install(
       fileTools({
         root: projectRoot,
@@ -292,12 +304,13 @@ export async function openPal(options: PalOptions, context: Context): Promise<Pa
         harness: running,
         attachments: uploads,
         folderScope: (projectId, chatId) => folders.capture(projectId, chatId),
-        agentFor: async (projectId, chatId, mode = "local") => {
+        extensions: () => extensions.capture(),
+        agentFor: async (projectId, chatId, mode = "local", scope) => {
           const project = await openedProjects.get(projectId);
           if (project?.state !== "ready") return undefined;
           const model = await settings.defaultModel();
           const workspace = chatId === undefined ? undefined : await openedWorkspaces.allocate(chatId, projectId, mode);
-          return agentFor(project, model, workspace);
+          return { ...agentFor(project, model, workspace), ...extensions.agent(scope) };
         },
       },
       context,
@@ -313,6 +326,7 @@ export async function openPal(options: PalOptions, context: Context): Promise<Pa
       workspaces: openedWorkspaces,
       chats: openedChats,
       approvals: commandApprovals,
+      extensions,
       chatgpt: new ChatGPTConnection(credentials, {
         endpoints,
         installationId: store.installationId,
