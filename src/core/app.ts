@@ -11,6 +11,7 @@ import {
 } from "../pi/chatgpt.ts";
 import { createPalCodemode } from "../pi/codemode.ts";
 import { McpManager } from "../pi/mcp.ts";
+import { ModelProviders } from "../pi/providers.ts";
 import { StdioPrograms } from "../pi/mcp-stdio.ts";
 import { loadMasterKey, SqliteCredentialStore } from "../storage/credentials.ts";
 import { openStore, type Store } from "../storage/store.ts";
@@ -35,6 +36,8 @@ export type PalOptions = {
   readonly installRoot: string;
   /** OpenAI's by default; tests point these at a loopback fixture. */
   readonly endpoints?: ChatGPTEndpoints;
+  /** Replaces the scheme and host of every API-key provider's endpoints; tests point it at a loopback fixture. */
+  readonly providerOrigin?: string;
   /** How long a command waits for the owner's answer; tests shorten it. */
   readonly approvalTtlMs?: number;
 };
@@ -52,6 +55,8 @@ export type Pal = {
   readonly approvals: CommandApprovals;
   readonly chatgpt: ChatGPTConnection;
   readonly models: Models;
+  /** Optional API-key providers the owner enabled beside ChatGPT. */
+  readonly providers: ModelProviders;
   readonly harness: Harness;
   readonly settings: Settings;
   readonly mcp: McpManager;
@@ -66,10 +71,15 @@ export type Pal = {
   close(): Promise<void>;
 };
 
+export type ModelRef = { readonly provider: string; readonly modelId: string };
+
 export type Settings = {
-  /** The ChatGPT model new chats start with. */
+  /** The ChatGPT default model, also listed while another provider is the default. */
   model(): Promise<string | undefined>;
   setModel(slug: string): Promise<void>;
+  /** The model new chats start with: the ChatGPT default unless the owner chose another provider's model. */
+  defaultModel(): Promise<ModelRef | undefined>;
+  setDefaultModel(model: ModelRef): Promise<void>;
 };
 
 // Subscription mode never reads the process environment, so an ambient OPENAI_API_KEY cannot be picked up.
@@ -113,6 +123,12 @@ export async function openPal(options: PalOptions, context: Context): Promise<Pa
     const endpoints = options.endpoints ?? OPENAI_CHATGPT;
     const models = createModels({ credentials, authContext: NO_AMBIENT_AUTH });
     models.setProvider(chatGPTProvider(endpoints));
+    const providers = await ModelProviders.open({
+      database,
+      credentials,
+      models,
+      ...(options.providerOrigin === undefined ? {} : { origin: options.providerOrigin }),
+    });
 
     const openedProjects = await Projects.open({
       database,
@@ -212,14 +228,25 @@ export async function openPal(options: PalOptions, context: Context): Promise<Pa
     const running = await Harness.open(store.storage, { models, registry }, context);
     harness = running;
 
+    const setting = async (key: string) =>
+      (await database.get<{ value: string }>("SELECT value FROM pal_settings WHERE key = ?", key))?.value;
+    const save = (key: string, value: string) =>
+      database.run(
+        "INSERT INTO pal_settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value",
+        key,
+        value,
+      );
     const settings: Settings = {
-      model: async () =>
-        (await database.get<{ value: string }>("SELECT value FROM pal_settings WHERE key = 'model'"))?.value,
-      setModel: async (slug) => {
-        await database.run(
-          "INSERT INTO pal_settings (key, value) VALUES ('model', ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value",
-          slug,
-        );
+      model: () => setting("model"),
+      setModel: (slug) => save("model", slug),
+      defaultModel: async () => {
+        const provider = (await setting("default_provider")) ?? CHATGPT_PROVIDER;
+        const modelId = await setting(provider === CHATGPT_PROVIDER ? "model" : "default_model");
+        return modelId === undefined ? undefined : { provider, modelId };
+      },
+      setDefaultModel: async ({ provider, modelId }) => {
+        await save(provider === CHATGPT_PROVIDER ? "model" : "default_model", modelId);
+        await save("default_provider", provider);
       },
     };
     changes = new Changes(database, openedProjects, options.dataRoot, locks, openedWorkspaces);
@@ -236,7 +263,7 @@ export async function openPal(options: PalOptions, context: Context): Promise<Pa
         agentFor: async (projectId, chatId, mode = "local") => {
           const project = await openedProjects.get(projectId);
           if (project?.state !== "ready") return undefined;
-          const model = await settings.model();
+          const model = await settings.defaultModel();
           const workspace = chatId === undefined ? undefined : await openedWorkspaces.allocate(chatId, projectId, mode);
           return agentFor(project, model, workspace);
         },
@@ -260,6 +287,7 @@ export async function openPal(options: PalOptions, context: Context): Promise<Pa
         agentName: "Pal",
       }),
       models,
+      providers,
       harness: running,
       settings,
       mcp: connections,
@@ -284,9 +312,9 @@ export async function openPal(options: PalOptions, context: Context): Promise<Pa
   }
 }
 
-function agentFor(project: Project, model: string | undefined, workspace?: Workspace): AgentChange {
+function agentFor(project: Project, model: ModelRef | undefined, workspace?: Workspace): AgentChange {
   return {
-    ...(model === undefined ? {} : { model: { provider: CHATGPT_PROVIDER, modelId: model } }),
+    ...(model === undefined ? {} : { model }),
     cwd: workspace?.root ?? project.root,
     instructions: [
       `You are Pal, the owner's personal assistant, working in the project "${project.name}".`,

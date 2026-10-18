@@ -1,4 +1,4 @@
-import { api, type ChatGPTState, type Project } from "./api.ts";
+import { api, type ChatGPTState, type Project, type ProvidersState } from "./api.ts";
 
 export type SettingsTab = "general" | "models" | "mcp";
 export type Route = { view: "home" } | { view: "chat"; chatId: string } | { view: "settings"; tab: SettingsTab };
@@ -15,6 +15,7 @@ export const app = $state({
   route: parseRoute(location.hash),
   projects: [] as Project[],
   chatgpt: undefined as ChatGPTState | undefined,
+  providers: undefined as ProvidersState | undefined,
   width: window.innerWidth,
   sendWithEnter: readSetting("pal.sendWithEnter") !== "false",
 });
@@ -45,6 +46,10 @@ export async function refreshProjects(): Promise<void> {
 
 export async function refreshChatGPT(): Promise<void> {
   app.chatgpt = await api.chatgpt();
+}
+
+export async function refreshProviders(): Promise<void> {
+  app.providers = await api.providers();
 }
 
 function readSetting(key: string): string | null {

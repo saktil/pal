@@ -3,6 +3,7 @@
   import Icon from "../lib/Icon.svelte";
   import { app, navigate, refreshChatGPT, saveSetting, type SettingsTab, viewport } from "../lib/state.svelte.ts";
   import McpSettings from "./McpSettings.svelte";
+  import ProviderSettings from "./ProviderSettings.svelte";
   import WorkspaceCleanup from "./WorkspaceCleanup.svelte";
 
   let { tab, onSignOut, embedded = false }: { tab: SettingsTab; onSignOut: () => void; embedded?: boolean } = $props();
@@ -106,7 +107,10 @@
         <McpSettings />
       {:else}
         <h2 class="h2">Models</h2>
-        <p class="sub">Pal uses your ChatGPT subscription. It never falls back to an API key or another provider.</p>
+        <p class="sub">
+          Pal starts with your ChatGPT subscription. Other providers are optional and use your own keys; Pal never falls
+          back from one provider to another.
+        </p>
         <h3 class="h3">Provider connection</h3>
         <div class="fold">
           <div class="line">
@@ -171,6 +175,14 @@
 
         {#if chatgpt?.account}
           <h3 class="h3">Default model for new chats</h3>
+          {#if chatgpt.default !== null && chatgpt.default.provider !== "openai"}
+            <p class="setd">
+              New chats start with <span class="mono">{chatgpt.default.modelId}</span> on
+              {app.providers?.providers.find((entry) => entry.id === chatgpt.default?.provider)?.name ??
+                chatgpt.default.provider}. Choose a ChatGPT model here, or another model with “Use for new chats” in a
+              chat's model picker.
+            </p>
+          {/if}
           {#if chatgpt.modelsError}
             <div class="callout er" role="alert">Couldn't list your models: {chatgpt.modelsError}</div>
           {/if}
@@ -186,7 +198,7 @@
                 <input
                   type="radio"
                   name="default-model"
-                  checked={chatgpt.model === model.slug}
+                  checked={chatgpt.default?.provider === "openai" && chatgpt.default.modelId === model.slug}
                   disabled={!model.supported || busy}
                   onchange={() => act(() => api.setDefaultModel(model.slug))}
                 />
@@ -194,6 +206,7 @@
             {/each}
           </div>
         {/if}
+        <ProviderSettings />
       {/if}
     </div>
   </div>

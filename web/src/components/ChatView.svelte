@@ -27,7 +27,7 @@
   import InternetSources from "./InternetSources.svelte";
   import WorkspaceMode from "./WorkspaceMode.svelte";
   import { renderMarkdown } from "../lib/markdown.ts";
-  import { app, navigate, refreshProjects, viewport } from "../lib/state.svelte.ts";
+  import { app, navigate, refreshChatGPT, refreshProjects, viewport } from "../lib/state.svelte.ts";
 
   let { chat, project, onNewChat }: { chat: ChatSummary; project: Project; onNewChat: (mode: Mode) => Promise<void> } =
     $props();
@@ -74,6 +74,7 @@
 
   let stream: ChatStream | undefined = $state();
   let model: string | null = $state(null);
+  let provider: string | null = $state(null);
   let effort: Effort = $state("off");
   let choosing = $state(false);
   const efforts = ["off", "low", "medium", "high"] as const;
@@ -102,6 +103,7 @@
     stream = current;
     void api.chat(chat.id).then((loaded) => {
       model = loaded.model;
+      provider = loaded.provider;
       effort = loaded.effort;
     });
     return () => current.close();
@@ -110,15 +112,70 @@
   const items = $derived.by(() => build(stream?.entries ?? [], stream?.partial, stream?.approvals ?? []));
   const awaiting = $derived((stream?.approvals ?? []).some((approval) => approval.state === "pending"));
   const connected = $derived(app.chatgpt?.account != null);
-  const choices = $derived((app.chatgpt?.models ?? []).filter((choice) => choice.supported));
-  const effectiveModel = $derived(model ?? app.chatgpt?.model ?? null);
-  const modelName = $derived(
-    choices.find((choice) => choice.slug === effectiveModel)?.displayName ?? effectiveModel ?? "Choose model",
+  type Choice = { provider: string; id: string; name: string; efforts: readonly Effort[] };
+  type Group = { provider: string; name: string; billing: string; choices: Choice[] };
+  /** ChatGPT first, then each API-key provider the owner enabled; nothing else is offered. */
+  const groups = $derived<Group[]>([
+    {
+      provider: "openai",
+      name: "ChatGPT",
+      billing: "Your ChatGPT subscription.",
+      choices: (app.chatgpt?.models ?? [])
+        .filter((choice) => choice.supported)
+        .map((choice) => ({ provider: "openai", id: choice.slug, name: choice.displayName, efforts: choice.efforts })),
+    },
+    ...(app.providers?.providers ?? [])
+      .filter((entry) => entry.enabled)
+      .map((entry) => ({
+        provider: entry.id,
+        name: entry.name,
+        billing: entry.billing,
+        choices: entry.models.map((choice) => ({
+          provider: entry.id,
+          id: choice.id,
+          name: choice.name,
+          efforts: choice.efforts as Effort[],
+        })),
+      })),
+  ]);
+  const SHOWN_PER_PROVIDER = 50;
+  let query = $state("");
+  const matching = $derived(
+    groups.map((group) => {
+      const words = query.trim().toLowerCase();
+      return words === ""
+        ? group
+        : {
+            ...group,
+            choices: group.choices.filter((choice) => `${choice.name} ${choice.id}`.toLowerCase().includes(words)),
+          };
+    }),
   );
-  const supportedEfforts = $derived(choices.find((choice) => choice.slug === effectiveModel)?.efforts ?? []);
-  const canSend = $derived(
-    ready && !sending && !choosing && uploading === 0 && draft.trim() !== "" && connected && effectiveModel !== null,
+  const searchable = $derived(groups.reduce((total, group) => total + group.choices.length, 0) > 12);
+  const effective = $derived(
+    model !== null ? { provider: provider ?? "openai", modelId: model } : (app.chatgpt?.default ?? null),
   );
+  const current = $derived(
+    groups
+      .flatMap((group) => group.choices)
+      .find((choice) => choice.provider === effective?.provider && choice.id === effective.modelId),
+  );
+  const providerName = $derived(groups.find((group) => group.provider === effective?.provider)?.name);
+  const modelName = $derived(current?.name ?? effective?.modelId ?? "Choose model");
+  const supportedEfforts = $derived(current?.efforts ?? []);
+  /** The chat's provider can take a message now: signed-in ChatGPT, or an enabled API-key provider. */
+  const usable = $derived(
+    effective !== null &&
+      (effective.provider === "openai"
+        ? connected
+        : (app.providers?.providers ?? []).some((entry) => entry.id === effective.provider && entry.enabled)),
+  );
+  const isDefault = $derived(
+    effective !== null &&
+      app.chatgpt?.default?.provider === effective.provider &&
+      app.chatgpt.default.modelId === effective.modelId,
+  );
+  const canSend = $derived(ready && !sending && !choosing && uploading === 0 && draft.trim() !== "" && usable);
 
   function build(entries: Entry[], partial: Message | undefined, approvals: readonly CommandApproval[]): Item[] {
     // A result belongs to the call of that ID in the latest assistant message before it; IDs may repeat across turns.
@@ -231,7 +288,11 @@
     sending = true;
     error = undefined;
     try {
-      if (model === null && effectiveModel !== null) model = (await api.setChatModel(chat.id, effectiveModel)).model;
+      if (model === null && effective !== null) {
+        const chosen = await api.setChatModel(chat.id, effective.modelId, undefined, effective.provider);
+        model = chosen.model;
+        provider = chosen.provider;
+      }
       const { admission } = await api.send(chat.id, pending.key, text, stream?.running ? whenBusy : "followUp", ids);
       if (stream?.running) queuedTexts[admission.submissionId] = text;
       pending = undefined;
@@ -245,18 +306,29 @@
     }
   }
 
-  async function chooseModel(slug: string, level?: Effort) {
+  async function chooseModel(choice: { provider: string; id: string }, level?: Effort) {
     if (choosing) return;
     if (level === undefined) picker = false;
     choosing = true;
     try {
-      const chosen = await api.setChatModel(chat.id, slug, level);
+      const chosen = await api.setChatModel(chat.id, choice.id, level, choice.provider);
       model = chosen.model;
+      provider = chosen.provider;
       effort = chosen.effort;
     } catch (failure) {
       error = failure instanceof ApiError ? failure.message : String(failure);
     } finally {
       choosing = false;
+    }
+  }
+
+  async function useForNewChats() {
+    if (effective === null) return;
+    try {
+      app.providers = await api.setDefault(effective.provider, effective.modelId);
+      await refreshChatGPT();
+    } catch (failure) {
+      error = failure instanceof ApiError ? failure.message : String(failure);
     }
   }
 
@@ -516,22 +588,43 @@
   <div class="dock" style:padding={phone ? "0 12px 10px" : "0 20px 16px"}>
     <div class="dockin">
       {#if picker}
-        <div class="pop" role="dialog" aria-label="Choose model" style:width={phone ? "100%" : "420px"}>
+        <div class="pop" role="dialog" aria-label="Choose model" style:width={phone ? "100%" : "460px"}>
           <div class="poph">Model for this chat</div>
-          {#if !connected}
-            <p class="popn">Sign in with ChatGPT to list your models.</p>
+          {#if searchable}
+            <input
+              class="f search"
+              type="search"
+              placeholder="Search models"
+              aria-label="Search models"
+              bind:value={query}
+            />
           {/if}
-          <div role="radiogroup" aria-label="ChatGPT models">
-            {#each choices as choice (choice.slug)}
-              <button
-                class="opt"
-                role="radio"
-                aria-checked={choice.slug === effectiveModel}
-                disabled={choosing}
-                onclick={() => chooseModel(choice.slug)}
-              >
-                <span>{choice.displayName}</span><span class="mono optd">{choice.slug}</span>
-              </button>
+          <div class="models">
+            {#each matching as group (group.provider)}
+              <div class="grouph"><span>{group.name}</span><span class="optd">{group.billing}</span></div>
+              {#if group.provider === "openai" && !connected}
+                <p class="popn">Sign in with ChatGPT to list your models.</p>
+              {:else if effective !== null && group.provider !== effective.provider}
+                <p class="popn">Choosing one sends this chat's history to {group.name} with your next message.</p>
+              {/if}
+              <div role="radiogroup" aria-label={`${group.name} models`}>
+                {#each group.choices.slice(0, SHOWN_PER_PROVIDER) as choice (choice.id)}
+                  <button
+                    class="opt"
+                    role="radio"
+                    aria-checked={choice.provider === effective?.provider && choice.id === effective.modelId}
+                    disabled={choosing}
+                    onclick={() => chooseModel(choice)}
+                  >
+                    <span>{choice.name}</span><span class="mono optd">{choice.id}</span>
+                  </button>
+                {/each}
+              </div>
+              {#if group.choices.length > SHOWN_PER_PROVIDER}
+                <p class="popn">Showing {SHOWN_PER_PROVIDER} of {group.choices.length}. Search to find others.</p>
+              {:else if group.choices.length === 0 && query.trim() !== ""}
+                <p class="popn">No {group.name} model matches.</p>
+              {/if}
             {/each}
           </div>
           <div class="reasoning">
@@ -542,13 +635,19 @@
                   class="segb"
                   role="radio"
                   aria-checked={effort === level}
-                  disabled={choosing || effectiveModel === null || !supportedEfforts.includes(level)}
-                  onclick={() => effectiveModel !== null && chooseModel(effectiveModel, level)}
+                  disabled={choosing || current === undefined || !supportedEfforts.includes(level)}
+                  onclick={() => current !== undefined && chooseModel(current, level)}
                   >{level[0]?.toUpperCase()}{level.slice(1)}</button
                 >
               {/each}
             </div>
             <p class="optd">Current: {effort}. Applies to this chat; unavailable levels are disabled.</p>
+          </div>
+          <div class="defaults">
+            {#if isDefault}<span class="optd">New chats start with this model.</span>
+            {:else}<button class="b sm" disabled={effective === null || !usable} onclick={useForNewChats}
+                >Use for new chats</button
+              >{/if}
           </div>
         </div>
       {/if}
@@ -561,10 +660,18 @@
             >{/if}
         </div>
       {/if}
-      {#if !connected}
+      {#if (effective === null || effective.provider === "openai") && !connected}
         <div class="callout wa nowrap" role="status">
           <span class="grow"><strong>ChatGPT isn't connected.</strong> Messages need your ChatGPT subscription.</span>
           <button class="b sm" onclick={() => navigate({ view: "settings", tab: "models" })}>Connect</button>
+        </div>
+      {:else if effective !== null && !usable}
+        <div class="callout wa nowrap" role="status">
+          <span class="grow"
+            ><strong>{providerName ?? effective.provider} isn't enabled.</strong> Enable it in Settings or choose another
+            model; Pal won't send this chat anywhere else on its own.</span
+          >
+          <button class="b sm" onclick={() => navigate({ view: "settings", tab: "models" })}>Settings</button>
         </div>
       {/if}
       {#if stream !== undefined && stream.loaded && !stream.connected}
@@ -577,7 +684,12 @@
         <div class="running" role="status">
           <span class="ring spin" aria-hidden="true"></span>
           <span class="grow ellipsis"
-            >{awaiting ? "Waiting for your approval" : "Running"} <span class="dim">· {modelName}</span></span
+            >{awaiting ? "Waiting for your approval" : "Running"}
+            <span class="dim"
+              >· {modelName}{providerName !== undefined && effective?.provider !== "openai"
+                ? ` · ${providerName}`
+                : ""}</span
+            ></span
           >
           <button class="b sm" onclick={() => api.stop(chat.id)}><Icon name="stop" />Stop</button>
         </div>
@@ -665,6 +777,30 @@
 </section>
 
 <style>
+  .search {
+    margin: 4px 10px 6px;
+    width: calc(100% - 20px);
+  }
+  .models {
+    max-height: min(300px, 40dvh);
+    overflow-y: auto;
+  }
+  .grouph {
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
+    padding: 8px 10px 2px;
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--tx2);
+  }
+  .grouph .optd {
+    font-weight: 400;
+  }
+  .defaults {
+    padding: 8px 10px 4px;
+    border-top: 1px solid var(--line);
+  }
   .appr {
     border: 1px solid #5a4a2c;
     background: var(--wabg);

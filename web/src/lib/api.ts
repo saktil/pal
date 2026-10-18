@@ -15,6 +15,12 @@ export type { Workspace, WorkspaceMode } from "../../../src/core/workspaces.ts";
 export type { MemoryItem, MemoryInput } from "../../../src/core/memory.ts";
 export type { ContextInfo, PromptInfo } from "../../../src/core/context.ts";
 export type { ApprovalView, CommandApproval, CommandMode } from "../../../src/core/approvals.ts";
+export type { KeyCheck, ProviderModel, ProviderView } from "../../../src/pi/providers.ts";
+export type ModelRef = { provider: string; modelId: string };
+export type ProvidersState = {
+  providers: import("../../../src/pi/providers.ts").ProviderView[];
+  default: ModelRef | null;
+};
 
 export type Effort = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
 export type ChatGPTModel = { slug: string; displayName: string; supported: boolean; efforts: Effort[] };
@@ -25,6 +31,8 @@ export type ChatGPTState = {
   models: ChatGPTModel[];
   modelsError: string | null;
   model: string | null;
+  /** The model new chats start with, which may belong to another enabled provider. */
+  default: ModelRef | null;
 };
 
 export type Upload = { id: string; name: string; size: number; mediaType: string; state: "receiving" | "ready" };
@@ -116,6 +124,16 @@ export const api = {
   chatgptCancel: () => call<ChatGPTState>("DELETE", "chatgpt/sign-in"),
   chatgptSignOut: () => call<ChatGPTState>("POST", "chatgpt/sign-out"),
   setDefaultModel: (model: string) => call<ChatGPTState>("PUT", "chatgpt/model", { model }),
+  providers: () => call<ProvidersState>("GET", "providers"),
+  providerKey: (id: string, key: string | null) =>
+    key === null
+      ? call<ProvidersState>("DELETE", `providers/${id}/key`)
+      : call<ProvidersState>("PUT", `providers/${id}/key`, { key }),
+  providerEnabled: (id: string, enabled: boolean) =>
+    call<ProvidersState>("PUT", `providers/${id}/enabled`, { enabled }),
+  providerCheck: (id: string) =>
+    call<{ check: import("../../../src/pi/providers.ts").KeyCheck }>("POST", `providers/${id}/check`),
+  setDefault: (provider: string, model: string) => call<ProvidersState>("PUT", "default-model", { provider, model }),
 
   projects: () => call<{ projects: Project[] }>("GET", "projects"),
   createProject: (key: string, name: string, folder?: string) =>
@@ -259,7 +277,8 @@ export const api = {
     call<{ chat: ChatSummary }>("POST", "chats", { requestId: key, projectId, workspace }),
   prepareWorkspace: (id: string) => call<{ chat: ChatSummary }>("POST", `chats/${id}/workspace`, {}),
   deleteChat: (id: string) => call<{ removed: true }>("DELETE", `chats/${id}`),
-  chat: (id: string) => call<{ chat: ChatSummary; model: string | null; effort: Effort }>("GET", `chats/${id}`),
+  chat: (id: string) =>
+    call<{ chat: ChatSummary; model: string | null; provider: string | null; effort: Effort }>("GET", `chats/${id}`),
   send: (id: string, key: string, text: string, whenBusy: "followUp" | "steer", attachments: string[]) =>
     call<{ admission: { submissionId: number } }>("POST", `chats/${id}/inputs`, {
       requestId: key,
@@ -295,8 +314,8 @@ export const api = {
       decision,
       digest,
     }),
-  setChatModel: (id: string, model: string, effort?: Effort) =>
-    call<{ model: string; effort: Effort }>("PUT", `chats/${id}/model`, { model, effort }),
+  setChatModel: (id: string, model: string, effort?: Effort, provider?: string) =>
+    call<{ model: string; provider: string; effort: Effort }>("PUT", `chats/${id}/model`, { model, effort, provider }),
 
   mcp: () => call<McpListing>("GET", "mcp"),
   mcpReview: (enable: boolean) => call<McpListing>("POST", "mcp/review", { enable }),

@@ -2,7 +2,15 @@
   import { onMount } from "svelte";
   import { api, ApiError, type ChatSummary, requestId, type WorkspaceMode } from "../lib/api.ts";
   import Icon from "../lib/Icon.svelte";
-  import { app, navigate, refreshChatGPT, refreshProjects, type Route, viewport } from "../lib/state.svelte.ts";
+  import {
+    app,
+    navigate,
+    refreshChatGPT,
+    refreshProjects,
+    refreshProviders,
+    type Route,
+    viewport,
+  } from "../lib/state.svelte.ts";
   import ChatView from "./ChatView.svelte";
   import CreateProject from "./CreateProject.svelte";
   import Onboarding from "./Onboarding.svelte";
@@ -47,7 +55,7 @@
   });
 
   onMount(() => {
-    void Promise.all([refreshProjects(), refreshChatGPT()])
+    void Promise.all([refreshProjects(), refreshChatGPT(), refreshProviders()])
       .catch((failure: unknown) => (error = failure instanceof Error ? failure.message : String(failure)))
       .finally(() => (loaded = true));
   });

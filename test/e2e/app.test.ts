@@ -15,6 +15,7 @@ import { startMcpFixture } from "../fixtures/mcp-server.ts";
 import { startCachedMcp } from "../fixtures/cached-mcp.ts";
 import { STDIO_FIXTURE } from "../fixtures/stdio-server.ts";
 import { browse, startOpenAIFixture } from "../fixtures/openai-server.ts";
+import { startProviderFixture } from "../fixtures/provider-server.ts";
 
 const webRoot = join(import.meta.dirname, "..", "..", "dist", "public");
 const exec = promisify(execFile);
@@ -23,6 +24,7 @@ const shots = process.env.PAL_E2E_SCREENSHOTS;
 
 let fixture: Awaited<ReturnType<typeof startOpenAIFixture>>;
 let mcp: Awaited<ReturnType<typeof startMcpFixture>>;
+let provider: Awaited<ReturnType<typeof startProviderFixture>>;
 let pal: Pal;
 let dataRoot: string;
 let base: string;
@@ -36,9 +38,14 @@ beforeAll(async () => {
   cleanups.push(fixture.close);
   mcp = await startMcpFixture();
   cleanups.push(mcp.close);
+  provider = await startProviderFixture();
+  cleanups.push(provider.close);
   dataRoot = await realpath(await mkdtemp(join(tmpdir(), "pal-e2e-")));
   cleanups.push(() => rm(dataRoot, { recursive: true, force: true }));
-  pal = await openPal({ dataRoot, installRoot: "/nonexistent-install", endpoints: fixture.endpoints }, context);
+  pal = await openPal(
+    { dataRoot, installRoot: "/nonexistent-install", endpoints: fixture.endpoints, providerOrigin: provider.origin },
+    context,
+  );
   cleanups.push(() => pal.close());
   const server = await startServer({
     host: "127.0.0.1",
@@ -1768,6 +1775,60 @@ describe("Pal in a browser", () => {
     expect(
       (await (await legacy.harness.conversation(chat.conversationId, context))?.agent(context))?.model?.modelId,
     ).toBe("gpt-5.5");
+  });
+
+  it("enables OpenRouter with a hidden key, chats on its model and never falls back", async () => {
+    await page.setViewportSize({ width: 1440, height: 900 });
+    await page.goto(`${base}/#/settings/models`);
+    const card = page.getByRole("group", { name: "OpenRouter" });
+    await card.getByText("Not set up").waitFor();
+    await card.getByLabel("API key").fill("sk-or-fixture-good");
+    await card.getByRole("button", { name: "Save key" }).click();
+    await card.getByText("Key saved · off").waitFor();
+    expect(await card.getByLabel("Replace API key").inputValue()).toBe("");
+    expect(await page.content()).not.toContain("sk-or-fixture-good");
+    await card.getByRole("switch", { name: /Use OpenRouter in chats/ }).check();
+    await card.getByText("Enabled", { exact: true }).waitFor();
+    await card.getByRole("button", { name: "Check key" }).click();
+    await card.getByRole("status").filter({ hasText: "OpenRouter accepted this key." }).waitFor();
+    await shoot("providers-1440");
+    await page.setViewportSize({ width: 390, height: 900 });
+    expect(await page.evaluate("document.documentElement.scrollWidth <= innerWidth")).toBe(true);
+    await shoot("providers-390");
+    await page.setViewportSize({ width: 1440, height: 900 });
+
+    const project = (await pal.projects.list())[0];
+    if (project === undefined) throw new Error("missing project");
+    const chat = await pal.chats.createChat("e2e-provider-chat", { projectId: project.id }, context);
+    await page.goto(`${base}/#/chat/${chat.id}`);
+    await page.reload();
+    await page.getByRole("button", { name: "Choose model" }).click();
+    const picker = page.getByRole("dialog", { name: "Choose model" });
+    await picker.getByText("Pay per token from your OpenRouter credits.").waitFor();
+    await picker.getByLabel("Search models").fill("deepseek-flash-latest");
+    await shoot("provider-picker-1440");
+    await picker
+      .getByRole("radiogroup", { name: "OpenRouter models" })
+      .getByRole("radio", { name: /deepseek-flash-latest/ })
+      .click();
+    await picker.waitFor({ state: "detached" });
+    const chatgptRequests = () => fixture.apiRequests.filter((request) => request.path === "/v1/responses").length;
+    const before = chatgptRequests();
+    await page.getByLabel("Message").fill("hello from openrouter");
+    await page.getByRole("button", { name: "Send" }).click();
+    await page.getByText("Hello from the provider fixture").waitFor();
+    expect(provider.requests.at(-1)).toMatchObject({ path: "/api/v1/chat/completions" });
+    expect(provider.requests.at(-1)?.headers.authorization).toBe("Bearer sk-or-fixture-good");
+    expect(chatgptRequests()).toBe(before);
+    await shoot("provider-chat-1440");
+
+    await pal.providers.setEnabled("openrouter", false);
+    await page.reload();
+    await page.getByText("OpenRouter isn't enabled.").waitFor();
+    await page.getByLabel("Message").fill("never sent elsewhere");
+    expect(await page.getByRole("button", { name: "Send" }).isDisabled()).toBe(true);
+    expect(chatgptRequests()).toBe(before);
+    await pal.chats.remove(chat.id, context);
   });
 
   it("lays out for tablet and phone", async () => {

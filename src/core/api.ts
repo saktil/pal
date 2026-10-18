@@ -11,6 +11,7 @@ import {
   listChatGPTModels,
 } from "../pi/chatgpt.ts";
 import { McpConfigError } from "../pi/mcp.ts";
+import { API_PROVIDERS, isApiProvider, ProviderConfigError } from "../pi/providers.ts";
 import { StdioConfigError, StdioServerBody } from "../pi/mcp-stdio.ts";
 import type { Pal } from "./app.ts";
 import { ApprovalDecision, CommandModeBody } from "./approvals.ts";
@@ -59,10 +60,16 @@ const ModelChoice = Type.Object(
   { model: Type.String({ minLength: 1, maxLength: 200 }) },
   { additionalProperties: false },
 );
+const ProviderId = Type.String({ minLength: 1, maxLength: 40 });
 const ChatModelChoice = Type.Object(
-  { ...ModelChoice.properties, effort: Type.Optional(Type.Enum(["off", "low", "medium", "high"])) },
+  {
+    ...ModelChoice.properties,
+    provider: Type.Optional(ProviderId),
+    effort: Type.Optional(Type.Enum(["off", "low", "medium", "high"])),
+  },
   { additionalProperties: false },
 );
+const DefaultModel = Type.Object({ ...ModelChoice.properties, provider: ProviderId }, { additionalProperties: false });
 const Keyed = Type.Object({ requestId: Type.Unknown() }, { additionalProperties: true });
 const McpServerBody = Type.Union([
   StdioServerBody,
@@ -225,7 +232,22 @@ export function createApi(pal: Pal, publicOrigin?: string) {
       models: account !== undefined && listing !== undefined && "models" in listing ? listing.models : [],
       modelsError: account !== undefined && listing !== undefined && "error" in listing ? listing.error : null,
       model: (await pal.settings.model()) ?? null,
+      default: (await pal.settings.defaultModel()) ?? null,
     };
+  }
+
+  /** A model a chat may switch to now: ChatGPT's, or one of an enabled API-key provider. Never a substitute. */
+  async function chosenModel(provider: string, modelId: string) {
+    if (provider !== CHATGPT_PROVIDER && !(isApiProvider(provider) && (await pal.providers.usable(provider)))) {
+      throw new HttpError(409, "provider_unavailable", "that provider isn't enabled in Settings → Models");
+    }
+    const known = pal.models.getModel(provider, modelId);
+    if (known === undefined) throw new HttpError(400, "unknown_model", "Pal does not know this model’s capabilities");
+    return known;
+  }
+
+  async function providersView() {
+    return { providers: await pal.providers.list(), default: (await pal.settings.defaultModel()) ?? null };
   }
 
   async function describeChat(chat: ChatSummary) {
@@ -312,9 +334,34 @@ export function createApi(pal: Pal, publicOrigin?: string) {
       }
       if (id === "model" && method === "PUT") {
         const { model } = validate(ModelChoice, await readJson(request));
-        await pal.settings.setModel(model);
+        await pal.settings.setDefaultModel({ provider: CHATGPT_PROVIDER, modelId: model });
         return send(200, await chatgptState());
       }
+    }
+
+    if (resource === "providers") {
+      if (path.length === 1 && method === "GET") return send(200, await providersView());
+      if (id !== undefined && isApiProvider(id) && path.length === 3) {
+        if (action === "key" && method === "PUT") {
+          await pal.providers.setKey(id, validate(KeyBody, await readJson(request)).key);
+          return send(200, await providersView());
+        }
+        if (action === "key" && method === "DELETE") {
+          await pal.providers.setKey(id, null);
+          return send(200, await providersView());
+        }
+        if (action === "enabled" && method === "PUT") {
+          await pal.providers.setEnabled(id, validate(Toggle, await readJson(request)).enabled);
+          return send(200, await providersView());
+        }
+        if (action === "check" && method === "POST") return send(200, { check: await pal.providers.check(id) });
+      }
+    }
+    if (resource === "default-model" && path.length === 1 && method === "PUT") {
+      const { provider, model } = validate(DefaultModel, await readJson(request));
+      await chosenModel(provider, model);
+      await pal.settings.setDefaultModel({ provider, modelId: model });
+      return send(200, await providersView());
     }
 
     if (resource === "mcp") {
@@ -589,10 +636,11 @@ export function createApi(pal: Pal, publicOrigin?: string) {
       if (action === undefined && method === "GET") {
         const agent = await conversation.agent(context);
         const model =
-          agent.model === undefined ? undefined : pal.models.getModel(CHATGPT_PROVIDER, agent.model.modelId);
+          agent.model === undefined ? undefined : pal.models.getModel(agent.model.provider, agent.model.modelId);
         return send(200, {
           chat: await describeChat(chat),
           model: agent.model?.modelId ?? null,
+          provider: agent.model?.provider ?? null,
           effort: model === undefined ? "off" : clampThinkingLevel(model, agent.thinkingLevel),
         });
       }
@@ -618,6 +666,15 @@ export function createApi(pal: Pal, publicOrigin?: string) {
       }
       if (action === "inputs" && method === "POST") {
         const { requestId, ...body } = validate(Keyed, await readJson(request));
+        // A chat on a disabled provider stops here; it is never sent to ChatGPT or any other provider instead.
+        const provider = (await conversation.agent(context)).model?.provider;
+        if (provider !== undefined && isApiProvider(provider) && !(await pal.providers.usable(provider))) {
+          throw new HttpError(
+            409,
+            "provider_unavailable",
+            `${API_PROVIDERS[provider].name} isn't enabled. Enable it in Settings → Models or choose another model.`,
+          );
+        }
         return send(200, { admission: await pal.chats.submit(chat.id, requestId, body, context) });
       }
       if (action === "stop" && method === "POST") {
@@ -625,16 +682,15 @@ export function createApi(pal: Pal, publicOrigin?: string) {
         return send(200, { stopped: true });
       }
       if (action === "model" && method === "PUT") {
-        const { model, effort: requested } = validate(ChatModelChoice, await readJson(request));
-        const known = pal.models.getModel(CHATGPT_PROVIDER, model);
-        if (known === undefined)
-          throw new HttpError(400, "unknown_model", "Pal does not know this model’s capabilities");
+        const {
+          model,
+          provider = CHATGPT_PROVIDER,
+          effort: requested,
+        } = validate(ChatModelChoice, await readJson(request));
+        const known = await chosenModel(provider, model);
         const effort = clampThinkingLevel(known, requested ?? (await conversation.agent(context)).thinkingLevel);
-        await conversation.configure(
-          { model: { provider: CHATGPT_PROVIDER, modelId: model }, thinkingLevel: effort },
-          context,
-        );
-        return send(200, { chat: await describeChat(chat), model, effort });
+        await conversation.configure({ model: { provider, modelId: model }, thinkingLevel: effort }, context);
+        return send(200, { chat: await describeChat(chat), model, provider, effort });
       }
       if (action === "events" && method === "GET") return observe(request, response, chat.id, chat.conversationId);
     }
@@ -721,6 +777,7 @@ function classify(error: unknown): [number, string] {
   if (error instanceof FolderError) return [422, `folder_${error.code}`];
   if (error instanceof AdmissionStopped) return [503, "admission_stopped"];
   if (error instanceof McpConfigError || error instanceof StdioConfigError) return [400, "mcp_config"];
+  if (error instanceof ProviderConfigError) return [400, "provider_config"];
   if (error instanceof FileAccessError) return [403, "file_access"];
   if (error instanceof SearchError) return [422, "search_unavailable"];
   if (error instanceof WorkspaceBusy) return [409, "workspace_busy"];
