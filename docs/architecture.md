@@ -112,6 +112,15 @@ while you enable them, and a key echoed back in an error message is scrubbed out
 
 ## Extensions and releases
 
+Pal's extension-first philosophy keeps identity, storage, durability and permission enforcement in a small trusted
+core. Capabilities belong in contributions around that core: agent tools, panels, integrations and interface-only
+extras. The goal is for built-in and community extensions to follow the same model, bundled into reusable packages
+people can create, customize and share.
+
+The current catalog is compiled into Pal, not a public plug-in SDK or a downloadable package loader. Custom MCP
+servers are today's way to add tools without rebuilding Pal. Extensions never bypass host policy, and in-process
+code requires full application-code trust.
+
 - `src/core/extensions.ts`: built-in contributions (files, shell, memory, browser, compact) can be switched for new
   chats. Each chat freezes its selection and the implementation versions it ran with. Compact output is opt-in: in
   a chat that selected it, `shell_run` asks `rtk rewrite` for an equivalent before recording its intent, runs that

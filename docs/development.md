@@ -69,6 +69,18 @@ nix/               package, checks and test derivations
 
 See [architecture](architecture.md) for how the pieces connect.
 
+## Adding capabilities
+
+Prefer extensions and reusable packages over adding more responsibilities to core. The aim is for people to build
+and share their own tools, integrations and customizations, not just use the bundled features. See
+[extension architecture](architecture.md#extensions-and-releases) for the current scope and trust boundaries.
+
+- **Custom tools today:** implement an MCP server and connect it through [Settings → MCP servers](configuration.md#internet-tools-mcp).
+- **Built-in contributions today:** use `src/core/extensions.ts` and the existing native-tool and UI boundaries.
+  Interface-only extras do not need a model tool or new permissions.
+- **Shared guarantees:** keep owner consent, Code Mode-only model calls, durable receipts, version pins and resource
+  limits intact. New defaults must not change active chats or runs.
+
 ## Conventions
 
 - TypeScript in strict mode, ES modules and Node 24 APIs. Svelte 5 runes in the UI.

@@ -13,6 +13,18 @@ decide how much it may do without asking.
 Runs are durable: a chat keeps going when you close the tab, and a restart resumes interrupted work instead of
 silently repeating it.
 
+## Philosophy
+
+**Everything is an extension or a package.** Pal should be a small, dependable core with capabilities you can add,
+choose and customize. Tools, panels, integrations, workflows and interface extras belong in composable extensions,
+not an ever-growing core.
+
+The goal is for anyone to create extensions, add their own tools, customize Pal and share reusable packages.
+Built-ins are a starting point, not the limit.
+
+Today, Pal ships compiled, version-pinned built-ins and accepts custom tools through MCP. A public extension SDK
+and package installer are not available yet. See [extension architecture](docs/architecture.md#extensions-and-releases).
+
 ## Features
 
 - **Models.** Use the provider you have: a ChatGPT subscription (sign-in, no API key), an API key for OpenRouter,
