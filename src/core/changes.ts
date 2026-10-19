@@ -47,6 +47,8 @@ export type ChangeComment = {
 export type ChangeSet = {
   state: "ready" | "unavailable";
   base: string | null;
+  /** The repository's commit now; differs from `base` once something was committed or checked out since. */
+  head: string | null;
   files: Change[];
   comments: ChangeComment[];
   truncated: boolean;
@@ -132,16 +134,45 @@ export class Changes {
     } catch {
       return undefined;
     }
-    const value = await git(root, ["rev-parse", "--verify", "HEAD"], signal).then(
-      (value) => value.toString().trim(),
-      () => "",
-    );
-    const head = /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(value) ? value : null;
+    const head = await this.#head(root, signal);
     await this.#database.run("INSERT OR IGNORE INTO pal_change_bases (scope_id, head) VALUES (?, ?)", id, head);
     return await this.#database.get<{ head: string | null }>(
       "SELECT head FROM pal_change_bases WHERE scope_id = ?",
       id,
     );
+  }
+  async #head(root: string, signal: AbortSignal): Promise<string | null> {
+    let value = "";
+    try {
+      value = (await git(root, ["rev-parse", "--verify", "HEAD"], signal)).toString().trim();
+    } catch {
+      // An unborn branch has no commit yet.
+    }
+    return /^(?:[a-f0-9]{40}|[a-f0-9]{64})$/.test(value) ? value : null;
+  }
+  /**
+   * Move the baseline to the repository's current commit. Only the owner does this, never a commit by itself: an agent
+   * commit must not hide its changes from review. `from` and `to` are what the owner saw; if either moved since,
+   * nothing changes. Review marks bind the old baseline, so they go with it.
+   */
+  async moveBaseline(projectId: string, from: string | null, to: string, workspaceId?: string): Promise<void> {
+    const location = await this.#location(projectId, workspaceId);
+    const { root, key } = location;
+    const stale = () => new HttpError(409, "changes_stale", "the baseline or commit changed; refresh first");
+    await this.#locks.run(root, async () => {
+      await location.check();
+      if ((await this.#head(root, AbortSignal.timeout(10_000))) !== to) throw stale();
+      await this.#database.transaction(async (tx) => {
+        await this.#ready(projectId, tx, workspaceId);
+        const stored = await tx.get<{ head: string | null }>(
+          "SELECT head FROM pal_change_bases WHERE scope_id = ?",
+          key,
+        );
+        if (stored === undefined || stored.head !== from) throw stale();
+        await tx.run("UPDATE pal_change_bases SET head = ? WHERE scope_id = ?", to, key);
+        await tx.run("DELETE FROM pal_change_reviews WHERE scope_id = ?", key);
+      });
+    });
   }
   async list(projectId: string, scope: ReviewScope = "normal", workspaceId?: string): Promise<ChangeSet> {
     if (this.#active >= 2)
@@ -158,6 +189,7 @@ export class Changes {
         return {
           state: "unavailable",
           base: null,
+          head: null,
           files: [],
           comments: [],
           truncated: false,
@@ -247,6 +279,7 @@ export class Changes {
       return {
         state: "ready",
         base: baseline.head,
+        head: await this.#head(root, signal),
         files: files.flatMap((file) => {
           if (!visible(file.path)) return [];
           return [hidden.has(file.path) ? { ...file, ignored: true } : file];

@@ -241,6 +241,8 @@ export const api = {
         workspace,
       ),
     ),
+  moveBaseline: (id: string, from: string | null, to: string, workspace?: string) =>
+    call<{ base: string }>("PUT", `projects/${id}/baseline`, { from, to, workspace }),
   discard: (id: string, path: string, revision: string, scope: ReviewScope = "normal", workspace?: string) =>
     call<{ discarded: true }>("POST", `projects/${id}/discard`, { path, revision, scope, workspace }),
   comment: (

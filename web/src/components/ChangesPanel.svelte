@@ -173,6 +173,14 @@
     );
     if (error === undefined) done = "Feedback is in the composer. Edit it if needed, then send.";
   }
+  /** Only by the owner's choice: a commit by itself never moves the baseline, so it can't hide changes from review. */
+  async function moveBaseline() {
+    const seen = changes;
+    if (seen?.head == null) return;
+    const to = seen.head;
+    await act(() => api.moveBaseline(project.id, seen.base, to, workspace?.id));
+    if (error === undefined) done = `Now reviewing changes since commit ${to.slice(0, 12)}.`;
+  }
   const baseline = $derived(changes?.base?.slice(0, 12) ?? "empty tree");
   onMount(() => {
     void refresh();
@@ -217,6 +225,15 @@
           : `Baseline ${changes.base?.slice(0, 12) ?? "empty tree"}`}</span
       >
       <p>{changes.note}</p>
+      {#if changes.state === "ready" && changes.head !== null && changes.head !== changes.base}
+        <div class="moved" role="status">
+          <p>
+            The repository is now at commit <span class="mono">{changes.head.slice(0, 12)}</span>, so changes committed
+            since the baseline still show here.
+          </p>
+          <button class="b sm" disabled={busy} onclick={moveBaseline}>Review from latest commit</button>
+        </div>
+      {/if}
       {#if changes.truncated}<p class="warning">
           Partial scan: file, byte or time limit reached. Not all changes are shown.
         </p>{/if}
@@ -443,6 +460,22 @@
   }
   .warning {
     color: var(--wa);
+  }
+  .moved {
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 6px 12px;
+    margin-top: 8px;
+    padding: 8px 10px;
+    border: 1px solid var(--acln);
+    border-radius: 8px;
+    background: var(--acbg);
+    color: var(--tx2);
+  }
+  .moved p {
+    flex: 1 1 220px;
+    margin: 0;
   }
   .files {
     list-style: none;

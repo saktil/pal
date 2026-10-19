@@ -1835,6 +1835,59 @@ describe("Pal in a browser", () => {
     }
   });
 
+  it("keeps committed changes listed until the owner chooses to review from the latest commit", async () => {
+    const project = await pal.projects.create("baseline-move-project", { name: "Commit fixture" });
+    const git = (...args: string[]) =>
+      exec(
+        "git",
+        ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "-c", "commit.gpgsign=false", ...args],
+        { cwd: project.root },
+      );
+    try {
+      await git("init", "-q");
+      await writeFile(join(project.root, "app.txt"), "first\n");
+      await git("add", "app.txt");
+      await git("commit", "-qm", "base");
+      const first = (await git("rev-parse", "HEAD")).stdout.trim();
+      await pal.changes.list(project.id);
+      // As an agent would: edit and commit; the recorded baseline stays put.
+      await writeFile(join(project.root, "app.txt"), "second\n");
+      await git("commit", "-qam", "agent commit");
+      const latest = (await git("rev-parse", "HEAD")).stdout.trim();
+      const chat = await pal.chats.createChat("baseline-move-chat", { projectId: project.id }, context);
+      await page.goto(`${base}/#/chat/${chat.id}`);
+      await page.reload();
+      await page.getByRole("button", { name: "Changes", exact: true }).click();
+      const panel = page.getByRole("complementary", { name: "Workspace panel" });
+      await panel.getByText(`Baseline ${first.slice(0, 12)}`).waitFor();
+      await panel
+        .getByRole("list", { name: "Changed files" })
+        .getByRole("button", { name: /app\.txt/ })
+        .waitFor();
+      const notice = panel.getByRole("status").filter({ hasText: `now at commit ${latest.slice(0, 12)}` });
+      await notice.waitFor();
+      await shoot("changes-commit-moved-1440");
+      await page.setViewportSize({ width: 390, height: 900 });
+      expect(await page.evaluate("document.documentElement.scrollWidth <= innerWidth")).toBe(true);
+      await shoot("changes-commit-moved-390");
+      await page.setViewportSize({ width: 1440, height: 900 });
+      await notice.getByRole("button", { name: "Review from latest commit" }).click();
+      await panel.getByRole("heading", { name: "No changes found" }).waitFor();
+      await panel.getByText(`Now reviewing changes since commit ${latest.slice(0, 12)}.`).waitFor();
+      await panel.getByText(`Baseline ${latest.slice(0, 12)}`).waitFor();
+      expect(await panel.getByRole("button", { name: "Review from latest commit" }).count()).toBe(0);
+      await page.reload();
+      await page.getByRole("button", { name: "Changes", exact: true }).click();
+      await panel.getByText(`Baseline ${latest.slice(0, 12)}`).waitFor();
+      await panel.getByRole("heading", { name: "No changes found" }).waitFor();
+    } finally {
+      await pal.projects.remove(project.id);
+      await page.setViewportSize({ width: 1440, height: 900 });
+      await page.goto(chatUrl);
+      await page.reload();
+    }
+  });
+
   it("reattaches a real human shell on a phone, transfers control and shares only selected output", async () => {
     const project = (await pal.projects.list())[0];
     if (project === undefined) throw new Error("missing project");

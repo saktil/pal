@@ -147,6 +147,37 @@ describe("revision-bound Git changes", () => {
     expect((await new Changes(store.database, projects, dataRoot).list(project.id)).base).toBe(head);
   });
 
+  it("moves the baseline to a later commit only on the owner's explicit, current request", async () => {
+    const { root, project, changes } = await setup();
+    const base = (await git(root, "rev-parse", "HEAD")).stdout.trim();
+    await writeFile(join(root, "file.txt"), "committed\n");
+    const edited = (await changes.list(project.id)).files.find((file) => file.path === "file.txt");
+    await changes.review(project.id, "file.txt", edited?.revision ?? "", true);
+    await git(root, "commit", "-qam", "agent commit");
+    const later = (await git(root, "rev-parse", "HEAD")).stdout.trim();
+    const committed = await changes.list(project.id);
+    expect(committed).toMatchObject({ base, head: later });
+    expect(committed.files.map((file) => file.path)).toEqual(["file.txt"]);
+
+    // A request made from an older view changes nothing.
+    await expect(changes.moveBaseline(project.id, later, later)).rejects.toMatchObject({ code: "changes_stale" });
+    await expect(changes.moveBaseline(project.id, base, base)).rejects.toMatchObject({ code: "changes_stale" });
+    expect((await changes.list(project.id)).base).toBe(base);
+
+    await changes.moveBaseline(project.id, base, later);
+    expect(await changes.list(project.id)).toMatchObject({ base: later, head: later, files: [] });
+    // Later edits compare with the new baseline, and Discard restores the committed text.
+    await writeFile(join(root, "file.txt"), "after commit\n");
+    const next = (await changes.list(project.id)).files[0];
+    expect(next).toMatchObject({
+      path: "file.txt",
+      reviewed: false,
+      patch: expect.stringContaining("-committed\n+after commit"),
+    });
+    await changes.discard(project.id, "file.txt", next?.revision ?? "");
+    expect(await readFile(join(root, "file.txt"), "utf8")).toBe("committed\n");
+  });
+
   it("binds reviewed marks to bytes and rejects stale reviews, including after reopen", async () => {
     const { root, dataRoot, store, project, changes } = await setup();
     await writeFile(join(root, "file.txt"), "manual\n");

@@ -116,6 +116,11 @@ const FileDiscard = Type.Object(
   },
   { additionalProperties: false },
 );
+const Commit = Type.String({ pattern: "^(?:[a-f0-9]{40}|[a-f0-9]{64})$" });
+const BaselineMove = Type.Object(
+  { from: Type.Union([Commit, Type.Null()]), to: Commit, workspace: WorkspaceId },
+  { additionalProperties: false },
+);
 const FileComment = Type.Object(
   {
     path: Type.String({ maxLength: 4096 }),
@@ -549,6 +554,11 @@ export function createApi(pal: Pal, publicOrigin?: string, releases?: Pick<Relea
       const body = validate(FileReview, await readJson(request));
       await pal.changes.review(id, body.path, body.revision, body.reviewed, body.scope, body.workspace);
       return send(200, { reviewed: body.reviewed });
+    }
+    if (resource === "projects" && id !== undefined && action === "baseline" && path.length === 3 && method === "PUT") {
+      const body = validate(BaselineMove, await readJson(request));
+      await pal.changes.moveBaseline(id, body.from, body.to, body.workspace);
+      return send(200, { base: body.to });
     }
     if (resource === "projects" && id !== undefined && action === "discard" && path.length === 3 && method === "POST") {
       const body = validate(FileDiscard, await readJson(request));
