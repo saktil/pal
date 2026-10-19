@@ -43,7 +43,7 @@
 
 <div class="gate">
   {#if !session.owner && setupToken === undefined}
-    <div class="card">
+    <div class="head">
       <PalMark size={56} cutout="var(--bg1)" />
       <h1>Pal isn't set up yet</h1>
       <p>
@@ -52,7 +52,7 @@
       </p>
     </div>
   {:else}
-    <form class="card" onsubmit={submit}>
+    <div class="head">
       <PalMark size={56} cutout="var(--bg1)" />
       <h1>{session.owner ? "Sign in to Pal" : "Set up Pal"}</h1>
       <p>
@@ -60,21 +60,29 @@
           ? "Enter the owner's passphrase."
           : "Choose a passphrase for this Pal. You'll use it to sign in from any browser."}
       </p>
-      <label class="fl">
-        Passphrase
+    </div>
+    <form onsubmit={submit}>
+      <label class="sr" for="passphrase">Passphrase</label>
+      <input
+        id="passphrase"
+        class="f"
+        type="password"
+        placeholder="Passphrase"
+        autocomplete={session.owner ? "current-password" : "new-password"}
+        bind:value={passphrase}
+        required
+      />
+      {#if !session.owner}
+        <label class="sr" for="confirm">Confirm passphrase</label>
         <input
+          id="confirm"
           class="f"
           type="password"
-          autocomplete={session.owner ? "current-password" : "new-password"}
-          bind:value={passphrase}
+          placeholder="Confirm passphrase"
+          autocomplete="new-password"
+          bind:value={confirm}
           required
         />
-      </label>
-      {#if !session.owner}
-        <label class="fl">
-          Confirm passphrase
-          <input class="f" type="password" autocomplete="new-password" bind:value={confirm} required />
-        </label>
       {/if}
       {#if error !== undefined}<div class="callout er" role="alert">{error}</div>{/if}
       <button class="b p" type="submit" disabled={busy || passphrase === ""}
@@ -82,40 +90,67 @@
       >
     </form>
   {/if}
+  <p class="foot">{location.host} · self-hosted · beta</p>
 </div>
 
 <style>
   .gate {
-    height: 100dvh;
+    min-height: 100dvh;
     display: flex;
+    flex-direction: column;
     align-items: center;
     justify-content: center;
-    padding: 24px 16px;
+    gap: 28px;
+    padding: 48px 16px;
     background: var(--bg1);
   }
-  .card {
-    width: 100%;
+  .head {
     max-width: 420px;
     display: flex;
     flex-direction: column;
-    gap: 12px;
-    align-items: stretch;
+    align-items: center;
+    gap: 6px;
+    text-align: center;
+  }
+  .head :global(.mark) {
+    margin-bottom: 12px;
   }
   h1 {
     margin: 0;
-    font-size: 26px;
-    font-weight: 750;
-    letter-spacing: -0.02em;
+    font-family: var(--display);
+    font-size: 30px;
+    font-weight: 650;
+    letter-spacing: -0.025em;
   }
-  p {
-    margin: 0 0 6px;
+  .head p {
+    margin: 0;
     color: var(--tx2);
   }
-  /* Stacked fields; the shared field style is meant for wrapping rows. */
-  .fl {
-    flex: none;
+  form {
+    width: 100%;
+    max-width: 360px;
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+  }
+  .f {
+    height: 46px;
+    padding: 0 14px;
+    border-radius: var(--radius-md);
+    background: var(--bg2);
+    font-size: 15px;
+  }
+  .f[type="password"]:not(:placeholder-shown) {
+    letter-spacing: 0.08em;
   }
   .b.p {
-    align-self: flex-start;
+    height: 46px;
+    border-radius: var(--radius-md);
+    font-size: 15px;
+  }
+  .foot {
+    margin: 0;
+    font-size: 12.5px;
+    color: var(--tx3);
   }
 </style>
