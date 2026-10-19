@@ -17,11 +17,14 @@
     workspace,
     initialPath,
     onFeedback,
+    onStatus,
   }: {
     project: Project;
     workspace?: Workspace | null | undefined;
     initialPath?: string | undefined;
     onFeedback?: (text: string) => void;
+    /** What the panel header shows: whether a scan is running and the totals of the last one. */
+    onStatus?: (status: { busy: boolean; files: number | undefined; add: number; del: number }) => void;
   } = $props();
   const root = $derived(workspace?.root ?? project.root);
   let changes: ChangeSet | undefined = $state.raw();
@@ -78,7 +81,31 @@
   const outdatedCount = $derived(unplaced.filter((comment) => comment.outdated).length);
   const pending = $derived(changes?.comments.filter((comment) => !comment.sent) ?? []);
 
-  async function refresh() {
+  /** Added and removed lines in one file's patch, counted inside its hunks. */
+  function counts(patch: string): { add: number; del: number } {
+    let add = 0;
+    let del = 0;
+    let hunks = false;
+    for (const text of patch.split("\n")) {
+      if (text.startsWith("@@")) hunks = true;
+      else if (hunks && text.startsWith("+")) add += 1;
+      else if (hunks && text.startsWith("-")) del += 1;
+    }
+    return { add, del };
+  }
+  $effect(() => {
+    const totals = (changes?.files ?? []).map((candidate) => counts(candidate.patch));
+    onStatus?.({
+      busy,
+      files: changes?.files.length,
+      add: totals.reduce((sum, total) => sum + total.add, 0),
+      del: totals.reduce((sum, total) => sum + total.del, 0),
+    });
+  });
+  /** Git's own header lines repeat the file name; other notes (modes, binary files) stay. */
+  const HEADER = /^(diff --git |index |--- |\+\+\+ )/;
+
+  export async function refresh() {
     const request = ++scan;
     busy = true;
     error = undefined;
@@ -188,19 +215,81 @@
 </script>
 
 <div class="changes" aria-busy={busy}>
-  <div class="info">
-    <span class="pill">{workspace?.mode ?? (project.mode === "managed" ? "Managed" : "Host folder")}</span>
-    <span class="mono folder" title={root}>{root}</span>
-    <button class="b sm q" onclick={refresh} disabled={busy}><Icon name="refresh" />Refresh</button>
-    {#if onFeedback}<button
-        class="b sm"
-        class:p={pending.length > 0}
-        disabled={busy || pending.length === 0}
-        onclick={feedback}
-        ><Icon name="comment" />Send feedback to chat{pending.length > 0 ? ` (${pending.length})` : ""}</button
-      >{/if}
-  </div>
-  <div class="review-scope">
+  {#if error}<div class="callout er" role="alert">{error}</div>{/if}
+  {#if done}<p class="notice" role="status">{done}</p>{/if}
+  {#if changes?.state === "ready" && changes.head !== null && changes.head !== changes.base}
+    <div class="callout ac moved" role="status">
+      <p>
+        The repository is now at commit <span class="mono">{changes.head.slice(0, 12)}</span>, so changes committed
+        since the baseline still show here.
+      </p>
+      <button class="b sm" disabled={busy} onclick={moveBaseline}>Review from latest commit</button>
+    </div>
+  {/if}
+  {#if changes?.truncated}<p class="notice warning">
+      Partial scan: file, byte or time limit reached. Not all changes are shown.
+    </p>{/if}
+  {#if changes === undefined}
+    <p class="notice" role="status">{busy ? "Reading changes…" : "Refresh to read changes."}</p>
+  {:else if changes.state === "ready" && changes.files.length === 0}
+    <div class="empty">
+      <Icon name="check" />
+      <h3>No changes found</h3>
+      <p>Files match the baseline within this scan's limits.</p>
+    </div>
+  {:else if changes.files.length > 0}
+    <ul class="files" aria-label="Changed files">
+      {#each changes.files as candidate (candidate.path)}
+        {@const slash = candidate.path.lastIndexOf("/")}
+        {@const { add, del } = counts(candidate.patch)}
+        <li>
+          <button
+            class="frow"
+            class:done={candidate.reviewed}
+            aria-current={file?.path === candidate.path ? "true" : undefined}
+            onclick={() => {
+              chosen = candidate.path;
+              composing = undefined;
+            }}
+          >
+            <span class="name"
+              ><span class="base">{candidate.path.slice(slash + 1)}</span>
+              <span class="dir"
+                >{candidate.path.slice(0, Math.max(slash, 0))}{candidate.status === "A"
+                  ? " new"
+                  : candidate.status === "D"
+                    ? " deleted"
+                    : ""}</span
+              ></span
+            >
+            {#if candidate.ignored}<span class="flag wa">ignored</span>{/if}
+            {#if candidate.problem}<Icon name="warn" />{/if}
+            {#if candidate.reviewed}<span class="flag">reviewed</span>
+            {:else}
+              {#if add > 0}<span class="num add">+{add}</span>{/if}
+              {#if del > 0}<span class="num del">−{del}</span>{/if}
+            {/if}
+          </button>
+        </li>
+      {/each}
+    </ul>
+  {/if}
+  <details class="details">
+    <summary
+      ><span class="mono"
+        >{changes === undefined
+          ? "Baseline"
+          : changes.state === "unavailable"
+            ? "Baseline unavailable"
+            : `Baseline ${changes.base?.slice(0, 12) ?? "empty tree"}`}</span
+      >
+      · Details<Icon name="chevR" size={12} /></summary
+    >
+    <p>
+      {workspace?.mode ?? (project.mode === "managed" ? "Managed" : "Host folder")} ·
+      <span class="mono" title={root}>{root}</span>
+    </p>
+    {#if changes !== undefined}<p>{changes.note}</p>{/if}
     <label
       ><input
         type="checkbox"
@@ -212,163 +301,116 @@
       Ignored files may contain secrets. This local review choice does not change agent folder or shell access. Excerpts
       reach chat only when you choose Send feedback.
     </p>
-  </div>
-  {#if error}<div class="callout er" role="alert">{error}</div>{/if}
-  {#if done}<p class="notice" role="status">{done}</p>{/if}
-  {#if changes === undefined}
-    <p class="notice" role="status">{busy ? "Reading changes…" : "Refresh to read changes."}</p>
-  {:else}
-    <div class="notice">
-      <span class="mono"
-        >{changes.state === "unavailable"
-          ? "Baseline unavailable"
-          : `Baseline ${changes.base?.slice(0, 12) ?? "empty tree"}`}</span
-      >
-      <p>{changes.note}</p>
-      {#if changes.state === "ready" && changes.head !== null && changes.head !== changes.base}
-        <div class="moved" role="status">
-          <p>
-            The repository is now at commit <span class="mono">{changes.head.slice(0, 12)}</span>, so changes committed
-            since the baseline still show here.
-          </p>
-          <button class="b sm" disabled={busy} onclick={moveBaseline}>Review from latest commit</button>
-        </div>
-      {/if}
-      {#if changes.truncated}<p class="warning">
-          Partial scan: file, byte or time limit reached. Not all changes are shown.
-        </p>{/if}
+  </details>
+  {#if unplaced.length > 0}
+    <div class="outdated" role="region" aria-label="Other review comments">
+      <p class="warning">
+        {outdatedCount > 0
+          ? `${outdatedCount} outdated comment${outdatedCount === 1 ? "" : "s"}`
+          : "Comments outside the visible diff"}
+      </p>
+      {#each unplaced as comment (comment.id)}{@render card(comment, true)}{/each}
     </div>
-    {#if unplaced.length > 0}
-      <div class="outdated" role="region" aria-label="Other review comments">
-        <p class="warning">
-          <Icon name={outdatedCount > 0 ? "warn" : "comment"} />
-          {outdatedCount > 0
-            ? `${outdatedCount} outdated comment${outdatedCount === 1 ? "" : "s"}`
-            : "Comments outside the visible diff"}
-        </p>
-        {#each unplaced as comment (comment.id)}{@render card(comment, true)}{/each}
-      </div>
-    {/if}
-    {#if changes.state === "ready" && changes.files.length === 0}
-      <div class="empty">
-        <Icon name="check" />
-        <h3>No changes found</h3>
-        <p>Files match the baseline within this scan's limits.</p>
-      </div>
-    {:else if changes.files.length > 0}
-      <ul class="files" aria-label="Changed files">
-        {#each changes.files as candidate (candidate.path)}
-          <li>
-            <button
-              class="frow"
-              aria-current={file?.path === candidate.path ? "true" : undefined}
-              onclick={() => {
-                chosen = candidate.path;
-                composing = undefined;
-              }}
-            >
-              <span class="status" class:add={candidate.status === "A"} class:del={candidate.status === "D"}
-                >{candidate.status}</span
-              >
-              <span class="mono path">{candidate.path}</span>
-              {#if candidate.ignored}<span class="pill wa">Ignored</span>{/if}
-              {#if candidate.reviewed}<span class="pill ok">Reviewed</span>{/if}
-              {#if candidate.problem}<Icon name="warn" />{/if}
-            </button>
-          </li>
-        {/each}
-      </ul>
-      {#if file}
-        <div class="filehead">
-          <strong class="mono path">{file.path}</strong>
-          <span class="mono revision">Revision {file.revision.slice(0, 12) || "unavailable"}</span>
-          <button
-            class="b sm"
-            aria-pressed={file.reviewed}
-            disabled={busy || file.problem !== undefined}
-            onclick={review}><Icon name="check" />{file.reviewed ? "Reviewed" : "Mark reviewed"}</button
-          >
-          <button class="b sm" disabled={busy || file.problem !== undefined} onclick={() => (discarding = file)}
-            >Discard…</button
-          >
-        </div>
-        {#if file.problem}<p class="notice" role="status">{file.problem}</p>
-        {:else}
-          {@const target = file}
-          <div class="patch" role="region" aria-label="File diff">
-            {#each displayed as row, i (i)}
-              {#if row.kind === "meta" || row.kind === "hunk"}
-                <div class="dl meta" class:hunk={row.kind === "hunk"}><span class="tx">{row.text}</span></div>
+  {/if}
+  {#if file}
+    {#if file.problem}<p class="notice" role="status">{file.problem}</p>
+    {:else}
+      {@const target = file}
+      <div class="patch" role="region" aria-label="File diff">
+        {#each displayed as row, i (i)}
+          {#if row.kind === "meta" || row.kind === "hunk"}
+            {#if !HEADER.test(row.text)}<div class="dl meta" class:hunk={row.kind === "hunk"}>
+                <span class="tx">{row.text}</span>
+              </div>{/if}
+          {:else}
+            <div class="dl" class:add={row.kind === "add"} class:del={row.kind === "del"}>
+              {#if row.line === undefined}<span class="ln"></span>
               {:else}
-                <div class="dl" class:add={row.kind === "add"} class:del={row.kind === "del"}>
-                  <span class="ln">{row.old ?? ""}</span>
-                  {#if row.line === undefined}<span class="ln"></span>
-                  {:else}
-                    {@const line = row.line}
-                    <button
-                      class="ln lnb"
-                      aria-label={`Comment on line ${line}`}
-                      aria-pressed={composing === line}
-                      onclick={() => open(line)}>{line}</button
-                    >
-                  {/if}
-                  <span class="sg">{row.kind === "add" ? "+" : row.kind === "del" ? "-" : " "}</span><span class="tx"
-                    >{row.text}</span
-                  >
-                </div>
-                {#if row.line !== undefined}
-                  {@const line = row.line}
-                  {#each current[line] ?? [] as comment (comment.id)}{@render card(comment)}{/each}
-                  {#if composing === line}
-                    <div class="cm">
-                      <label for="change-comment">Comment on line {line}</label>
-                      <textarea
-                        id="change-comment"
-                        class="f"
-                        rows="3"
-                        maxlength="4000"
-                        placeholder="Leave a review comment"
-                        bind:value={draft}
-                        {@attach (node) => node.focus()}></textarea>
-                      <div class="actions">
-                        <button class="b sm q" onclick={() => (composing = undefined)}>Cancel</button>
-                        <button class="b sm p" disabled={busy || draft.trim() === ""} onclick={() => add(target, line)}
-                          >Add comment</button
-                        >
-                      </div>
-                    </div>
-                  {/if}
-                {/if}
+                {@const line = row.line}
+                <button
+                  class="ln lnb"
+                  aria-label={`Comment on line ${line}`}
+                  aria-pressed={composing === line}
+                  onclick={() => open(line)}>{line}</button
+                >
               {/if}
-            {/each}
-          </div>
-          {#if rows.length > 5000}<p class="notice">
-              Diff display limited to 5,000 lines. Review the full file in your editor.
-            </p>{/if}
-        {/if}
-      {/if}
+              <span class="sg">{row.kind === "add" ? "+" : row.kind === "del" ? "-" : " "}</span><span class="tx"
+                >{row.text}</span
+              >
+            </div>
+            {#if row.line !== undefined}
+              {@const line = row.line}
+              {#each current[line] ?? [] as comment (comment.id)}{@render card(comment)}{/each}
+              {#if composing === line}
+                <div class="cm">
+                  <label for="change-comment">Comment on line {line}</label>
+                  <textarea
+                    id="change-comment"
+                    class="f"
+                    rows="3"
+                    maxlength="4000"
+                    placeholder="Leave a review comment"
+                    bind:value={draft}
+                    {@attach (node) => node.focus()}></textarea>
+                  <div class="actions">
+                    <button class="b sm q" onclick={() => (composing = undefined)}>Cancel</button>
+                    <button class="b sm p" disabled={busy || draft.trim() === ""} onclick={() => add(target, line)}
+                      >Add comment</button
+                    >
+                  </div>
+                </div>
+              {/if}
+            {/if}
+          {/if}
+        {/each}
+      </div>
+      {#if rows.length > 5000}<p class="notice">
+          Diff display limited to 5,000 lines. Review the full file in your editor.
+        </p>{/if}
     {/if}
+  {/if}
+  {#if file || onFeedback}
+    <div class="foot">
+      {#if file}
+        <button
+          class="b t review"
+          aria-pressed={file.reviewed}
+          disabled={busy || file.problem !== undefined}
+          onclick={review}
+          ><span class="box" aria-hidden="true"
+            >{#if file.reviewed}<Icon name="check" size={12} />{/if}</span
+          >{file.reviewed ? "Reviewed" : "Mark reviewed"}</button
+        >
+        <button
+          class="b t"
+          title={`Revision ${file.revision.slice(0, 12) || "unavailable"}`}
+          disabled={busy || file.problem !== undefined}
+          onclick={() => (discarding = file)}>Discard…</button
+        >
+      {/if}
+      <span class="grow"></span>
+      {#if onFeedback}<button class="b" disabled={busy || pending.length === 0} onclick={feedback}
+          >Send feedback to chat{pending.length > 0 ? ` (${pending.length})` : ""}</button
+        >{/if}
+    </div>
   {/if}
 </div>
 
 {#snippet card(comment: ChangeComment, detached = false)}
   <div class="cm" class:out={detached}>
     <div class="cmhead">
-      <strong>You</strong>
-      <span class="mono"
-        >{comment.path === file?.path ? "" : `${comment.path} · `}Line {comment.line} · revision {comment.revision.slice(
-          0,
-          12,
-        )}</span
+      <span title={`Revision ${comment.revision.slice(0, 12)}`}
+        >You · {comment.path === file?.path ? "" : `${comment.path} · `}line {comment.line}</span
       >
-      {#if comment.outdated}<span class="pill wa">Outdated</span>{/if}
-      <span class="pill" class:ok={comment.sent}>{comment.sent ? "Added to composer" : "Not sent"}</span>
+      {#if comment.outdated}<span class="warning">Outdated</span>{/if}
+      <span>·</span><span>{comment.sent ? "Added to composer" : "Not sent"}</span>
       <span class="grow"></span>
       <button
-        class="b sm q"
+        class="b i q sm"
         disabled={busy}
         aria-label={`Delete comment on line ${comment.line}`}
-        onclick={() => act(() => api.uncomment(project.id, comment.id, workspace?.id))}>Delete</button
+        onclick={() => act(() => api.uncomment(project.id, comment.id, workspace?.id))}
+        ><Icon name="trash" size={14} /></button
       >
     </div>
     {#if detached}<code class="mono quote" class:gone={comment.outdated}>{comment.lineText.trim()}</code>{/if}
@@ -395,23 +437,6 @@
 {/if}
 
 <style>
-  .review-scope {
-    padding: 6px 12px;
-    border-bottom: 1px solid var(--line);
-    font-size: 13px;
-  }
-  .review-scope label {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    min-height: 44px;
-  }
-  .review-scope p {
-    max-width: 72ch;
-    margin: 0 0 4px;
-    color: var(--tx3);
-    line-height: 1.5;
-  }
   .changes {
     display: flex;
     flex: 1;
@@ -420,43 +445,14 @@
     min-width: 0;
     overflow: hidden;
   }
-  .info,
-  .filehead {
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    flex-wrap: wrap;
-    padding: 8px 12px;
-    border-bottom: 1px solid var(--line);
-    font-size: 12px;
-  }
-  .folder,
-  .path {
-    min-width: 0;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    flex: 1;
-  }
-  .folder {
-    max-width: 100%;
-    color: var(--tx2);
-  }
-  /* Room for the names first; the actions wrap below them on narrow panels. */
-  .filehead .path,
-  .info .folder {
-    flex: 1 1 140px;
+  .changes > .callout {
+    margin: 10px 12px 0;
   }
   .notice {
     margin: 0;
-    padding: 10px 12px;
+    padding: 10px 18px;
     color: var(--tx3);
     font-size: 13px;
-    border-bottom: 1px solid var(--line);
-  }
-  .notice p {
-    max-width: 72ch;
-    margin: 4px 0 0;
   }
   .warning {
     color: var(--wa);
@@ -466,11 +462,6 @@
     align-items: center;
     flex-wrap: wrap;
     gap: 6px 12px;
-    margin-top: 8px;
-    padding: 8px 10px;
-    border: 1px solid var(--acln);
-    border-radius: 8px;
-    background: var(--acbg);
     color: var(--tx2);
   }
   .moved p {
@@ -479,47 +470,113 @@
   }
   .files {
     list-style: none;
-    padding: 4px 0;
+    padding: 8px;
     margin: 0;
-    max-height: 26%;
+    max-height: 30%;
     overflow: auto;
     flex-shrink: 0;
-    border-bottom: 1px solid var(--line);
+    display: flex;
+    flex-direction: column;
+    gap: 1px;
   }
   .frow {
     width: 100%;
+    height: 32px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 0 10px;
+    border: 0;
+    border-radius: var(--radius-sm);
+    color: color-mix(in srgb, var(--tx) 85%, transparent);
+    background: transparent;
+    text-align: left;
+    font-size: 13px;
+  }
+  .frow:hover {
+    background: var(--bg3);
+  }
+  .frow[aria-current="true"] {
+    background: var(--bg4);
+    color: var(--tx);
+  }
+  .name {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .dir,
+  .flag,
+  .done {
+    color: var(--tx3);
+  }
+  .done .base {
+    text-decoration: line-through;
+    text-decoration-color: var(--line3);
+  }
+  .flag {
+    font-size: 12px;
+  }
+  .flag.wa,
+  .frow :global(svg) {
+    color: var(--wa);
+  }
+  .num {
+    font: 12px var(--mono);
+  }
+  .num.add {
+    color: var(--ok);
+  }
+  .num.del {
+    color: var(--er);
+  }
+  .details {
+    flex-shrink: 0;
+    padding: 8px 18px;
+    border-top: 1px solid var(--line);
+    border-bottom: 1px solid var(--line);
+    font-size: 12.5px;
+    color: var(--tx3);
+  }
+  .details summary {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    list-style: none;
+    cursor: pointer;
+  }
+  .details summary::-webkit-details-marker {
+    display: none;
+  }
+  .details summary:hover {
+    color: var(--tx2);
+  }
+  .details[open] summary :global(svg) {
+    transform: rotate(90deg);
+  }
+  .details p {
+    max-width: 72ch;
+    margin: 6px 0 0;
+    line-height: 1.5;
+    overflow-wrap: anywhere;
+  }
+  .details label {
     display: flex;
     align-items: center;
     gap: 8px;
-    padding: 7px 12px;
-    border: 0;
+    min-height: 32px;
+    margin-top: 6px;
     color: var(--tx2);
-    background: transparent;
-    text-align: left;
-    font-size: 12.5px;
-  }
-  .frow:hover {
-    background: var(--bg2);
-  }
-  .frow[aria-current="true"] {
-    background: var(--acbg);
-    color: var(--tx);
-  }
-  .status {
-    color: var(--wa);
-    font-size: 11px;
-  }
-  .revision {
-    color: var(--tx3);
-    font-size: 11px;
   }
   .patch {
     flex: 1;
     overflow: auto;
     min-height: 0;
-    padding: 4px 0 24px;
-    background: var(--bg0);
-    font: 11.5px/20px var(--mono);
+    padding: 10px 0 24px;
+    font: 12px/22px var(--mono);
+    color: var(--tx2);
     tab-size: 2;
   }
   .dl {
@@ -528,9 +585,9 @@
     white-space: pre;
   }
   .ln {
-    flex: 0 0 46px;
-    padding: 0 8px 0 0;
-    color: var(--tx3);
+    flex: 0 0 44px;
+    padding: 0 10px 0 0;
+    color: var(--line3);
     text-align: right;
     user-select: none;
   }
@@ -543,53 +600,56 @@
   .lnb:focus-visible,
   .lnb[aria-pressed="true"] {
     color: var(--ac);
-    background: var(--acbg);
   }
   .sg {
-    flex: 0 0 16px;
+    flex: 0 0 14px;
     color: var(--tx3);
-    text-align: center;
     user-select: none;
   }
   .tx {
     padding-right: 24px;
   }
-  .add {
-    color: var(--addtx);
-  }
-  .del {
-    color: var(--deltx);
-  }
   .dl.add {
+    color: var(--addtx);
     background: var(--addbg);
   }
   .dl.del {
+    color: var(--deltx);
     background: var(--delbg);
   }
-  .hunk {
-    color: var(--ac);
-    background: var(--acbg);
+  .add .ln,
+  .add .sg {
+    color: color-mix(in srgb, var(--ok) 60%, transparent);
+  }
+  .del .sg {
+    color: color-mix(in srgb, var(--er) 60%, transparent);
+  }
+  .meta {
+    color: var(--tx3);
   }
   .meta .tx {
-    padding-left: 12px;
+    padding-left: 18px;
+  }
+  .hunk .tx {
+    padding-bottom: 6px;
   }
   .cm {
     position: sticky;
     left: 0;
     overflow-wrap: anywhere;
     max-width: 540px;
-    margin: 6px 12px 8px 64px;
+    margin: 8px 16px 8px 44px;
     padding: 10px 12px;
     border: 1px solid var(--line2);
-    border-radius: 8px;
-    background: var(--bg2);
+    border-radius: 10px;
+    background: var(--bg3);
     font: 13px/1.5 var(--sans);
+    color: color-mix(in srgb, var(--tx) 90%, transparent);
     white-space: normal;
   }
   .cm.out {
     margin: 0;
     max-width: none;
-    border-style: dashed;
   }
   .cm p {
     margin: 4px 0 0;
@@ -606,14 +666,11 @@
   .cmhead {
     display: flex;
     align-items: center;
-    gap: 8px;
+    gap: 6px;
     flex-wrap: wrap;
+    min-height: 26px;
     color: var(--tx3);
     font-size: 12px;
-  }
-  .cmhead strong {
-    color: var(--tx);
-    font-weight: 600;
   }
   .grow {
     flex: 1;
@@ -641,13 +698,10 @@
     gap: 8px;
     max-height: 40%;
     overflow: auto;
-    padding: 8px 12px;
+    padding: 10px 12px;
     border-bottom: 1px solid var(--line);
   }
   .outdated .warning {
-    display: flex;
-    align-items: center;
-    gap: 6px;
     margin: 0;
     font-size: 12px;
   }
@@ -658,9 +712,36 @@
   h3 {
     color: var(--tx);
     font-size: 14px;
+    font-weight: 600;
     margin: 8px 0;
   }
   .empty p {
     font-size: 13px;
+  }
+  .foot {
+    flex-shrink: 0;
+    display: flex;
+    align-items: center;
+    flex-wrap: wrap;
+    gap: 8px;
+    padding: 12px 14px 16px;
+    border-top: 1px solid var(--line);
+  }
+  .review {
+    gap: 8px;
+    padding-left: 0;
+  }
+  .box {
+    width: 15px;
+    height: 15px;
+    display: grid;
+    place-items: center;
+    border: 1.5px solid var(--line3);
+    border-radius: 4px;
+    color: var(--on-primary);
+  }
+  .review[aria-pressed="true"] .box {
+    border-color: var(--primary);
+    background: var(--primary);
   }
 </style>

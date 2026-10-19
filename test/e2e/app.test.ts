@@ -1611,6 +1611,9 @@ describe("Pal in a browser", () => {
     await page.getByRole("button", { name: "Changes", exact: true }).click();
     const panel = page.getByRole("complementary", { name: "Workspace panel" });
     const include = panel.getByRole("checkbox", { name: "Include ignored files for review" });
+    // The opt-in and its warning sit under the baseline's Details line.
+    const details = panel.locator("summary").filter({ hasText: "Baseline" });
+    await details.click();
     await include.waitFor();
     expect(await include.isChecked()).toBe(false);
     expect(await panel.getByRole("button", { name: /local.secret/ }).count()).toBe(0);
@@ -1668,6 +1671,7 @@ describe("Pal in a browser", () => {
     expect(await include.isChecked()).toBe(false);
     expect(await panel.getByRole("button", { name: /local.secret/ }).count()).toBe(0);
     expect(await panel.getByText("Review ignored fixture", { exact: true }).count()).toBe(0);
+    await details.click();
     await include.check();
     await panel.getByRole("button", { name: /local.secret/ }).click();
     await panel.getByRole("button", { name: "Discard…", exact: true }).click();

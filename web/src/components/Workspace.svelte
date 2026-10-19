@@ -115,6 +115,8 @@
   /** A file Files asked Changes to open. */
   let diffPath: string | undefined = $state();
   let chatView: { insertText(text: string): void } | undefined = $state();
+  let changesView: { refresh(): Promise<void> } | undefined = $state();
+  let changeStatus: { busy: boolean; files: number | undefined; add: number; del: number } | undefined = $state();
   function togglePanel(view: PanelView) {
     diffPath = undefined;
     panelRoute = panel && panelView === view ? undefined : app.route;
@@ -315,6 +317,16 @@
               >
                 <div class="panelhead">
                   <h2>{panelView}</h2>
+                  {#if panelView === "Changes" && changeStatus?.files !== undefined}
+                    <span class="count"
+                      >{changeStatus.files}
+                      {changeStatus.files === 1 ? "file" : "files"}{changeStatus.files > 0
+                        ? " · "
+                        : ""}{#if changeStatus.files > 0}<span class="add">+{changeStatus.add}</span>
+                        <span class="del">−{changeStatus.del}</span>{/if}</span
+                    >
+                  {/if}
+                  <span class="grow"></span>
                   {#if docked}
                     <div
                       class="seg"
@@ -333,6 +345,15 @@
                         >
                       {/each}
                     </div>
+                  {/if}
+                  {#if panelView === "Changes"}
+                    <button
+                      class="b i q tip"
+                      aria-label="Refresh"
+                      data-tip="Refresh"
+                      disabled={changeStatus?.busy !== false}
+                      onclick={() => changesView?.refresh()}><Icon name="refresh" /></button
+                    >
                   {/if}
                   <button
                     class="b i q tip end"
@@ -386,6 +407,8 @@
                       <p role="status">Loading changes…</p>
                     {:then { default: ChangesPanel }}
                       <ChangesPanel
+                        bind:this={changesView}
+                        onStatus={(next) => (changeStatus = next)}
                         project={located.project}
                         workspace={located.chat.workspace}
                         initialPath={diffPath}
@@ -654,10 +677,23 @@
     min-height: 56px;
   }
   .panelhead h2 {
-    flex: 1;
     font-size: 14px;
     font-weight: 600;
     margin: 0;
+  }
+  .panelhead .grow {
+    flex: 1;
+  }
+  .count {
+    font: 12px var(--mono);
+    color: var(--tx3);
+    white-space: nowrap;
+  }
+  .count .add {
+    color: var(--ok);
+  }
+  .count .del {
+    color: var(--er);
   }
   .panel-scrim {
     position: absolute;
