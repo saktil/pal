@@ -47,11 +47,11 @@
   type PanelView = "Changes" | "Files" | "Terminal" | "Context" | "Browser";
   let panelView = $state<PanelView>("Changes");
   const panelButtons = [
-    { id: "Changes", icon: "edit" },
-    { id: "Files", icon: "folder" },
-    { id: "Context", icon: "read" },
-    { id: "Browser", icon: "globe" },
+    { id: "Changes", icon: "changes" },
+    { id: "Files", icon: "file" },
     { id: "Terminal", icon: "term" },
+    { id: "Browser", icon: "globe" },
+    { id: "Context", icon: "layers" },
   ] as const;
   type Dock = "bottom" | "side";
   /** Where Terminal sits beside the chat on desktop, and the share of the work area it takes, per position. */
@@ -251,28 +251,27 @@
                 onclick={openSidebar}><Icon name="sidebar" /></button
               >{/if}
             {#if size !== "phone"}
-              <div class="titles">
-                <h1>{located.chat.title ?? "New chat"}</h1>
-                <div class="where" title={root}>
-                  <span>{located.project.name}</span><span class="mono path">{root}</span>
-                </div>
-              </div>
+              <h1 class="title">
+                <button aria-haspopup="dialog" onclick={() => (renaming = { ...located.chat })}
+                  ><span>{located.chat.title ?? "New chat"}</span><Icon name="chevD" size={14} /></button
+                >
+              </h1>
+              <span class="where" title={root}>{located.project.name} · {located.chat.workspace?.mode ?? "local"}</span>
             {/if}
             <div class="tools">
-              {#key located.project.id}<ProjectMcpSettings project={located.project} />{/key}
               {#each panelButtons as item (item.id)}
                 {#if enabledPanels.has(item.id)}
                   <button
-                    class="b sm q"
-                    class:i={size !== "desktop"}
-                    aria-label={size === "desktop" ? undefined : item.id}
-                    title={size === "desktop" ? undefined : item.id}
+                    class="b i q tip"
+                    aria-label={item.id}
+                    data-tip={item.id}
                     aria-expanded={panel && panelView === item.id}
-                    onclick={() => togglePanel(item.id)}
-                    ><Icon name={item.icon} />{#if size === "desktop"}{item.id}{/if}</button
+                    onclick={() => togglePanel(item.id)}><Icon name={item.icon} /></button
                   >
                 {/if}
               {/each}
+              <span class="sep" aria-hidden="true"></span>
+              {#key located.project.id}<ProjectMcpSettings project={located.project} />{/key}
             </div>
           </header>
           <div
@@ -335,8 +334,11 @@
                       {/each}
                     </div>
                   {/if}
-                  <button class="b i q" aria-label="Close panel" onclick={() => (panelRoute = undefined)}
-                    ><Icon name="x" /></button
+                  <button
+                    class="b i q tip end"
+                    aria-label="Close panel"
+                    data-tip="Close"
+                    onclick={() => (panelRoute = undefined)}><Icon name="x" /></button
                   >
                 </div>
                 {#key located.chat.workspace?.id ?? located.project.id}
@@ -504,42 +506,50 @@
     flex: 0 0 auto;
     display: flex;
     align-items: center;
-    gap: 8px 12px;
-    min-height: 56px;
-    padding: 8px 10px 8px 20px;
+    gap: 12px;
+    height: 56px;
+    padding: 0 12px 0 24px;
     border-bottom: 1px solid var(--line);
   }
   .chathead.compact {
-    min-height: 0;
+    height: auto;
     padding: 4px 6px;
   }
-  .titles {
-    flex: 1 1 0;
+  .title {
+    flex: 0 1 auto;
     min-width: 0;
-  }
-  .titles h1 {
     margin: 0;
-    font-size: 16px;
-    font-weight: 700;
-    letter-spacing: -0.01em;
-    line-height: 1.3;
-    white-space: nowrap;
+    font: inherit;
+  }
+  .title button {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    max-width: 100%;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    font-size: 14.5px;
+    font-weight: 550;
+    color: var(--tx);
+  }
+  .title span {
+    min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+  .title :global(svg) {
+    color: var(--tx3);
   }
   .where {
-    display: flex;
-    gap: 8px;
+    flex: 0 1 auto;
     min-width: 0;
     font-size: 12.5px;
     color: var(--tx3);
     white-space: nowrap;
-  }
-  .where .path {
-    min-width: 0;
     overflow: hidden;
     text-overflow: ellipsis;
-    font-size: 12px;
   }
   .tools {
     display: flex;
@@ -547,7 +557,12 @@
     justify-content: flex-end;
     gap: 2px;
     margin-left: auto;
-    flex-wrap: wrap;
+  }
+  .sep {
+    width: 1px;
+    height: 18px;
+    margin: 0 6px;
+    background: var(--line2);
   }
   .workarea {
     flex: 1;
@@ -622,10 +637,11 @@
   .workspace-panel {
     display: flex;
     flex-direction: column;
-    width: 52%;
+    width: clamp(380px, 32vw, 460px);
+    flex: none;
     min-width: 0;
     border-left: 1px solid var(--line);
-    background: var(--bg1);
+    background: var(--side);
     z-index: 26;
     animation: fade var(--mid) var(--ease);
   }
@@ -633,14 +649,14 @@
     display: flex;
     align-items: center;
     gap: 8px;
-    padding: 4px 6px 4px 12px;
+    padding: 0 10px 0 18px;
     border-bottom: 1px solid var(--line);
-    min-height: 44px;
+    min-height: 56px;
   }
   .panelhead h2 {
     flex: 1;
     font-size: 14px;
-    font-weight: 700;
+    font-weight: 600;
     margin: 0;
   }
   .panel-scrim {

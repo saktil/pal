@@ -12,7 +12,6 @@
   let error: string | undefined = $state();
   let open = $state(false);
   let dialog: HTMLDialogElement | undefined = $state();
-  const allowed = $derived(settings?.servers.flatMap((server) => server.tools.filter((tool) => tool.allowed)) ?? []);
   const names = $derived(
     settings?.servers
       .filter((server) => server.tools.some((tool) => tool.allowed))
@@ -73,17 +72,15 @@
 </script>
 
 <button
-  class="b sm q"
+  class="b i q tip end"
   aria-label="Project internet tools"
-  title={names || "No internet tools enabled for this project"}
+  data-tip={names ? `Internet tools · ${names}` : "Internet tools · none enabled"}
   disabled={busy !== undefined && !open}
   onclick={() => {
     open = true;
     void refresh();
-  }}
+  }}><Icon name="plug" /></button
 >
-  <Icon name="plug" />Internet tools{#if settings}<span class="pill">{allowed.length}</span>{/if}
-</button>
 
 {#if open}
   <dialog
