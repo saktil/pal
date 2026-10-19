@@ -143,7 +143,6 @@ export const api = {
   chatgptPaste: (url: string) => call<ChatGPTState>("POST", "chatgpt/sign-in/paste", { url }),
   chatgptCancel: () => call<ChatGPTState>("DELETE", "chatgpt/sign-in"),
   chatgptSignOut: () => call<ChatGPTState>("POST", "chatgpt/sign-out"),
-  setDefaultModel: (model: string) => call<ChatGPTState>("PUT", "chatgpt/model", { model }),
   providers: () => call<ProvidersState>("GET", "providers"),
   providerKey: (id: string, key: string | null) =>
     key === null

@@ -48,13 +48,18 @@ first, then copy the whole directory; copying the database while Pal runs can pr
 On first start, Pal prints a one-time setup link (`http://127.0.0.1:7337/#setup=…`). Open it and choose an owner
 passphrase of at least 12 characters. The link works only until the owner exists. Sessions last 30 days.
 
-Onboarding then walks you through three steps:
+Onboarding then walks you through four steps:
 
-1. **Sign in with ChatGPT** opens OpenAI's sign-in page. Its callback goes to `127.0.0.1:1455` on the machine
+1. **Provider**: choose and connect any supported provider (see [Models](#models)). Only ChatGPT needs a ChatGPT
+   account. ChatGPT sign-in opens OpenAI's sign-in page. Its callback goes to `127.0.0.1:1455` on the machine
    running Pal. If your browser is on another device, the final page will not load; copy its full address and
-   paste it into the field Pal shows.
-2. **Internet tools** offers the Exa and Context7 presets, which you can enable now or later.
-3. **Create a project**, either a Pal-managed folder or an existing folder on the server.
+   paste it into the field Pal shows. For an API key or endpoint, **Continue** turns that provider on.
+2. **Model**: choose the model new chats start with.
+3. **Internet tools** offers the Exa and Context7 presets, which you can enable now or later.
+4. **Create a project**, either a Pal-managed folder or an existing folder on the server.
+
+Setup makes no model request. If the chosen provider or model later becomes unavailable, Pal stops sending instead
+of switching to another one.
 
 ## Remote access
 
@@ -76,7 +81,7 @@ Settings → **Models**:
 
 - **ChatGPT** uses your subscription through Sign in with ChatGPT. Usage counts against that account's limits, and
   Pal never falls back to an API key.
-- **Other model providers**: OpenRouter, OpenCode Zen, OpenCode Go, the OpenAI API, the Anthropic API and an
+- **API keys and endpoints**: OpenRouter, OpenCode Zen, OpenCode Go, the OpenAI API, the Anthropic API and an
   OpenAI-compatible endpoint. Each one needs a saved key (except a keyless compatible endpoint) and then an explicit
   **Use … in chats** switch.
   - Keys are stored encrypted and never shown again. **Check key** asks the provider without a model request,
@@ -84,8 +89,9 @@ Settings → **Models**:
   - An OpenAI-compatible endpoint takes a name, base URL, model IDs, context window and output limit. The URL may
     point at a private network address, because you chose it.
 
-The model picker in each chat lists ChatGPT and every enabled provider, with search. Choosing a model from another
-provider sends that chat's history to it with your next message. **Use for new chats** makes it the default.
+The model picker in each chat lists ChatGPT once you sign in and every enabled provider, with search. Choosing a
+model from another provider sends that chat's history to it with your next message. **Use for new chats** makes it
+the default.
 Pal never reads model keys from environment variables such as `OPENAI_API_KEY`.
 
 ## Internet tools (MCP)

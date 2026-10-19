@@ -340,5 +340,22 @@ describe("API-key model providers", () => {
       model: OPENROUTER_MODEL,
     });
     expect((await api("GET", "providers")).status).toBe(200);
+
+    // Without any ChatGPT account the choice survives a restart, and revoking the provider keeps it instead of
+    // substituting another model.
+    await fixture.reopen();
+    const expected = { provider: "openrouter", modelId: OPENROUTER_MODEL };
+    expect((await api("GET", "providers")).body.default).toEqual(expected);
+    expect((await api("GET", "chatgpt")).body).toMatchObject({ account: null, default: expected });
+    await api("PUT", "providers/openrouter/enabled", { enabled: false });
+    expect((await api("GET", "chatgpt")).body.default).toEqual(expected);
+    const later = await fixture.chat("default-after-revoke");
+    expect((await api("GET", `chats/${later}`)).body).toMatchObject({ provider: "openrouter" });
+    expect(await fixture.send(later)).toMatchObject({ status: 409, error: "provider_unavailable" });
+    expect([fixture.chatgpt.authorizations, fixture.chatgpt.tokenRequests, fixture.chatgpt.apiRequests]).toEqual([
+      [],
+      [],
+      [],
+    ]);
   });
 });

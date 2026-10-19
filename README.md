@@ -58,8 +58,8 @@ pnpm install
 pnpm start        # builds the web UI and server, then listens on http://127.0.0.1:7337
 ```
 
-The server prints a one-time setup link. Open it, choose an owner passphrase, then sign in with ChatGPT under
-**Settings → Models**. Arguments after `pnpm start` go to the server, for example
+The server prints a one-time setup link. Open it, choose an owner passphrase, then connect a model provider: ChatGPT
+sign-in, an API key, or an OpenAI-compatible endpoint. Arguments after `pnpm start` go to the server, for example
 `pnpm start --port 8080 --data-dir /srv/pal`. Run `pnpm serve` to start an existing build without rebuilding.
 
 Platform notes:

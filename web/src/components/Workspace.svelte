@@ -183,7 +183,7 @@
     <button class="b" onclick={() => location.reload()}>Try again</button>
   </div>
 {:else if app.projects.length === 0}
-  <Onboarding onCreateProject={() => (creating = true)} {onSignOut} />
+  <Onboarding onCreateProject={() => (creating = true)} />
 {:else}
   <div class="shell">
     {#if size === "phone" && app.route.view !== "settings"}

@@ -233,8 +233,8 @@
     <strong>Enable internet tools?</strong>
     <p class="sub">
       Exa searches and reads public web pages; Context7 answers questions from library documentation. Both work without
-      a key at limited rates, and a key raises the limits. Queries go to those services, separately from ChatGPT. Pal
-      asks before sending private code or documents to them.
+      a key at limited rates, and a key raises the limits. Queries go to those services, separately from your model
+      provider. Pal asks before sending private code or documents to them.
     </p>
     <div class="row-buttons">
       <button class="b p" onclick={() => finishReview(true)} disabled={busy.review}>Enable Exa and Context7</button>
@@ -387,9 +387,9 @@
       >
     {:else}
       <p class="sub">
-        Only the dedicated key variable is injected; the host's environment, ChatGPT tokens and other servers' keys are
-        never inherited. Use a variable ending in KEY, TOKEN, SECRET or PASSWORD, such as SERVICE_API_KEY. Startup or
-        configuration variables are not accepted.
+        Only the dedicated key variable is injected; the host's environment, model provider credentials and other
+        servers' keys are never inherited. Use a variable ending in KEY, TOKEN, SECRET or PASSWORD, such as
+        SERVICE_API_KEY. Startup or configuration variables are not accepted.
       </p>
     {/if}
     {#if editing !== undefined}<p class="sub">

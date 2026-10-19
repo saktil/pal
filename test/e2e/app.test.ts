@@ -108,6 +108,26 @@ async function shoot(name: string): Promise<void> {
   if (shots !== undefined) await page.screenshot({ path: join(shots, `${name}.png`), animations: "disabled" });
 }
 
+/** Onboarding's provider step with ChatGPT: sign in through the fixture, then keep the model it preselects. */
+async function onboardWithChatGPT(view: Page): Promise<void> {
+  await view
+    .getByRole("radiogroup", { name: "Model provider" })
+    .getByRole("radio", { name: /^ChatGPT/ })
+    .check();
+  await view.getByRole("button", { name: "Continue" }).click();
+  await view.getByRole("button", { name: "Sign in with ChatGPT" }).click();
+  const authUrl = await view.getByRole("link", { name: "Open ChatGPT sign-in" }).getAttribute("href");
+  if (authUrl === null) throw new Error("no sign-in link");
+  if (view === page) await shoot("chatgpt-waiting-1440");
+  // The owner's own browser completes sign-in on ChatGPT and lands on the server's callback.
+  await browse(authUrl);
+  await view.getByText("Signed in as").waitFor();
+  await view.getByRole("button", { name: "Continue" }).click();
+  await view.getByRole("heading", { name: "Choose a model" }).waitFor();
+  expect(await view.getByRole("radio", { name: /gpt-5\.5/ }).isChecked()).toBe(true);
+  await view.getByRole("button", { name: "Continue" }).click();
+}
+
 /** The composer's model control opens on reasoning; its model header opens the model list. */
 async function openModelList(): Promise<void> {
   await page.getByRole("button", { name: /^Model and reasoning/ }).click();
@@ -132,18 +152,12 @@ describe("Pal in a browser", () => {
     expect(page.url()).not.toContain("setup=");
     expect(await page.getByRole("button", { name: "Create project" }).count()).toBe(0);
     await page.reload();
-    await page.getByRole("button", { name: "Sign in with ChatGPT" }).waitFor();
+    await page.getByRole("heading", { name: "Connect a model provider" }).waitFor();
     await shoot("onboarding-1440");
   });
 
-  it("connects ChatGPT before offering internet tools or projects", async () => {
-    await page.getByRole("button", { name: "Sign in with ChatGPT" }).click();
-    const link = page.getByRole("link", { name: "Open ChatGPT sign-in" });
-    const authUrl = await link.getAttribute("href");
-    if (authUrl === null) throw new Error("no sign-in link");
-    await shoot("chatgpt-waiting-1440");
-    // The owner's own browser completes sign-in on ChatGPT and lands on the server's callback.
-    await browse(authUrl);
+  it("connects ChatGPT and keeps its model before offering internet tools or projects", async () => {
+    await onboardWithChatGPT(page);
     await page.getByText("Enable internet tools?").waitFor();
     expect(await page.getByRole("button", { name: "Create project" }).count()).toBe(0);
     await shoot("onboarding-internet-1440");
@@ -790,10 +804,7 @@ describe("Pal in a browser", () => {
       await view.context().addCookies([{ name: "pal_session", value: token, url: origin }]);
       await f.pal.mcp.finishReview(false);
       await view.goto(origin);
-      await view.getByRole("button", { name: "Sign in with ChatGPT" }).click();
-      const authUrl = await view.getByRole("link", { name: "Open ChatGPT sign-in" }).getAttribute("href");
-      if (authUrl === null) throw new Error("no cache fixture sign-in link");
-      await browse(authUrl);
+      await onboardWithChatGPT(view);
       await view.getByRole("heading", { name: "Create your first project" }).waitFor();
       await view.getByRole("button", { name: "Create project" }).click();
       await view.getByLabel("Project name").fill("Cache browser fixture");
@@ -2176,6 +2187,267 @@ describe("Pal in a browser", () => {
     expect(provider.requests.at(-1)?.body.model).toBe("local-b");
     await pal.providers.setEnabled("compatible", false);
     await pal.chats.remove(chat.id, context);
+  });
+
+  it("sets up a fresh Pal on OpenRouter and other providers without ChatGPT, and never falls back", async () => {
+    const chatgpt = await startOpenAIFixture();
+    cleanups.push(chatgpt.close);
+    const root = await realpath(await mkdtemp(join(tmpdir(), "pal-e2e-providers-")));
+    cleanups.push(() => rm(root, { recursive: true, force: true }));
+    const open = () =>
+      openPal(
+        {
+          dataRoot: root,
+          installRoot: "/nonexistent-install",
+          endpoints: chatgpt.endpoints,
+          providerOrigin: provider.origin,
+        },
+        context,
+      );
+    const serve = async (instance: Pal) => {
+      const server = await startServer({
+        host: "127.0.0.1",
+        port: 0,
+        version: "e2e",
+        webRoot,
+        api: createApi(instance),
+      });
+      const stop = () => {
+        server.closeAllConnections();
+        return new Promise((resolve) => server.close(resolve));
+      };
+      cleanups.push(stop);
+      return { origin: `http://127.0.0.1:${(server.address() as AddressInfo).port}`, stop };
+    };
+    let fresh = await open();
+    cleanups.push(() => fresh.close());
+    let served = await serve(fresh);
+    const view = await browser.newPage({ viewport: { width: 1440, height: 900 } });
+    cleanups.push(() => view.close());
+    const errors: string[] = [];
+    view.on("pageerror", (error) => errors.push(error.message));
+    const snap = async (name: string) => {
+      if (shots !== undefined) await view.screenshot({ path: join(shots, `${name}.png`), animations: "disabled" });
+    };
+    const key = "sk-fixture-good";
+    const before = provider.requests.length;
+    const heading = (name: string) => view.getByRole("heading", { name, exact: true });
+    const choices = view.getByRole("radiogroup", { name: "Model provider" });
+    const choice = (name: RegExp) => choices.getByRole("radio", { name });
+    const status = (name: RegExp) => choice(name).evaluate((radio) => radio.closest("label")?.textContent ?? "");
+    const next = view.getByRole("button", { name: "Continue" });
+    const back = view.getByRole("button", { name: "Back" });
+    const focused = (target: typeof next) => target.evaluate((element) => element === document.activeElement);
+
+    await view.goto(`${served.origin}/#setup=${fresh.owner.setupToken}`);
+    await view.getByLabel("Passphrase", { exact: true }).fill("correct horse battery");
+    await view.getByLabel("Confirm passphrase").fill("correct horse battery");
+    await view.getByRole("button", { name: "Create owner" }).click();
+    await heading("Connect a model provider").waitFor();
+    await view.getByText("Choose the provider you want to use with Pal.").waitFor();
+    expect(await view.getByText(/Not a ChatGPT user/).count()).toBe(0);
+    expect(await next.isDisabled()).toBe(true);
+    const methods: [string, string, string][] = [
+      ["ChatGPT", "Subscription sign-in", "Counts against your ChatGPT plan's usage limits."],
+      ["OpenRouter", "API key", "Pay per token from your OpenRouter credits."],
+      ["OpenCode Zen", "API key", "Pay as you go from your OpenCode balance."],
+      ["OpenCode Go", "API key", "Counts against your OpenCode Go subscription limits"],
+      ["OpenAI API", "API key", "Pay per token on your OpenAI API account, separate from your ChatGPT subscription."],
+      ["Anthropic API", "API key", "Pay per token on your Anthropic API account, not a Claude subscription."],
+      ["OpenAI-compatible endpoint", "Custom endpoint", "Billed, if at all, by whoever runs this endpoint"],
+    ];
+    const radios = choices.getByRole("radio");
+    expect(await radios.count()).toBe(methods.length);
+    const squash = (value: string) => value.replaceAll(/\s+/g, "");
+    for (const [index, [name, method, billing]] of methods.entries()) {
+      const text = await radios.nth(index).evaluate((radio) => radio.closest("label")?.textContent ?? "");
+      expect(squash(text)).toContain(squash(`${name}${method}${billing}`));
+    }
+    await snap("onboarding-providers-1440");
+
+    // Each other key provider shows its own method, billing and key check; none needs a ChatGPT account.
+    const alternatives: [RegExp, string, string | undefined][] = [
+      [/^OpenAI API/, "OpenAI API", "OpenAI API accepted this key."],
+      [/^Anthropic API/, "Anthropic API", "Anthropic API accepted this key."],
+      [/^OpenCode Zen/, "OpenCode Zen", undefined],
+      [/^OpenCode Go/, "OpenCode Go", undefined],
+    ];
+    for (const [radio, name, accepted] of alternatives) {
+      await choice(radio).check();
+      await next.click();
+      await heading(`Connect ${name}`).waitFor();
+      await view.getByText(`Paste an API key from ${name}.`).waitFor();
+      const card = view.getByRole("group", { name });
+      expect(await card.getByRole("link", { name: "Get a key" }).getAttribute("href")).toMatch(/^https:\/\//);
+      expect(await card.getByRole("switch").count()).toBe(0);
+      expect(await next.isDisabled()).toBe(true);
+      await card.getByLabel("API key").fill(key);
+      await card.getByRole("button", { name: "Save key" }).click();
+      await card.getByText("Key saved, not checked.").waitFor();
+      if (accepted === undefined) {
+        await card.getByText(`${name} has no free key check, so your first message tests it.`).waitFor();
+        expect(await card.getByRole("button", { name: "Check key" }).count()).toBe(0);
+      } else {
+        await card.getByRole("button", { name: "Check key" }).click();
+        await card.getByRole("status").filter({ hasText: accepted }).waitFor();
+      }
+      expect(await next.isEnabled()).toBe(true);
+      await back.click();
+      await heading("Connect a model provider").waitFor();
+      expect(await status(radio)).toContain("Ready · off");
+    }
+
+    // OpenRouter by keyboard; missing, malformed and rejected keys never pass.
+    await radios.first().focus();
+    await view.keyboard.press("ArrowDown");
+    expect(await choice(/^OpenRouter/).isChecked()).toBe(true);
+    await view.keyboard.press("Tab");
+    expect(await focused(next)).toBe(true);
+    await view.keyboard.press("Enter");
+    await heading("Connect OpenRouter").waitFor();
+    expect(await focused(heading("Connect OpenRouter"))).toBe(true);
+    const card = view.getByRole("group", { name: "OpenRouter" });
+    expect(await next.isDisabled()).toBe(true);
+    expect(await card.getByRole("button", { name: "Save key" }).isDisabled()).toBe(true);
+    await card.getByLabel("API key").fill("short");
+    await card.getByRole("button", { name: "Save key" }).click();
+    await card.getByRole("alert").filter({ hasText: "8–4096" }).waitFor();
+    expect(await next.isDisabled()).toBe(true);
+    await card.getByLabel("API key").fill("sk-or-fixture-revoked");
+    await card.getByRole("button", { name: "Save key" }).click();
+    await card.getByText("Key saved, not checked.").waitFor();
+    await card.getByRole("button", { name: "Check key" }).click();
+    await card.getByRole("status").filter({ hasText: "OpenRouter rejected this key." }).waitFor();
+    await card.getByLabel("Replace API key").fill(key);
+    await card.getByRole("button", { name: "Save key" }).click();
+    await card.getByText("Key saved, not checked.").waitFor();
+    await card.getByRole("button", { name: "Check key" }).click();
+    await card.getByRole("status").filter({ hasText: "OpenRouter accepted this key." }).waitFor();
+    await view.getByText("Continue turns on OpenRouter for chats.").waitFor();
+    expect(await fresh.providers.usable("openrouter")).toBe(false);
+    expect(await view.content()).not.toContain(key);
+    expect(await view.evaluate(() => JSON.stringify({ ...localStorage, ...sessionStorage }))).not.toContain("sk-");
+    expect(await (await view.request.get(`${served.origin}/api/providers`)).text()).not.toContain(key);
+    await view.setViewportSize({ width: 390, height: 844 });
+    expect(await view.evaluate("document.documentElement.scrollWidth <= innerWidth")).toBe(true);
+    await snap("onboarding-connect-390");
+    await view.setViewportSize({ width: 1440, height: 900 });
+
+    // An enabled key is not a model choice, and a reload resumes at the provider without guessing one.
+    await next.click();
+    await heading("Choose a model").waitFor();
+    expect(await fresh.providers.usable("openrouter")).toBe(true);
+    expect(await next.isDisabled()).toBe(true);
+    await view.reload();
+    await heading("Connect a model provider").waitFor();
+    expect(await status(/^OpenRouter/)).toContain("Enabled");
+    await choice(/^OpenRouter/).check();
+    await next.click();
+    await heading("Connect OpenRouter").waitFor();
+    await next.click();
+    await heading("Choose a model").waitFor();
+    await view.getByLabel("Search models").fill("deepseek-flash-latest");
+    const models = view.getByRole("radiogroup", { name: "Default model" });
+    await models.getByRole("radio", { name: /deepseek-flash-latest/ }).check();
+    await expect.poll(() => next.isEnabled()).toBe(true);
+    expect(await fresh.settings.defaultModel()).toEqual({
+      provider: "openrouter",
+      modelId: "~deepseek/deepseek-flash-latest",
+    });
+    await back.click();
+    await heading("Connect OpenRouter").waitFor();
+    await next.click();
+    await heading("Choose a model").waitFor();
+    await view.getByLabel("Search models").fill("deepseek-flash-latest");
+    expect(await models.getByRole("radio", { name: /deepseek-flash-latest/ }).isChecked()).toBe(true);
+    await view.setViewportSize({ width: 390, height: 844 });
+    expect(await view.evaluate("document.documentElement.scrollWidth <= innerWidth")).toBe(true);
+    await snap("onboarding-model-390");
+    await view.setViewportSize({ width: 1440, height: 900 });
+    await next.click();
+    await view.getByText("Enable internet tools?").waitFor();
+    await view.getByRole("button", { name: "Not now" }).click();
+    await heading("Create your first project").waitFor();
+    // Setup only made free key checks: no model request.
+    expect(
+      provider.requests
+        .slice(before)
+        .every((request) => request.path === "/api/v1/key" || request.path === "/v1/models"),
+    ).toBe(true);
+
+    // The choice survives a restart, and the first message goes to OpenRouter.
+    await served.stop();
+    await fresh.close();
+    fresh = await open();
+    served = await serve(fresh);
+    await view.goto(served.origin);
+    await heading("Create your first project").waitFor();
+    await view.getByRole("button", { name: "Create project" }).click();
+    await view.getByLabel("Project name").fill("Provider first");
+    await view.getByRole("dialog", { name: "Create project" }).getByRole("button", { name: "Create project" }).click();
+    await view.getByRole("heading", { name: "Start the conversation" }).waitFor();
+    await view.getByLabel("Message").fill("hello from setup");
+    await view.getByRole("button", { name: "Send" }).click();
+    await view.getByText("Hello from the provider fixture").waitFor();
+    expect(provider.requests.at(-1)).toMatchObject({ path: "/api/v1/chat/completions" });
+    expect(provider.requests.at(-1)?.headers.authorization).toBe(`Bearer ${key}`);
+
+    // Disabling the chosen provider stops sending instead of substituting another, and setup asks for a repair.
+    await fresh.providers.setEnabled("openrouter", false);
+    await view.reload();
+    await view.getByText("OpenRouter isn't enabled.").waitFor();
+    await view.getByLabel("Message").fill("never sent elsewhere");
+    expect(await view.getByRole("button", { name: "Send" }).isDisabled()).toBe(true);
+    for (const project of await fresh.projects.list()) await fresh.projects.remove(project.id);
+    await view.goto(`${served.origin}/#/`);
+    await view.reload();
+    await heading("Connect a model provider").waitFor();
+    expect(await choice(/^OpenRouter/).isChecked()).toBe(true);
+    expect(await status(/^OpenRouter/)).toContain("Ready · off");
+
+    // A keyless compatible endpoint is a first-class alternative too.
+    await choice(/^OpenAI-compatible endpoint/).check();
+    await next.click();
+    await heading("Connect OpenAI-compatible endpoint").waitFor();
+    const endpoint = view.getByRole("group", { name: "OpenAI-compatible endpoint" });
+    await endpoint.getByLabel("Name", { exact: true }).fill("Local models");
+    await endpoint.getByLabel("Base URL").fill(`${provider.origin}/compat/v1`);
+    await endpoint.getByLabel("Model IDs, one per line").fill("local-a\nlocal-b");
+    await endpoint.getByLabel("This endpoint needs no key").check();
+    expect(await next.isDisabled()).toBe(true);
+    await endpoint.getByRole("button", { name: "Save endpoint" }).click();
+    await endpoint.getByText("Endpoint saved, not checked.").waitFor();
+    await endpoint.getByRole("button", { name: "Check endpoint" }).click();
+    await endpoint.getByRole("status").filter({ hasText: "Local models answered." }).waitFor();
+    await next.click();
+    await heading("Choose a model").waitFor();
+    await view.getByText("New chats start with the model you choose from Local models.").waitFor();
+    await models.getByRole("radio", { name: /local-b/ }).check();
+    await expect.poll(() => next.isEnabled()).toBe(true);
+    await next.click();
+    await heading("Create your first project").waitFor();
+
+    // A model the endpoint stops offering is not ready either; choosing another repairs it.
+    const config = (await fresh.providers.list()).find((entry) => entry.id === "compatible")?.config;
+    if (config == null) throw new Error("missing endpoint");
+    await fresh.providers.setCompatible({ ...config, models: ["local-a"] });
+    await view.reload();
+    await heading("Connect a model provider").waitFor();
+    expect(await choice(/^OpenAI-compatible endpoint/).isChecked()).toBe(true);
+    await next.click();
+    await heading("Connect OpenAI-compatible endpoint").waitFor();
+    await next.click();
+    await heading("Choose a model").waitFor();
+    await view.getByText("isn't available from Local models anymore.").waitFor();
+    expect(await next.isDisabled()).toBe(true);
+    await models.getByRole("radio", { name: /local-a/ }).check();
+    await expect.poll(() => next.isEnabled()).toBe(true);
+    await next.click();
+    await heading("Create your first project").waitFor();
+    expect(await fresh.settings.defaultModel()).toEqual({ provider: "compatible", modelId: "local-a" });
+
+    expect([chatgpt.authorizations, chatgpt.tokenRequests, chatgpt.apiRequests]).toEqual([[], [], []]);
+    expect(errors).toEqual([]);
   });
 
   it("selects versioned built-ins for new chats without changing active chat contributions", async () => {

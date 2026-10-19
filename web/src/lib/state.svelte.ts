@@ -1,4 +1,12 @@
-import { api, type ChatGPTState, type ExtensionView, type Project, type ProvidersState } from "./api.ts";
+import {
+  api,
+  type ChatGPTState,
+  type ExtensionView,
+  type ModelRef,
+  type Project,
+  type ProvidersState,
+  type ProviderView,
+} from "./api.ts";
 
 export type SettingsTab = "general" | "models" | "mcp" | "extensions";
 export type Route = { view: "home" } | { view: "chat"; chatId: string } | { view: "settings"; tab: SettingsTab };
@@ -79,6 +87,34 @@ export async function refreshChatGPT(): Promise<void> {
 
 export async function refreshProviders(): Promise<void> {
   app.providers = await api.providers();
+}
+
+/** Whether an API-key provider has what it needs to be enabled: a saved key, or a described keyless endpoint. */
+export function providerReady(provider: ProviderView): boolean {
+  if (provider.id !== "compatible") return provider.hasKey;
+  return provider.config != null && (provider.config.keyless || provider.hasKey);
+}
+
+/** The saved model for new chats. ChatGPT's state carries it too and is refreshed after every change, including
+ * the model ChatGPT sign-in preselects. */
+export function savedDefault(): ModelRef | null {
+  return app.chatgpt?.default ?? app.providers?.default ?? null;
+}
+
+/**
+ * Whether new chats can send now: the saved default model's provider is connected and enabled, and still offers that
+ * model. Nothing else counts, so a missing or revoked choice needs the owner's repair instead of a substitute.
+ */
+export function defaultReady(): boolean {
+  const chosen = savedDefault();
+  if (chosen === null) return false;
+  if (chosen.provider === "openai")
+    return (
+      app.chatgpt?.account != null &&
+      app.chatgpt.models.some((model) => model.supported && model.slug === chosen.modelId)
+    );
+  const provider = app.providers?.providers.find((entry) => entry.id === chosen.provider);
+  return provider?.enabled === true && provider.models.some((model) => model.id === chosen.modelId);
 }
 
 export async function refreshExtensions(): Promise<void> {

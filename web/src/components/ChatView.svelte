@@ -120,16 +120,28 @@
   const items = $derived.by(() => build(stream?.entries ?? [], stream?.partial, stream?.approvals ?? []));
   const awaiting = $derived((stream?.approvals ?? []).some((approval) => approval.state === "pending"));
   const connected = $derived(app.chatgpt?.account != null);
-  /** ChatGPT first, then each API-key provider the owner enabled; nothing else is offered. */
+  const effective = $derived(
+    model !== null ? { provider: provider ?? "openai", modelId: model } : (app.chatgpt?.default ?? null),
+  );
+  /** ChatGPT once connected (or while it is this chat's provider), then each API-key provider the owner enabled. */
   const groups = $derived<Group[]>([
-    {
-      provider: "openai",
-      name: "ChatGPT",
-      billing: "Your ChatGPT subscription.",
-      choices: (app.chatgpt?.models ?? [])
-        .filter((choice) => choice.supported)
-        .map((choice) => ({ provider: "openai", id: choice.slug, name: choice.displayName, efforts: choice.efforts })),
-    },
+    ...(connected || effective?.provider === "openai"
+      ? [
+          {
+            provider: "openai",
+            name: "ChatGPT",
+            billing: "Your ChatGPT subscription.",
+            choices: (app.chatgpt?.models ?? [])
+              .filter((choice) => choice.supported)
+              .map((choice) => ({
+                provider: "openai",
+                id: choice.slug,
+                name: choice.displayName,
+                efforts: choice.efforts,
+              })),
+          },
+        ]
+      : []),
     ...(app.providers?.providers ?? [])
       .filter((entry) => entry.enabled)
       .map((entry) => ({
@@ -144,9 +156,6 @@
         })),
       })),
   ]);
-  const effective = $derived(
-    model !== null ? { provider: provider ?? "openai", modelId: model } : (app.chatgpt?.default ?? null),
-  );
   const current = $derived(
     groups
       .flatMap((group) => group.choices)
@@ -601,7 +610,12 @@
             >{/if}
         </div>
       {/if}
-      {#if (effective === null || effective.provider === "openai") && !connected}
+      {#if effective === null}
+        <div class="callout wa nowrap" role="status">
+          <span class="grow"><strong>No model is chosen.</strong> Connect a provider and choose a model to send.</span>
+          <button class="b sm" onclick={() => navigate({ view: "settings", tab: "models" })}>Connect</button>
+        </div>
+      {:else if effective.provider === "openai" && !connected}
         <div class="callout wa nowrap" role="status">
           <span class="grow"><strong>ChatGPT isn't connected.</strong> Messages need your ChatGPT subscription.</span>
           <button class="b sm" onclick={() => navigate({ view: "settings", tab: "models" })}>Connect</button>
