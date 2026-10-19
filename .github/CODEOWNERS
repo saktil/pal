@@ -1,0 +1,5 @@
+# Require the repository owner's review for every file.
+* @valdo766hi
+
+# Keep ownership changes under the same review requirement.
+/.github/CODEOWNERS @valdo766hi
