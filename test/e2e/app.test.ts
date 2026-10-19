@@ -1954,7 +1954,7 @@ describe("Pal in a browser", () => {
     await page.keyboard.press("Enter");
     const colored = panel.locator(".xterm-rows span").filter({ hasText: /^ansi-42$/ });
     await expect.poll(() => colored.count()).toBeGreaterThan(0);
-    expect(await colored.first().evaluate((node) => getComputedStyle(node).color)).toBe("rgb(255, 123, 138)");
+    expect(await colored.first().evaluate((node) => getComputedStyle(node).color)).toBe("rgb(201, 145, 153)");
     await shoot("terminal-1440");
     // Bottom is the default dock; Side refits the same shell, with no new session and no replayed input.
     const position = panel.getByRole("radiogroup", { name: "Terminal position" });

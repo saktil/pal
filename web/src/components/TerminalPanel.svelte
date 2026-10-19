@@ -6,30 +6,30 @@
   import { shownTheme, viewport } from "../lib/state.svelte.ts";
 
   const FONT = "Geist Mono Variable";
-  /** ANSI colors on Pal's graphite background: each normal color stays legible as text, bright ones step up. */
+  /** ANSI colors desaturated to Pal's status and syntax tokens on the terminal well, so output never shouts. */
   const THEME = {
-    background: "#08080a",
-    foreground: "#e4e4e7",
-    cursor: "#e4e4e7",
-    cursorAccent: "#08080a",
-    selectionBackground: "#3a3a41",
-    selectionInactiveBackground: "#26262a",
-    black: "#26262a",
-    red: "#ff7b8a",
-    green: "#7fd6a3",
-    yellow: "#f1c46b",
-    blue: "#6f94ff",
-    magenta: "#d38cff",
-    cyan: "#5fd7ef",
-    white: "#c9cfdc",
-    brightBlack: "#71717a",
-    brightRed: "#ff9aa6",
-    brightGreen: "#9de6b8",
-    brightYellow: "#ffd88a",
-    brightBlue: "#93b0ff",
-    brightMagenta: "#e6a8ff",
-    brightCyan: "#8be6f7",
-    brightWhite: "#f4f6fb",
+    background: "#111214",
+    foreground: "#c9cad0",
+    cursor: "#c9cad0",
+    cursorAccent: "#111214",
+    selectionBackground: "rgba(143, 170, 239, 0.22)",
+    selectionInactiveBackground: "rgba(143, 170, 239, 0.12)",
+    black: "#2a2b30",
+    red: "#c99199",
+    green: "#93bfa5",
+    yellow: "#c9a66b",
+    blue: "#9db1e6",
+    magenta: "#c2b3e3",
+    cyan: "#a7c7c9",
+    white: "#c9cad0",
+    brightBlack: "#85868e",
+    brightRed: "#d7aeb4",
+    brightGreen: "#b3d2bf",
+    brightYellow: "#d2b48c",
+    brightBlue: "#b3c5f4",
+    brightMagenta: "#d3c8ec",
+    brightCyan: "#bfd7d9",
+    brightWhite: "#e7e7ea",
   };
   /** The daylight counterpart: dark inks on paper, each at least 4.5:1 against it. */
   const LIGHT_THEME = {
@@ -57,11 +57,30 @@
     brightWhite: "#4e566b",
   };
 
+  type Dock = "bottom" | "side";
   let {
     project,
     workspace,
     onSelection,
-  }: { project: Project; workspace?: Workspace | null | undefined; onSelection: (text: string) => void } = $props();
+    dock,
+    onDock,
+    onClose,
+  }: {
+    project: Project;
+    workspace?: Workspace | null | undefined;
+    onSelection: (text: string) => void;
+    /** Where the docked terminal sits beside the chat; undefined where it covers the chat instead. */
+    dock?: Dock | undefined;
+    onDock: (dock: Dock) => void;
+    onClose: () => void;
+  } = $props();
+  /** Radio-group keys: any arrow switches between the two positions. */
+  function dockKeys(event: KeyboardEvent) {
+    if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) return;
+    event.preventDefault();
+    onDock(dock === "bottom" ? "side" : "bottom");
+    (event.currentTarget as HTMLElement).querySelector<HTMLElement>('[aria-checked="true"]')?.focus();
+  }
   let terminals: TerminalInfo[] = $state.raw([]);
   let selected: string | undefined = $state();
   let surface: HTMLDivElement | undefined = $state();
@@ -167,15 +186,15 @@
         import("@xterm/xterm/css/xterm.css"),
       ]);
       // xterm measures one glyph when it opens, so the font must be ready or the grid drifts.
-      await document.fonts.load(`13px "${FONT}"`).catch(() => {});
+      await document.fonts.load(`12.5px "${FONT}"`).catch(() => {});
       if (cancelled) return;
       const term = new Terminal({
         cols: 80,
         rows: 24,
         scrollback: 1000,
         fontFamily: `"${FONT}", ui-monospace, Menlo, monospace`,
-        fontSize: 13,
-        lineHeight: 1.2,
+        fontSize: 12.5,
+        lineHeight: 1.7,
         fontWeightBold: 700,
         theme: palette,
         cursorStyle: "block",
@@ -302,29 +321,57 @@
 </script>
 
 <div class="terminal">
-  <div class="sessions" role="group" aria-label="Terminal sessions">
-    {#each terminals as terminal, index (terminal.id)}
-      <span class="session" class:on={selected === terminal.id}>
-        <button class="tab" aria-pressed={selected === terminal.id} onclick={() => (selected = terminal.id)}
-          ><span class="dot" class:ended={terminal.ended}></span>Shell {index + 1}</button
-        >
-        <button
-          class="b i q sm"
-          aria-label={`Close terminal ${index + 1}`}
-          disabled={busy}
-          onclick={() => close(terminal.id)}><Icon name="x" size={14} /></button
-        >
-      </span>
-    {/each}
-    <button
-      class="b sm q new"
-      disabled={busy || !trust || (workspace != null && workspace.state !== "ready")}
-      onclick={create}><Icon name="plus" />New host terminal</button
+  <div class="bar">
+    <h2 class="sr">Terminal</h2>
+    <div class="sessions" role="group" aria-label="Terminal sessions">
+      {#each terminals as terminal, index (terminal.id)}
+        <span class="session" class:on={selected === terminal.id}>
+          <button class="tab" aria-pressed={selected === terminal.id} onclick={() => (selected = terminal.id)}
+            ><span class="dot" class:ended={terminal.ended}></span>Shell {index + 1}</button
+          >
+          <button
+            class="close"
+            aria-label={`Close terminal ${index + 1}`}
+            disabled={busy}
+            onclick={() => close(terminal.id)}><Icon name="x" size={12} /></button
+          >
+        </span>
+      {/each}
+      <button
+        class="b i q sm tip up"
+        aria-label="New host terminal"
+        data-tip="New shell"
+        disabled={busy || !trust || (workspace != null && workspace.state !== "ready")}
+        onclick={create}><Icon name="plus" size={14} /></button
+      >
+    </div>
+    {#if active}<button
+        class="b t sm"
+        disabled={!selection || bytes(selection) > 16 * 1024}
+        onclick={() => onSelection(selection)}>Send selection to composer</button
+      >{/if}
+    {#if dock !== undefined}
+      <div class="dock" role="radiogroup" aria-label="Terminal position" tabindex="-1" onkeydown={dockKeys}>
+        {#each [["bottom", "Bottom", "dockBottom", "Dock at bottom"], ["side", "Side", "dockSide", "Dock at side"]] as const as [where, label, icon, tip] (where)}
+          <button
+            class="b i q sm tip up"
+            role="radio"
+            aria-label={label}
+            data-tip={tip}
+            aria-checked={dock === where}
+            tabindex={dock === where ? 0 : -1}
+            onclick={() => onDock(where)}><Icon name={icon} /></button
+          >
+        {/each}
+      </div>
+    {/if}
+    <button class="b i q sm tip up end" aria-label="Close panel" data-tip="Close" onclick={onClose}
+      ><Icon name="x" /></button
     >
   </div>
   <div class="trust" class:ok={trust || terminals.length > 0}>
     {#if trust || terminals.length > 0}
-      <Icon name="warn" /><span class="grow ellipsis" title={root}
+      <span class="warn" aria-hidden="true"></span><span class="grow ellipsis" title={root}
         >Host shell, not a sandbox · new sessions start in <span class="mono">{root}</span></span
       >
     {:else}
@@ -379,12 +426,7 @@
           onclick={() => send({ type: "take" })}>Take control</button
         >{/if}
       <span class="grow"></span>
-      <button class="b sm q" onclick={() => runtime?.terminal.selectAll()}>Select output</button>
-      <button
-        class="b sm q"
-        disabled={!selection || bytes(selection) > 16 * 1024}
-        onclick={() => onSelection(selection)}>Send selection to composer</button
-      >
+      <button class="b sm t" onclick={() => runtime?.terminal.selectAll()}>Select output</button>
       <label class="sr-mode"
         ><input
           type="checkbox"
@@ -416,54 +458,85 @@
     min-width: 0;
     background: var(--bg0);
   }
-  .sessions {
+  .bar {
     display: flex;
     align-items: center;
-    padding: 4px 8px 0;
-    min-height: 38px;
+    gap: 6px;
+    min-height: 40px;
+    padding: 0 10px 0 12px;
+    border-bottom: 1px solid var(--line);
+    flex-shrink: 0;
+  }
+  .sessions {
+    flex: 1;
+    min-width: 0;
+    display: flex;
+    align-items: center;
     gap: 2px;
     overflow-x: auto;
-    flex-shrink: 0;
-    border-bottom: 1px solid var(--line);
   }
   .session {
     display: inline-flex;
     align-items: center;
-    padding-right: 2px;
-    border-radius: 8px 8px 0 0;
+    height: 28px;
+    border-radius: 7px;
     color: var(--tx3);
     transition:
       background-color var(--fast) var(--ease),
       color var(--fast) var(--ease);
   }
+  .session:hover {
+    color: var(--tx2);
+  }
   .session.on {
-    background: var(--bg2);
+    background: var(--bg3);
     color: var(--tx);
-    box-shadow: inset 0 2px 0 var(--focus);
   }
   .tab {
     display: flex;
     align-items: center;
-    gap: 7px;
+    gap: 8px;
+    height: 100%;
     background: transparent;
     border: 0;
     color: inherit;
-    padding: 8px 4px 8px 10px;
-    font: 500 12.5px var(--mono);
+    padding: 0 4px 0 10px;
+    font-size: 12.5px;
     white-space: nowrap;
   }
-  .new {
-    margin-left: 4px;
+  .close {
+    display: grid;
+    place-items: center;
+    width: 22px;
+    height: 22px;
+    margin-right: 3px;
+    padding: 0;
+    border: 0;
+    border-radius: 5px;
+    background: transparent;
+    color: var(--tx3);
+  }
+  .close:hover:not(:disabled) {
+    background: var(--bg4);
+    color: var(--tx);
   }
   .dot {
-    width: 7px;
-    height: 7px;
+    width: 6px;
+    height: 6px;
     border-radius: 50%;
     background: var(--ok);
     flex: 0 0 auto;
   }
   .dot.ended {
     background: var(--tx3);
+  }
+  .dock {
+    display: flex;
+    gap: 2px;
+  }
+  .dock .b[aria-checked="true"] {
+    background: var(--bg3);
+    color: var(--tx);
   }
   .trust {
     display: flex;
@@ -473,18 +546,18 @@
     padding: 8px 12px;
     font-size: 12.5px;
     color: var(--tx2);
-    background: var(--wabg);
     border-bottom: 1px solid var(--line);
   }
   .trust.ok {
-    padding: 5px 12px;
+    padding: 5px 20px;
     color: var(--tx3);
-    background: transparent;
   }
-  .trust.ok :global(svg) {
-    color: var(--wa);
-    width: 14px;
-    height: 14px;
+  .warn {
+    width: 6px;
+    height: 6px;
+    flex: none;
+    border-radius: 50%;
+    background: var(--wa);
   }
   .trust span {
     overflow-wrap: anywhere;
@@ -512,7 +585,7 @@
     min-height: 0;
     min-width: 0;
     overflow: hidden;
-    padding: 10px 6px 6px 14px;
+    padding: 14px 8px 8px 20px;
   }
   .surface.inactive {
     display: none;
@@ -520,7 +593,9 @@
   .surface :global(.xterm) {
     height: 100%;
   }
+  /* xterm paints its viewport black below the last row; the well's own colour shows through instead. */
   .surface :global(.xterm-viewport) {
+    background-color: transparent;
     scrollbar-color: var(--line2) transparent;
   }
   .empty {
@@ -548,10 +623,9 @@
     align-items: center;
     flex-wrap: wrap;
     gap: 4px 6px;
-    padding: 4px 8px 4px 12px;
+    padding: 4px 10px 4px 20px;
     min-height: 34px;
     border-top: 1px solid var(--line);
-    background: var(--bg1);
     font-size: 12px;
     color: var(--tx3);
     flex-shrink: 0;
@@ -568,7 +642,6 @@
   }
   .state.live .dot {
     background: var(--ok);
-    box-shadow: 0 0 0 3px var(--okbg);
   }
   .state.watch .dot {
     background: var(--wa);

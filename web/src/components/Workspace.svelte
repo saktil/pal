@@ -106,12 +106,6 @@
     event.preventDefault();
     setShare(dock === "bottom" ? next : 100 - next);
   }
-  function dockKeys(event: KeyboardEvent) {
-    if (!["ArrowLeft", "ArrowRight", "ArrowUp", "ArrowDown"].includes(event.key)) return;
-    event.preventDefault();
-    setDock(dock === "bottom" ? "side" : "bottom");
-    (event.currentTarget as HTMLElement).querySelector<HTMLElement>('[aria-checked="true"]')?.focus();
-  }
   /** A file Files asked Changes to open. */
   let diffPath: string | undefined = $state();
   let chatView: { insertText(text: string): void } | undefined = $state();
@@ -315,53 +309,34 @@
                 class:terminal-panel={panelView === "Terminal"}
                 aria-label="Workspace panel"
               >
-                <div class="panelhead">
-                  <h2>{panelView}</h2>
-                  {#if panelView === "Changes" && changeStatus?.files !== undefined}
-                    <span class="count"
-                      >{changeStatus.files}
-                      {changeStatus.files === 1 ? "file" : "files"}{changeStatus.files > 0
-                        ? " · "
-                        : ""}{#if changeStatus.files > 0}<span class="add">+{changeStatus.add}</span>
-                        <span class="del">−{changeStatus.del}</span>{/if}</span
-                    >
-                  {/if}
-                  <span class="grow"></span>
-                  {#if docked}
-                    <div
-                      class="seg"
-                      role="radiogroup"
-                      aria-label="Terminal position"
-                      tabindex="-1"
-                      onkeydown={dockKeys}
-                    >
-                      {#each [["bottom", "Bottom", "dockBottom"], ["side", "Side", "dockSide"]] as const as [where, label, icon] (where)}
-                        <button
-                          class="segb"
-                          role="radio"
-                          aria-checked={dock === where}
-                          tabindex={dock === where ? 0 : -1}
-                          onclick={() => setDock(where)}><Icon name={icon} size={14} />{label}</button
-                        >
-                      {/each}
-                    </div>
-                  {/if}
-                  {#if panelView === "Changes"}
+                {#if panelView !== "Terminal"}<div class="panelhead">
+                    <h2>{panelView}</h2>
+                    {#if panelView === "Changes" && changeStatus?.files !== undefined}
+                      <span class="count"
+                        >{changeStatus.files}
+                        {changeStatus.files === 1 ? "file" : "files"}{changeStatus.files > 0
+                          ? " · "
+                          : ""}{#if changeStatus.files > 0}<span class="add">+{changeStatus.add}</span>
+                          <span class="del">−{changeStatus.del}</span>{/if}</span
+                      >
+                    {/if}
+                    <span class="grow"></span>
+                    {#if panelView === "Changes"}
+                      <button
+                        class="b i q tip"
+                        aria-label="Refresh"
+                        data-tip="Refresh"
+                        disabled={changeStatus?.busy !== false}
+                        onclick={() => changesView?.refresh()}><Icon name="refresh" /></button
+                      >
+                    {/if}
                     <button
-                      class="b i q tip"
-                      aria-label="Refresh"
-                      data-tip="Refresh"
-                      disabled={changeStatus?.busy !== false}
-                      onclick={() => changesView?.refresh()}><Icon name="refresh" /></button
+                      class="b i q tip end"
+                      aria-label="Close panel"
+                      data-tip="Close"
+                      onclick={() => (panelRoute = undefined)}><Icon name="x" /></button
                     >
-                  {/if}
-                  <button
-                    class="b i q tip end"
-                    aria-label="Close panel"
-                    data-tip="Close"
-                    onclick={() => (panelRoute = undefined)}><Icon name="x" /></button
-                  >
-                </div>
+                  </div>{/if}
                 {#key located.chat.workspace?.id ?? located.project.id}
                   {#if panelView === "Terminal"}
                     {#await terminalPanel()}<p role="status">Loading terminal…</p>
@@ -369,6 +344,9 @@
                       <TerminalPanel
                         project={located.project}
                         workspace={located.chat.workspace}
+                        dock={docked ? dock : undefined}
+                        onDock={setDock}
+                        onClose={() => (panelRoute = undefined)}
                         onSelection={(text) => {
                           chatView?.insertText(`Terminal selection (human shell):\n\n${text}`);
                           panelRoute = undefined;
@@ -604,35 +582,39 @@
   .dock-side .workspace-panel.terminal-panel {
     width: var(--terminal-share);
   }
-  /* A wide hit area around a hairline; the line brightens while hovered, focused or dragged. */
+  /* A 9px hit area along the seam with a small grip; the grip brightens while hovered, focused or dragged. */
   .divider {
     position: relative;
     flex: 0 0 auto;
+    display: grid;
+    place-items: center;
     z-index: 27;
-    background: transparent;
+    background: var(--bg1);
     touch-action: none;
   }
   .dock-bottom .divider {
-    height: 7px;
-    margin: -3px 0;
+    height: 9px;
+    border-top: 1px solid var(--line);
     cursor: row-resize;
   }
   .dock-side .divider {
-    width: 7px;
-    margin: 0 -3px;
+    width: 9px;
+    border-left: 1px solid var(--line);
     cursor: col-resize;
   }
   .divider::after {
     content: "";
-    position: absolute;
-    background: var(--line);
+    border-radius: 2px;
+    background: var(--line3);
     transition: background-color var(--fast) var(--ease);
   }
   .dock-bottom .divider::after {
-    inset: 3px 0;
+    width: 36px;
+    height: 3px;
   }
   .dock-side .divider::after {
-    inset: 0 3px;
+    width: 3px;
+    height: 36px;
   }
   .divider:hover::after,
   .divider:focus-visible::after,
@@ -641,14 +623,6 @@
   }
   .divider:focus-visible {
     outline: none;
-  }
-  .panelhead .seg {
-    margin-right: 4px;
-  }
-  .panelhead .segb {
-    display: inline-flex;
-    align-items: center;
-    gap: 5px;
   }
   .chat-area {
     display: flex;
