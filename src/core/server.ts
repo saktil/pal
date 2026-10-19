@@ -35,7 +35,19 @@ export function createRequestListener({
   health,
 }: ServerOptions): RequestListener {
   const external = publicOrigin === undefined ? undefined : new URL(publicOrigin);
-  const assets = webRoot === undefined ? undefined : sirv(webRoot, { single: true });
+  // Built files come from the Nix store, whose timestamps are all 1970: without a policy, browsers keep index.html and
+  // the icons for years. Vite's content-hashed assets never change under the same name.
+  const assets =
+    webRoot === undefined
+      ? undefined
+      : sirv(webRoot, {
+          single: true,
+          setHeaders: (response, pathname) =>
+            response.setHeader(
+              "cache-control",
+              pathname.startsWith("/assets/") ? "public, max-age=31536000, immutable" : "no-cache",
+            ),
+        });
 
   return (request, response) => {
     for (const [name, value] of Object.entries(BASE_HEADERS)) response.setHeader(name, value);

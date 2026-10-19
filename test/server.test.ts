@@ -1,4 +1,4 @@
-import { mkdtemp, rm, writeFile } from "node:fs/promises";
+import { mkdir, mkdtemp, rm, writeFile } from "node:fs/promises";
 import type { Server } from "node:http";
 import { type AddressInfo, connect } from "node:net";
 import { tmpdir } from "node:os";
@@ -19,6 +19,8 @@ async function serve(webRoot: string | undefined): Promise<string> {
 beforeAll(async () => {
   dir = await mkdtemp(join(tmpdir(), "pal-server-test-"));
   await writeFile(join(dir, "index.html"), "<!doctype html><title>Pal</title>");
+  await mkdir(join(dir, "assets"));
+  await writeFile(join(dir, "assets", "index-1a2b3c.js"), "");
 });
 
 afterAll(async () => {
@@ -107,7 +109,12 @@ describe("HTTP server", () => {
       const response = await fetch(`${base}${path}`);
       expect(response.status).toBe(200);
       expect(await response.text()).toContain("<title>Pal</title>");
+      // Unhashed files are checked again on each load, so a new release replaces them at once.
+      expect(response.headers.get("cache-control")).toBe("no-cache");
     }
+    const asset = await fetch(`${base}/assets/index-1a2b3c.js`);
+    expect(asset.status).toBe(200);
+    expect(asset.headers.get("cache-control")).toBe("public, max-age=31536000, immutable");
   });
 
   it("answers a malformed request target with 400 and keeps serving", async () => {
