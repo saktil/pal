@@ -15,10 +15,10 @@ silently repeating it.
 
 ## Features
 
-- **Models.** Sign in with your ChatGPT subscription; no API key needed. Optional API-key providers are OpenRouter,
-  OpenCode Zen and Go, the OpenAI API, the Anthropic API, and any OpenAI-compatible endpoint such as a local Ollama
-  server. You choose the model and reasoning level per chat. Pal never switches provider or falls back to another
-  one on its own.
+- **Models.** Use the provider you have: a ChatGPT subscription (sign-in, no API key), an API key for OpenRouter,
+  OpenCode Zen or Go, the OpenAI API, the Anthropic API or the DeepSeek API, or any OpenAI-compatible endpoint such as
+  a local Ollama server. You choose the model and reasoning level per chat. Pal never switches provider or falls back
+  to another one on its own.
 - **Projects and workspaces.** A project is either a Pal-managed folder or an existing folder on the server, plus
   read-only reference folders and uploads from your device. Each chat runs in **Local** (the folder itself),
   **Worktree** (a separate Git worktree from `HEAD`) or **Read-only** mode.

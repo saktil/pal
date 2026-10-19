@@ -104,7 +104,9 @@ describe("API-key model providers", () => {
       authContext: { env: async () => "sk-ambient", fileExists: async () => false },
     });
     models.setProvider(apiKeyProvider("openrouter"));
+    models.setProvider(apiKeyProvider("deepseek"));
     expect(await models.getAuth("openrouter")).toBeUndefined();
+    expect(await models.getAuth("deepseek")).toBeUndefined();
     await credentials.modify("openrouter", async () => ({ type: "api_key", key: GOOD }));
     expect(await models.getAuth("openrouter")).toMatchObject({ auth: { apiKey: GOOD }, source: "stored credential" });
     expect(models.getProvider("openrouter")?.auth.oauth).toBeUndefined();
@@ -119,6 +121,7 @@ describe("API-key model providers", () => {
       "opencode-go",
       "openai-api",
       "anthropic",
+      "deepseek",
       "compatible",
     ]);
     expect(
@@ -260,6 +263,43 @@ describe("API-key model providers", () => {
         .every((model) => model.provider === "openai-api"),
     ).toBe(true);
     expect(chatgpt.apiRequests.filter((request) => request.path === "/v1/responses")).toEqual([]);
+  });
+
+  it("checks a DeepSeek API key against its balance and chats on DeepSeek's own endpoint", async () => {
+    const fixture = await setup();
+    const { api, send, provider, chatgpt } = fixture;
+    await api("PUT", "providers/deepseek/key", { key: "sk-fixture-rejected" });
+    expect((await api("POST", "providers/deepseek/check")).body.check).toEqual({
+      ok: false,
+      detail: "DeepSeek API rejected this key.",
+    });
+    await api("PUT", "providers/deepseek/key", { key: GOOD });
+    expect((await api("POST", "providers/deepseek/check")).body.check).toEqual({
+      ok: true,
+      detail: "DeepSeek API accepted this key. Balance: 4.20 USD.",
+    });
+    expect(provider.requests.map((request) => request.path)).toEqual(["/user/balance", "/user/balance"]);
+    const enabled = await api("PUT", "providers/deepseek/enabled", { enabled: true });
+    const deepseek = enabled.body.providers.find((entry: { id: string }) => entry.id === "deepseek");
+    expect(deepseek).toMatchObject({ name: "DeepSeek API", hasKey: true, enabled: true, checkable: true });
+    expect(deepseek.models.map((model: { id: string }) => model.id)).toEqual(
+      expect.arrayContaining(["deepseek-flash", "deepseek-v4-pro"]),
+    );
+    const chatId = await fixture.chat("deepseek-chat");
+    expect(
+      (await api("PUT", `chats/${chatId}/model`, { provider: "deepseek", model: "deepseek-flash", effort: "high" }))
+        .body,
+    ).toMatchObject({ provider: "deepseek", model: "deepseek-flash", effort: "high" });
+    const sent = await send(chatId);
+    expect(JSON.stringify(sent.message?.content)).toContain("Hello from the provider fixture");
+    const request = provider.requests.at(-1);
+    // The reasoning level reaches DeepSeek in its own thinking format.
+    expect(request).toMatchObject({
+      path: "/chat/completions",
+      body: { model: "deepseek-flash", thinking: { type: "enabled" }, reasoning_effort: "high" },
+    });
+    expect(request?.headers.authorization).toBe(`Bearer ${GOOD}`);
+    expect(chatgpt.apiRequests).toEqual([]);
   });
 
   it("describes an OpenAI-compatible endpoint, keyless or keyed, and refuses models it no longer offers", async () => {

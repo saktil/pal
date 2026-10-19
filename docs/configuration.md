@@ -81,11 +81,12 @@ Settings → **Models**:
 
 - **ChatGPT** uses your subscription through Sign in with ChatGPT. Usage counts against that account's limits, and
   Pal never falls back to an API key.
-- **API keys and endpoints**: OpenRouter, OpenCode Zen, OpenCode Go, the OpenAI API, the Anthropic API and an
-  OpenAI-compatible endpoint. Each one needs a saved key (except a keyless compatible endpoint) and then an explicit
-  **Use … in chats** switch.
+- **API keys and endpoints**: OpenRouter, OpenCode Zen, OpenCode Go, the OpenAI API, the Anthropic API, the DeepSeek
+  API and an OpenAI-compatible endpoint. Each one needs a saved key (except a keyless compatible endpoint) and then
+  an explicit **Use … in chats** switch.
   - Keys are stored encrypted and never shown again. **Check key** asks the provider without a model request,
-    where it documents a free way to (OpenRouter, OpenAI, Anthropic, compatible endpoints).
+    where it documents a way to (OpenRouter, OpenAI, Anthropic, DeepSeek, compatible endpoints). OpenRouter and
+    DeepSeek also report your usage or balance.
   - An OpenAI-compatible endpoint takes a name, base URL, model IDs, context window and output limit. The URL may
     point at a private network address, because you chose it.
 

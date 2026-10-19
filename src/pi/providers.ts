@@ -13,6 +13,7 @@ import {
 } from "@earendil-works/pi-ai";
 import { openAICompletionsApi } from "@earendil-works/pi-ai/api/openai-completions.lazy";
 import { anthropicProvider } from "@earendil-works/pi-ai/providers/anthropic";
+import { deepseekProvider } from "@earendil-works/pi-ai/providers/deepseek";
 import { openaiProvider } from "@earendil-works/pi-ai/providers/openai";
 import { opencodeProvider } from "@earendil-works/pi-ai/providers/opencode";
 import { opencodeGoProvider } from "@earendil-works/pi-ai/providers/opencode-go";
@@ -68,6 +69,13 @@ const CATALOG = {
       path: "/v1/models",
       headers: (key: string) => ({ "x-api-key": key, "anthropic-version": "2023-06-01" }),
     },
+  },
+  deepseek: {
+    name: "DeepSeek API",
+    billing: "Pay per token from your DeepSeek API platform balance, separate from the DeepSeek chat app.",
+    keys: "https://platform.deepseek.com/api_keys",
+    create: deepseekProvider,
+    check: { origin: "https://api.deepseek.com", path: "/user/balance", headers: bearer },
   },
 } as const satisfies Record<
   string,
@@ -137,6 +145,14 @@ const KeyUsage = Type.Object({
     usage: Type.Optional(Type.Number()),
     limit: Type.Optional(Type.Union([Type.Number(), Type.Null()])),
   }),
+});
+/** The fields Pal shows from DeepSeek's `GET /user/balance`; amounts are decimal strings. */
+const Balance = Type.Object({
+  is_available: Type.Boolean(),
+  balance_infos: Type.Array(
+    Type.Object({ currency: Type.String({ maxLength: 8 }), total_balance: Type.String({ maxLength: 40 }) }),
+    { maxItems: 8 },
+  ),
 });
 
 export function isApiProvider(id: string): id is ApiProviderId {
@@ -368,6 +384,10 @@ export class ModelProviders {
     if (response.status === 401 || response.status === 403) return { ok: false, detail: `${name} rejected this key.` };
     if (!response.ok) return { ok: false, detail: `${name} answered HTTP ${response.status}.` };
     if (id === "openrouter") return { ok: true, detail: usageDetail(await body(response)) };
+    if (id === "deepseek") {
+      const answer = await body(response);
+      return { ok: true, detail: balanceDetail(Value.Check(Balance, answer) ? answer : undefined) };
+    }
     return { ok: true, detail: Object.keys(headers).length === 0 ? `${name} answered.` : `${name} accepted this key.` };
   }
 
@@ -464,5 +484,14 @@ function usageDetail(answer: unknown): string {
   if (usage.usage !== undefined) detail += ` Reported usage: ${usage.usage} credits`;
   if (usage.usage !== undefined && usage.limit != null) detail += ` of a ${usage.limit} credit limit.`;
   else if (usage.usage !== undefined) detail += ".";
+  return detail;
+}
+
+function balanceDetail(balance: Static<typeof Balance> | undefined): string {
+  let detail = "DeepSeek API accepted this key.";
+  if (balance === undefined) return detail;
+  const amounts = balance.balance_infos.map((info) => `${info.total_balance} ${info.currency}`);
+  if (amounts.length > 0) detail += ` Balance: ${amounts.join(", ")}.`;
+  if (!balance.is_available) detail += " DeepSeek says this balance can't pay for API calls.";
   return detail;
 }

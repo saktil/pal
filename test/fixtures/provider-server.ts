@@ -11,7 +11,12 @@ const COMPLETIONS = [
   "/inference/v1/chat/completions",
   "/inference/go/v1/chat/completions",
   "/compat/v1/chat/completions",
+  "/chat/completions",
 ];
+const BALANCE = {
+  is_available: true,
+  balance_infos: [{ currency: "USD", total_balance: "4.20", granted_balance: "0.00", topped_up_balance: "4.20" }],
+};
 export const GOOD_KEY = "sk-fixture-good";
 
 const sse = (events: object[]) => events.map((event) => `data: ${JSON.stringify(event)}\n\n`).join("");
@@ -85,10 +90,12 @@ export async function startProviderFixture() {
     const path = new URL(request.url ?? "/", "http://fixture").pathname;
     requests.push({ path, headers: request.headers, body: text === "" ? {} : JSON.parse(text) });
     const key = request.headers["x-api-key"] ?? request.headers.authorization?.replace(/^Bearer /, "");
-    if (path === "/api/v1/key" || path === "/v1/models" || path === "/compat/v1/models") {
+    if (path === "/api/v1/key" || path === "/v1/models" || path === "/compat/v1/models" || path === "/user/balance") {
       const ok = key === GOOD_KEY || (path === "/compat/v1/models" && key === undefined);
+      const answer =
+        path === "/user/balance" ? BALANCE : { data: path === "/api/v1/key" ? { usage: 1.5, limit: 10 } : [] };
       response.writeHead(ok ? 200 : 401, { "content-type": "application/json" });
-      response.end(JSON.stringify(ok ? { data: path === "/api/v1/key" ? { usage: 1.5, limit: 10 } : [] } : {}));
+      response.end(JSON.stringify(ok ? answer : {}));
       return;
     }
     if (behavior.reject) {

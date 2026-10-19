@@ -2254,6 +2254,11 @@ describe("Pal in a browser", () => {
       ["OpenCode Go", "API key", "Counts against your OpenCode Go subscription limits"],
       ["OpenAI API", "API key", "Pay per token on your OpenAI API account, separate from your ChatGPT subscription."],
       ["Anthropic API", "API key", "Pay per token on your Anthropic API account, not a Claude subscription."],
+      [
+        "DeepSeek API",
+        "API key",
+        "Pay per token from your DeepSeek API platform balance, separate from the DeepSeek chat app.",
+      ],
       ["OpenAI-compatible endpoint", "Custom endpoint", "Billed, if at all, by whoever runs this endpoint"],
     ];
     const radios = choices.getByRole("radio");
@@ -2269,6 +2274,7 @@ describe("Pal in a browser", () => {
     const alternatives: [RegExp, string, string | undefined][] = [
       [/^OpenAI API/, "OpenAI API", "OpenAI API accepted this key."],
       [/^Anthropic API/, "Anthropic API", "Anthropic API accepted this key."],
+      [/^DeepSeek API/, "DeepSeek API", "DeepSeek API accepted this key. Balance: 4.20 USD."],
       [/^OpenCode Zen/, "OpenCode Zen", undefined],
       [/^OpenCode Go/, "OpenCode Go", undefined],
     ];
@@ -2368,12 +2374,10 @@ describe("Pal in a browser", () => {
     await view.getByText("Enable internet tools?").waitFor();
     await view.getByRole("button", { name: "Not now" }).click();
     await heading("Create your first project").waitFor();
-    // Setup only made free key checks: no model request.
-    expect(
-      provider.requests
-        .slice(before)
-        .every((request) => request.path === "/api/v1/key" || request.path === "/v1/models"),
-    ).toBe(true);
+    // Setup only made key checks: no model request.
+    expect(new Set(provider.requests.slice(before).map((request) => request.path))).toEqual(
+      new Set(["/v1/models", "/user/balance", "/api/v1/key"]),
+    );
 
     // The choice survives a restart, and the first message goes to OpenRouter.
     await served.stop();
