@@ -89,8 +89,12 @@
         <p class="sub">Project settings · {project.name}</p>
         <h2 id="reference-title">Folders</h2>
       </div>
-      <button class="b i q" aria-label="Close project folders" disabled={busy} onclick={() => dialog?.close()}
-        ><Icon name="x" /></button
+      <button
+        class="b i q tip end"
+        aria-label="Close project folders"
+        data-tip="Close"
+        disabled={busy}
+        onclick={() => dialog?.close()}><Icon name="x" /></button
       >
     </div>
     <p class="sub">

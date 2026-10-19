@@ -250,8 +250,9 @@
     <div class="line">
       <strong class="grow">{editing === undefined ? "Add MCP server" : "Edit MCP server"}</strong>
       <button
-        class="b i q"
+        class="b i q tip end"
         aria-label="Cancel adding server"
+        data-tip="Cancel"
         disabled={busy.save}
         onclick={() => {
           adding = false;

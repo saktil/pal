@@ -50,7 +50,9 @@
 <div class="settings" class:narrow>
   <nav aria-label="Settings sections">
     <div class="title">
-      <button class="b i q" aria-label="Back to chat" onclick={() => history.back()}><Icon name="chevL" /></button>
+      <button class="b i q tip start" aria-label="Back to chat" data-tip="Back to chat" onclick={() => history.back()}
+        ><Icon name="chevL" /></button
+      >
       <h1>Settings</h1>
     </div>
     {#each tabs as item (item.id)}

@@ -49,10 +49,10 @@
 
 <div class="add" bind:this={container}>
   <button
-    class="b i q plus"
+    class="b i q tip up start plus"
     bind:this={opener}
     aria-label="Add"
-    title="Add"
+    data-tip="Add"
     aria-haspopup="menu"
     aria-expanded={open}
     onclick={() => (open ? close(false) : show())}

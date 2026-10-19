@@ -57,7 +57,9 @@
     <PalMark size={22} cutout="var(--side)" />
     <span class="wordmark">pal</span>
     {#if onClose !== undefined}
-      <button class="b i q" aria-label="Close projects" onclick={onClose}><Icon name="x" /></button>
+      <button class="b i q tip end" aria-label="Close projects" data-tip="Close" onclick={onClose}
+        ><Icon name="x" /></button
+      >
     {:else if onCollapse !== undefined}
       <button class="b i q tip" aria-label="Collapse sidebar" data-tip="Collapse sidebar" onclick={onCollapse}
         ><Icon name="sidebar" /></button
@@ -91,14 +93,16 @@
           </button>
           <span class="acts">
             <button
-              class="b i q sm"
+              class="b i q sm tip"
               aria-label={`New chat in ${project.name}`}
+              data-tip="New chat"
               onclick={() => onNewChat(project.id)}
               disabled={project.state !== "ready"}><Icon name="plus" size={14} /></button
             >
             <button
-              class="b i q sm"
+              class="b i q sm tip end"
               aria-label={`Remove project ${project.name}`}
+              data-tip="Remove project"
               onclick={() => (removing = { kind: "project", id: project.id, name: project.name })}
               ><Icon name="trash" size={14} /></button
             >
@@ -117,13 +121,15 @@
                 </button>
                 <span class="acts">
                   <button
-                    class="b i q sm"
+                    class="b i q sm tip"
                     aria-label={`Rename chat ${chat.title ?? "New chat"}`}
+                    data-tip="Rename"
                     onclick={() => onRenameChat(chat)}><Icon name="edit" size={14} /></button
                   >
                   <button
-                    class="b i q sm"
+                    class="b i q sm tip end"
                     aria-label={`Delete chat ${chat.title ?? "New chat"}`}
+                    data-tip="Delete"
                     onclick={() => (removing = { kind: "chat", id: chat.id, name: chat.title ?? "New chat" })}
                     ><Icon name="trash" size={14} /></button
                   >

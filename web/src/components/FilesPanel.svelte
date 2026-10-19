@@ -297,7 +297,13 @@
   {:else}
     {@const slash = preview.path.lastIndexOf("/")}
     <div class="filehead">
-      <button class="b i q" aria-label="Back to files" bind:this={back} onclick={close}><Icon name="chevL" /></button>
+      <button
+        class="b i q tip start"
+        aria-label="Back to files"
+        data-tip="Back to files"
+        bind:this={back}
+        onclick={close}><Icon name="chevL" /></button
+      >
       <span class="mono path" title={preview.path}
         ><span class="dim">{preview.path.slice(0, slash + 1)}</span>{preview.path.slice(slash + 1)}</span
       >

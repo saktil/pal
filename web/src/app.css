@@ -330,6 +330,10 @@ svg.i {
   right: 0;
   transform: none;
 }
+.tip.start::after {
+  left: 0;
+  transform: none;
+}
 .tip:focus-visible::after {
   display: block;
 }

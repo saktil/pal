@@ -266,14 +266,26 @@
     </div>
   {:else}
     <div class="bar">
-      <button class="b i q" aria-label="Back" disabled={!view?.control} onclick={() => send({ type: "back" })}
-        ><Icon name="chevL" /></button
+      <button
+        class="b i q tip"
+        aria-label="Back"
+        data-tip="Back"
+        disabled={!view?.control}
+        onclick={() => send({ type: "back" })}><Icon name="chevL" /></button
       >
-      <button class="b i q" aria-label="Forward" disabled={!view?.control} onclick={() => send({ type: "forward" })}
-        ><Icon name="chevR" /></button
+      <button
+        class="b i q tip"
+        aria-label="Forward"
+        data-tip="Forward"
+        disabled={!view?.control}
+        onclick={() => send({ type: "forward" })}><Icon name="chevR" /></button
       >
-      <button class="b i q" aria-label="Reload" disabled={!view?.control} onclick={() => send({ type: "reload" })}
-        ><Icon name="refresh" /></button
+      <button
+        class="b i q tip"
+        aria-label="Reload"
+        data-tip="Reload"
+        disabled={!view?.control}
+        onclick={() => send({ type: "reload" })}><Icon name="refresh" /></button
       >
       <label for="browser-address" class="sr">Address</label>
       <input
@@ -306,8 +318,12 @@
           >
         </span>
       {/each}
-      <button class="b i q" aria-label="New tab" disabled={!view?.control} onclick={() => send({ type: "newTab" })}
-        ><Icon name="plus" /></button
+      <button
+        class="b i q tip"
+        aria-label="New tab"
+        data-tip="New tab"
+        disabled={!view?.control}
+        onclick={() => send({ type: "newTab" })}><Icon name="plus" /></button
       >
     </div>
     <div class="status">

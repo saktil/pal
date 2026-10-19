@@ -79,7 +79,7 @@
         <h2 id="create-title">{picking ? "Choose a folder" : "Create project"}</h2>
         <div class="step">{picking ? "A folder on this server" : "Name and where its files live"}</div>
       </div>
-      <button class="b i q" aria-label="Close" onclick={onClose}><Icon name="x" /></button>
+      <button class="b i q tip end" aria-label="Close" data-tip="Close" onclick={onClose}><Icon name="x" /></button>
     </div>
 
     {#if picking}
@@ -87,8 +87,9 @@
         <div class="pathbar">
           <div class="pathrow">
             <button
-              class="b i"
+              class="b i tip start"
               aria-label="Parent folder"
+              data-tip="Parent folder"
               onclick={() => open(listing?.parent)}
               disabled={listing?.parent === undefined}
             >

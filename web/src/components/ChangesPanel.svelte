@@ -406,9 +406,10 @@
       <span>·</span><span>{comment.sent ? "Added to composer" : "Not sent"}</span>
       <span class="grow"></span>
       <button
-        class="b i q sm"
+        class="b i q sm tip end"
         disabled={busy}
         aria-label={`Delete comment on line ${comment.line}`}
+        data-tip="Delete comment"
         onclick={() => act(() => api.uncomment(project.id, comment.id, workspace?.id))}
         ><Icon name="trash" size={14} /></button
       >
