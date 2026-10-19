@@ -360,7 +360,7 @@
   }
 
   const heads = {
-    pending: "Approval needed to run a command",
+    pending: "Run this command?",
     approved: "Command approved",
     denied: "Command denied",
     expired: "Approval expired",
@@ -413,6 +413,22 @@
     return server === undefined || tool === undefined ? name : `${server} · ${tool}`;
   }
 
+  /** One quiet line for an assistant turn's scripts, counted from the tool calls that came back. */
+  function summary(steps: Step[]): string {
+    const calls = steps.flatMap((step) => step.result?.calls ?? []);
+    const count = (n: number, noun: string) => `${n} ${noun}${n === 1 ? "" : "s"}`;
+    const commands = calls.filter((call) => call.name === "shell_run").length;
+    const edits = calls.filter((call) => call.name === "files_write" || call.name === "files_edit").length;
+    const tools = calls.length - commands - edits;
+    const did = [
+      commands > 0 ? count(commands, "command") : "",
+      edits > 0 ? count(edits, "file edit") : "",
+      tools > 0 ? `used ${count(tools, "tool")}` : "",
+    ].filter((part) => part !== "");
+    const ran = steps.length === 1 ? "Ran a script" : `Ran ${steps.length} scripts`;
+    return did.length > 0 ? `${ran} · ${did.join(", ")}` : ran;
+  }
+
   function time(at: number | undefined): string {
     return at === undefined ? "" : new Date(at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
   }
@@ -422,7 +438,7 @@
   <div class="scroller">
     <div
       class="transcript"
-      style:padding-inline={phone ? "12px" : "20px"}
+      style:padding-inline={phone ? "18px" : "24px"}
       style:padding-bottom={app.pet.enabled ? "54px" : undefined}
     >
       {#if stream?.loaded && items.length === 0}
@@ -463,24 +479,24 @@
             <InternetSources receipt={item.receipt} />
           {:else if item.kind === "approval"}
             {@const approval = item.approval}
-            <div class="appr" class:settled={approval.state !== "pending"} role="group" aria-label="Approval request">
-              <div class="apph">
-                <Icon name={approval.state === "pending" ? "warn" : "term"} />{(approval.tool === "browser_act"
-                  ? browserHeads
-                  : heads)[approval.state]}
-              </div>
-              <code class="mono cmd">{approval.command}</code>
-              <p class="why">
-                {#if approval.tool === "browser_act"}
-                  Browser page <span class="mono">{approval.cwd}</span> · timeout {approval.timeout} s · exact action in the
-                  sandboxed project browser. Inspect after any interruption.
-                {:else}
-                  In <span class="mono">{approval.cwd}</span> · timeout {approval.timeout} s · runs as the Pal host user,
-                  not in a sandbox.
-                {/if}
-              </p>
-              {#if approval.state === "pending"}
+            {@const browser = approval.tool === "browser_act"}
+            {#if approval.state === "pending"}
+              <div class="appr" role="group" aria-label="Approval request">
+                <div class="apph">
+                  <span class="dot" aria-hidden="true"></span>
+                  <span class="grow">{(browser ? browserHeads : heads).pending}</span>
+                  <span class="meta"
+                    >{browser ? "project browser" : "not sandboxed"} · timeout {approval.timeout} s</span
+                  >
+                </div>
+                <code class="mono cmd">{approval.command}</code>
                 <p class="why">
+                  {#if browser}
+                    Browser page <span class="mono">{approval.cwd}</span> · exact action in the sandboxed project browser.
+                    Inspect after any interruption.
+                  {:else}
+                    In <span class="mono">{approval.cwd}</span>, as the Pal host user.
+                  {/if}
                   Waits until {time(approval.expiresAt)} at most; Stop ends it. Nothing runs until you approve.
                 </p>
                 <div class="acts">
@@ -491,21 +507,31 @@
                     >Deny</button
                   >
                 </div>
-              {:else}
-                <div class="why">{outcome(approval)}</div>
-              {/if}
-            </div>
+              </div>
+            {:else}
+              <div class="appr settled" role="group" aria-label="Approval request">
+                <span
+                  class="dot"
+                  class:ok={approval.state === "approved"}
+                  class:er={approval.state === "denied"}
+                  aria-hidden="true"
+                ></span>
+                <span>{(browser ? browserHeads : heads)[approval.state]}</span>
+                <code class="mono cmd">{approval.command}</code>
+                <span>{outcome(approval)}</span>
+              </div>
+            {/if}
           {:else if item.kind === "shell"}
             <details class="activity">
               <summary class="acth"
-                ><Icon name="term" /><span class="grow">Host command <span class="dim">· not sandboxed</span></span>
-                <span class="pill" class:er={item.receipt.timedOut || (item.receipt.exitCode ?? 0) !== 0}>
+                >Host command · not sandboxed ·
+                <span class:er={item.receipt.timedOut || (item.receipt.exitCode ?? 0) !== 0}>
                   {item.receipt.timedOut
                     ? "Timed out"
                     : item.receipt.exitCode !== undefined
                       ? `Exit ${item.receipt.exitCode}`
                       : "Pending receipt"}
-                </span>
+                </span><Icon name="chevR" size={13} />
               </summary>
               <div class="small dim mono ellipsis" title={item.receipt.cwd}>{item.receipt.cwd}</div>
               <pre class="out">{item.receipt.command}</pre>
@@ -525,37 +551,44 @@
                 <button class="acth" aria-expanded={open} onclick={() => (openSteps[item.id] = !open)}>
                   {#if item.live && item.steps.some((step) => step.result === undefined)}
                     <span class="ring spin" aria-hidden="true"></span>
-                  {:else}
-                    <Icon name="run" />
                   {/if}
-                  <span class="grow">
-                    <span class="strong"
-                      >{item.steps.length === 1 ? "Ran a script" : `Ran ${item.steps.length} scripts`}</span
-                    >
-                    {#if item.steps.some((step) => step.result?.isError)}<span class="dim"> · with errors</span>{/if}
-                  </span>
-                  <span class="dim small">{open ? "Hide" : "Show"}</span>
-                  <Icon name={open ? "chevD" : "chevR"} />
+                  <span
+                    >{summary(item.steps)}{#if item.steps.some((step) => step.result?.isError)}
+                      · with errors{/if}</span
+                  >
+                  <Icon name={open ? "chevD" : "chevR"} size={13} />
                 </button>
                 {#if open}
                   <ol>
                     {#each item.steps as step (step.id)}
                       <li>
                         <div class="steprow">
-                          <Icon name="run" /><span class="dim">{step.name}</span>
-                          {#if step.result === undefined}<span class="pill">Running</span>
-                          {:else if step.result.isError}<span class="pill er">Failed</span>
-                          {:else}<span class="pill ok">Done</span>{/if}
+                          {#if step.result === undefined}<span class="ring spin" aria-hidden="true"></span><span
+                              class="sr">Running</span
+                            >
+                          {:else if step.result.isError}<span class="tick er" aria-hidden="true">✕</span><span
+                              class="sr">Failed</span
+                            >
+                          {:else}<span class="tick ok" aria-hidden="true">✓</span><span class="sr">Done</span>{/if}
+                          <span>{step.name}</span>
                         </div>
                         {#if step.code !== undefined}<pre class="out">{step.code}</pre>{/if}
                         {#each step.result?.calls ?? [] as call (call.id)}
                           <div class="steprow call">
-                            <Icon name={call.name.startsWith("mcp__") ? "globe" : "run"} />
+                            {#if call.status === "ok"}<span class="tick ok" aria-hidden="true">✓</span><span class="sr"
+                                >Done</span
+                              >
+                            {:else}<span class="tick" class:er={call.status !== "running"} aria-hidden="true"
+                                >{call.status === "running" ? "–" : "✕"}</span
+                              >{/if}
                             <span>{toolLabel(call.name)}</span>
-                            <span class="mono args">{call.args}</span>
-                            {#if call.status === "ok"}<span class="pill ok">Done</span>
-                            {:else if call.status === "running"}<span class="pill">Interrupted</span>
-                            {:else}<span class="pill er">{call.status === "cancelled" ? "Cancelled" : "Failed"}</span
+                            <span class="args">{call.args}</span>
+                            {#if call.status !== "ok"}<span class="state"
+                                >{call.status === "running"
+                                  ? "Interrupted"
+                                  : call.status === "cancelled"
+                                    ? "Cancelled"
+                                    : "Failed"}</span
                               >{/if}
                           </div>
                           {#if call.error}<div class="dim small call">{call.error}</div>{/if}
@@ -598,7 +631,7 @@
     </div>
   </div>
 
-  <div class="dock" style:padding={phone ? "0 12px 10px" : "0 20px 16px"}>
+  <div class="dock" style:padding={phone ? "0 12px 10px" : "8px 24px 20px"}>
     <div class="dockin">
       {#if app.pet.enabled}
         {#await import("./Pet.svelte") then { default: Pet }}
@@ -649,7 +682,7 @@
                 : ""}</span
             ></span
           >
-          <button class="b sm" onclick={() => api.stop(chat.id)}><Icon name="stop" />Stop</button>
+          <button class="b t sm" onclick={() => api.stop(chat.id)}>Stop</button>
         </div>
       {/if}
       {#if (stream?.inbox.length ?? 0) > 0}
@@ -665,7 +698,7 @@
       {/if}
       {#if error !== undefined}<div class="callout er" role="alert">{error}</div>{/if}
 
-      <div class="cbx" class:live={stream?.running}>
+      <div class="cbx">
         {#if attachments.length > 0 || uploading > 0}
           <div class="chips">
             {#each attachments as attachment (attachment.id)}
@@ -689,7 +722,7 @@
           id="composer"
           bind:this={composer}
           class="cta"
-          rows="3"
+          rows="2"
           placeholder={stream?.running ? "Steer the run or queue a follow-up" : "Message Pal"}
           bind:value={draft}
           onfocus={() => (typing = true)}
@@ -731,7 +764,7 @@
             </button>
           {:else}
             <button class="b p send" aria-label="Send" title="Send" onclick={send} disabled={!canSend}>
-              <Icon name="send" size={18} />
+              <Icon name="send" size={15} />
             </button>
           {/if}
         </div>
@@ -742,44 +775,79 @@
 
 <style>
   .appr {
-    border: 1px solid var(--waln);
-    background: var(--wabg);
-    border-radius: 12px;
-    padding: 14px 16px;
+    border: 1px solid var(--line2);
+    background: var(--bg2);
+    border-radius: var(--radius-md);
+    padding: 14px 14px 14px 16px;
     display: flex;
     flex-direction: column;
-    gap: 8px;
-  }
-  .appr.settled {
-    border-color: var(--line2);
-    background: var(--bg1);
+    gap: 10px;
   }
   .apph {
     display: flex;
     align-items: center;
     gap: 8px;
-    font-weight: 600;
-    color: var(--wa);
-    font-size: 13px;
+    font-size: 13.5px;
   }
-  .settled .apph {
-    color: var(--tx2);
+  .apph .grow {
+    font-weight: 550;
+  }
+  .meta {
+    font-size: 12px;
+    color: var(--tx3);
+    white-space: nowrap;
+  }
+  .dot {
+    width: 7px;
+    height: 7px;
+    flex: none;
+    border-radius: 50%;
+    background: var(--wa);
   }
   .cmd {
     display: block;
-    background: var(--bg1);
-    border: 1px solid var(--line2);
-    border-radius: 6px;
-    padding: 8px 10px;
     font-size: 12.5px;
-    overflow-x: auto;
-    white-space: pre;
+    color: color-mix(in srgb, var(--tx) 90%, transparent);
+    white-space: pre-wrap;
+    word-break: break-all;
   }
   .why {
     margin: 0;
-    font-size: 13px;
-    color: var(--tx2);
+    font-size: 12.5px;
+    color: var(--tx3);
     overflow-wrap: anywhere;
+  }
+  /* An answered request is one quiet line: what it was, the command and the outcome. */
+  .appr.settled {
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: center;
+    gap: 4px 8px;
+    padding: 0;
+    border: 0;
+    background: transparent;
+    font-size: 13px;
+    color: var(--tx3);
+  }
+  .settled .dot {
+    width: 6px;
+    height: 6px;
+    background: var(--tx3);
+  }
+  .settled .dot.ok {
+    background: var(--ok);
+  }
+  .settled .dot.er {
+    background: var(--er);
+  }
+  .settled .cmd {
+    flex: 0 1 auto;
+    min-width: 0;
+    max-width: 100%;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    color: var(--tx2);
   }
   .acts {
     display: flex;
@@ -803,10 +871,10 @@
   }
   .transcript {
     width: 100%;
-    max-width: 760px;
+    max-width: 720px;
     margin: 0 auto;
-    padding-top: 28px;
-    padding-bottom: 18px;
+    padding-top: 32px;
+    padding-bottom: 12px;
     display: flex;
     flex-direction: column;
     gap: 22px;
@@ -825,9 +893,9 @@
   }
   .empty h2 {
     margin: 0 0 4px;
-    font-size: 24px;
+    font-size: 22px;
     color: var(--tx);
-    font-weight: 700;
+    font-weight: 600;
     letter-spacing: -0.02em;
   }
   .empty p {
@@ -839,7 +907,7 @@
   }
   .user {
     align-self: flex-end;
-    max-width: min(88%, 620px);
+    max-width: 80%;
     display: flex;
     flex-direction: column;
     align-items: flex-end;
@@ -847,10 +915,9 @@
   }
   .bubble {
     background: var(--bubble);
-    border: 1px solid var(--bubble-line);
-    border-radius: 16px 16px 6px 16px;
-    padding: 10px 14px;
-    font-size: 15px;
+    border-radius: var(--radius-lg);
+    padding: 10px 15px;
+    font-size: 14.5px;
     line-height: 1.55;
     white-space: pre-wrap;
     overflow-wrap: anywhere;
@@ -879,38 +946,57 @@
     color: var(--tx2);
   }
   .activity {
-    border: 1px solid var(--line);
-    border-radius: 12px;
-    background: var(--bg1);
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+  }
+  details.activity[open] .acth :global(svg) {
+    transform: rotate(90deg);
+  }
+  .acth .er {
+    color: var(--er);
   }
   .activity ol {
     list-style: none;
     margin: 0;
-    padding: 6px 12px 8px;
-    border-top: 1px solid var(--line);
+    padding: 0;
     display: flex;
     flex-direction: column;
+    gap: 6px;
+    font: 12.5px/1.6 var(--mono);
+    color: var(--tx2);
   }
   .activity li {
     display: flex;
     flex-direction: column;
     gap: 4px;
-    padding: 4px 0;
   }
   .steprow {
     display: flex;
     align-items: center;
     gap: 8px;
-    font-size: 13px;
   }
-  .strong {
-    color: var(--tx);
+  .steprow .ring {
+    width: 10px;
+    height: 10px;
+  }
+  .tick {
+    width: 12px;
+    flex: none;
+    text-align: center;
+    color: var(--tx3);
+  }
+  .tick.ok {
+    color: var(--ok);
+  }
+  .tick.er,
+  .state {
+    color: var(--er);
   }
   .call {
-    margin-left: 24px;
+    margin-left: 20px;
   }
   .args {
-    font-size: 12px;
     color: var(--tx3);
     min-width: 0;
     overflow: hidden;
@@ -936,9 +1022,10 @@
   .assistant {
     display: flex;
     flex-direction: column;
-    gap: 8px;
-    font-size: 15px;
-    line-height: 1.65;
+    gap: 12px;
+    font-size: 14.5px;
+    line-height: 1.7;
+    color: color-mix(in srgb, var(--tx) 90%, transparent);
   }
   .thinking {
     display: flex;
@@ -951,7 +1038,7 @@
     overflow-wrap: anywhere;
   }
   .md :global(p) {
-    margin: 0 0 10px;
+    margin: 0 0 12px;
   }
   .md :global(:is(h1, h2, h3, h4)) {
     margin: 18px 0 8px;
@@ -984,18 +1071,18 @@
   }
   .md :global(code) {
     font-family: var(--mono);
-    font-size: 0.88em;
+    font-size: 0.86em;
     background: var(--bg3);
     padding: 1px 5px;
-    border-radius: 4px;
+    border-radius: 5px;
   }
   .md :global(.code) {
-    margin: 0 0 10px;
-    background: var(--bg0);
+    margin: 0 0 12px;
+    background: var(--bg2);
     border: 1px solid var(--line);
-    border-radius: 10px;
+    border-radius: var(--radius-md);
   }
-  /* The header stays in view while a long block scrolls past, so Copy is always one click away. */
+  /* The language and Copy stay in view while a long block scrolls past, on the block's own surface. */
   .md :global(.codehead) {
     position: sticky;
     top: 0;
@@ -1004,9 +1091,8 @@
     align-items: center;
     justify-content: space-between;
     gap: 8px;
-    padding: 4px 6px 4px 14px;
-    border-bottom: 1px solid var(--line);
-    border-radius: 10px 10px 0 0;
+    padding: 8px 8px 0 18px;
+    border-radius: var(--radius-md) var(--radius-md) 0 0;
     background: var(--bg2);
     color: var(--tx3);
     font-family: var(--mono);
@@ -1016,13 +1102,13 @@
     display: inline-flex;
     align-items: center;
     gap: 6px;
-    min-height: 28px;
+    min-height: 30px;
     padding: 0 8px;
     border: 0;
-    border-radius: 6px;
+    border-radius: var(--radius-sm);
     background: transparent;
-    color: var(--tx2);
-    font: 500 12.5px var(--sans);
+    color: var(--tx3);
+    font: 12.5px var(--sans);
     cursor: pointer;
     transition:
       background-color var(--fast) var(--ease),
@@ -1038,14 +1124,15 @@
   }
   .md :global(pre) {
     margin: 0;
-    padding: 12px 14px;
+    padding: 4px 18px 16px;
     overflow-x: auto;
   }
   .md :global(pre code) {
     background: transparent;
     padding: 0;
-    font-size: 13px;
-    line-height: 1.6;
+    font-size: 12.5px;
+    line-height: 1.75;
+    color: color-mix(in srgb, var(--tx) 85%, transparent);
     tab-size: 4;
   }
   .md :global(.hl-k) {
@@ -1089,7 +1176,7 @@
     flex: 0 0 auto;
   }
   .dockin {
-    max-width: 760px;
+    max-width: 672px;
     margin: 0 auto;
     position: relative;
     display: flex;
@@ -1105,36 +1192,14 @@
   .running {
     display: flex;
     align-items: center;
-    gap: 10px;
-    padding: 0 2px 0 6px;
-    font-size: 13px;
-    color: var(--tx);
+    gap: 8px;
+    padding: 0 0 0 4px;
+    font-size: 12.5px;
+    color: var(--tx2);
     animation: rise var(--mid) var(--ease);
   }
   .cbx {
     position: relative;
-  }
-  /* A blue sheen along the composer's top edge, present only while the agent runs. */
-  .cbx.live::before {
-    content: "";
-    position: absolute;
-    top: -1px;
-    left: 18px;
-    right: 18px;
-    height: 2px;
-    border-radius: 2px;
-    background: linear-gradient(90deg, transparent, var(--ac), transparent) 0 0 / 50% 100% no-repeat;
-    animation:
-      fade var(--mid) var(--ease),
-      sheen 2.8s linear infinite;
-  }
-  @keyframes sheen {
-    from {
-      background-position: -100% 0;
-    }
-    to {
-      background-position: 200% 0;
-    }
   }
   .queue {
     border: 1px dashed var(--line2);
@@ -1160,16 +1225,19 @@
     margin-left: 4px;
   }
   .send {
-    margin-left: 6px;
-    width: 34px;
-    height: 34px;
+    margin-left: 4px;
+    width: 32px;
+    height: 32px;
     padding: 0;
     border-radius: 50%;
+  }
+  .send :global(svg) {
+    stroke-width: 2.1;
   }
   .send.busy {
     width: auto;
     padding: 0 12px;
-    border-radius: 17px;
+    border-radius: 16px;
   }
   .chips {
     display: flex;

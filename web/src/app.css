@@ -260,6 +260,18 @@ svg.i {
   background: var(--bg4);
   color: var(--tx);
 }
+/* A label that acts: composer modes, the model and Stop. No surface, only the text brightens. */
+.b.t {
+  padding: 0 6px;
+  background: transparent;
+  color: var(--tx2);
+  font-weight: 400;
+}
+.b.t:hover:not(:disabled),
+.b.t[aria-expanded="true"] {
+  background: transparent;
+  color: var(--tx);
+}
 .b.d {
   color: var(--er);
 }
@@ -647,12 +659,12 @@ textarea::placeholder {
 }
 .cbx {
   border: 1px solid var(--line2);
-  border-radius: 16px;
+  border-radius: var(--radius-lg);
   background: var(--bg2);
-  padding: 8px;
+  padding: 12px 10px 8px 14px;
   display: flex;
   flex-direction: column;
-  gap: 6px;
+  gap: 8px;
   transition:
     border-color var(--mid) var(--ease),
     box-shadow var(--mid) var(--ease);
@@ -667,28 +679,35 @@ textarea::placeholder {
   border: 0;
   background: transparent;
   color: var(--tx);
-  padding: 6px 8px 2px;
-  font-size: 15px;
+  padding: 2px 0;
+  font-size: 14.5px;
   line-height: 1.5;
   outline: none;
   max-height: 220px;
 }
+/* Agent activity is one quiet disclosure line; details only when expanded. */
 .acth {
   display: flex;
   align-items: center;
-  gap: 10px;
-  width: 100%;
-  padding: 8px 12px;
+  align-self: flex-start;
+  gap: 6px;
+  padding: 0;
   border: 0;
   background: transparent;
-  color: var(--tx2);
+  color: var(--tx3);
   font-size: 13px;
   text-align: left;
-  border-radius: 10px;
-  transition: background-color var(--fast) var(--ease);
+  cursor: pointer;
+  transition: color var(--fast) var(--ease);
 }
 .acth:hover {
-  background: var(--bg2);
+  color: var(--tx2);
+}
+summary.acth {
+  list-style: none;
+}
+summary.acth::-webkit-details-marker {
+  display: none;
 }
 .out {
   margin: 2px 0 2px 24px;
@@ -702,10 +721,10 @@ textarea::placeholder {
   overflow-wrap: anywhere;
 }
 .ring {
-  width: 14px;
-  height: 14px;
+  width: 12px;
+  height: 12px;
   border-radius: 50%;
-  border: 2px solid var(--line2);
+  border: 1.6px solid var(--line3);
   border-top-color: var(--ac);
   flex: 0 0 auto;
   display: inline-block;
@@ -757,6 +776,7 @@ textarea::placeholder {
     opacity: 0.4;
   }
 }
+/* Status is a dot, never a tinted card. */
 .callout {
   padding: 9px 12px;
   border-radius: 10px;
@@ -766,17 +786,22 @@ textarea::placeholder {
   background: var(--bg2);
   color: var(--tx);
 }
-.callout.er {
-  background: var(--erbg);
-  border-color: var(--erln);
+.callout:is(.er, .wa, .ac)::before {
+  content: "";
+  display: inline-block;
+  flex: none;
+  width: 6px;
+  height: 6px;
+  margin: 0 8px 2px 0;
+  border-radius: 50%;
+  vertical-align: middle;
+  background: var(--ac);
 }
-.callout.wa {
-  background: var(--wabg);
-  border-color: var(--waln);
+.callout.er::before {
+  background: var(--er);
 }
-.callout.ac {
-  background: var(--acbg);
-  border-color: var(--acln);
+.callout.wa::before {
+  background: var(--wa);
 }
 .tdot {
   width: 7px;

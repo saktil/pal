@@ -56,7 +56,7 @@
     aria-haspopup="menu"
     aria-expanded={open}
     onclick={() => (open ? close(false) : show())}
-    onkeydown={onOpenerKey}><Icon name="plus" size={18} /></button
+    onkeydown={onOpenerKey}><Icon name="plus" /></button
   >
   <input
     bind:this={input}
@@ -87,8 +87,9 @@
     position: relative;
   }
   .plus {
-    border-radius: 50%;
-    color: var(--tx);
+    width: 32px;
+    height: 32px;
+    margin-left: -6px;
   }
   .plus[aria-expanded="true"] :global(svg) {
     transform: rotate(45deg);

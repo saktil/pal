@@ -66,7 +66,7 @@
 
 <div class="workspace-mode" bind:this={container}>
   <button
-    class="b q"
+    class="b t"
     bind:this={opener}
     aria-label="Workspace mode"
     title={`Workspace: ${labels[mode]}`}
@@ -74,7 +74,7 @@
     disabled={busy}
     onclick={toggle}
   >
-    <Icon name={mode === "read-only" ? "lock" : "folder"} />{#if !compact}{labels[mode]}<Icon name="chevD" />{/if}
+    <Icon name={mode === "read-only" ? "lock" : "folder"} size={14} />{#if !compact}{labels[mode]}{/if}
   </button>
   {#if open}
     <div class="pop" role="dialog" aria-label="Workspace mode">

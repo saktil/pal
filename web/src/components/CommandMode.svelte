@@ -65,7 +65,7 @@
 
 <div class="command-mode" bind:this={container}>
   <button
-    class="b q"
+    class="b t"
     class:warn={mode === "full"}
     bind:this={opener}
     aria-label={`Command approval: ${mode === "full" ? "Full access" : "Ask for approval"}`}
@@ -73,7 +73,7 @@
     disabled={mode === undefined || busy}
     onclick={toggle}
   >
-    <Icon name={mode === "full" ? "warn" : "lock"} />{mode === "full" ? "Full access" : "Ask"}<Icon name="chevD" />
+    <Icon name={mode === "full" ? "warn" : "shield"} size={14} />{mode === "full" ? "Full access" : "Ask first"}
   </button>
   {#if open}
     <div class="pop" role="dialog" aria-label="Command approval">

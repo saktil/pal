@@ -134,7 +134,7 @@
 
 <div class="model" class:compact bind:this={container}>
   <button
-    class="b q trigger"
+    class="b t trigger"
     bind:this={opener}
     aria-label={`Model and reasoning: ${modelName}, reasoning ${LABELS[effort].toLowerCase()}`}
     title={providerName === undefined ? modelName : `${modelName} · ${providerName}`}
@@ -143,7 +143,7 @@
   >
     <span class="name">{modelName}</span>{#if current !== undefined && steps.length > 1}<span class="level"
         >{levelName(effort)}</span
-      >{/if}<Icon name="chevD" />
+      >{/if}<Icon name="chevD" size={12} />
   </button>
   {#if open}
     <div
@@ -262,8 +262,11 @@
   }
   .trigger {
     max-width: 100%;
-    gap: 6px;
-    color: var(--tx);
+    gap: 5px;
+    color: color-mix(in srgb, var(--tx) 85%, transparent);
+  }
+  .trigger :global(svg) {
+    color: var(--tx3);
   }
   .name {
     min-width: 0;
@@ -272,7 +275,6 @@
   }
   .level {
     color: var(--tx3);
-    font-weight: 500;
   }
   .compact .trigger {
     max-width: 150px;
