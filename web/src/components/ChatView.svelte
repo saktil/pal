@@ -509,6 +509,9 @@
               </summary>
               <div class="small dim mono ellipsis" title={item.receipt.cwd}>{item.receipt.cwd}</div>
               <pre class="out">{item.receipt.command}</pre>
+              {#if item.receipt.executed !== undefined}<p class="small dim">
+                  Ran as <code>{item.receipt.executed}</code>; output condensed by rtk.
+                </p>{/if}
               {#if item.receipt.output !== undefined}<pre class="out">{item.receipt.output}</pre>{/if}
               {#if item.receipt.truncated}<p class="small dim">Output truncated to the last 64 KiB.</p>{/if}
               {#if item.receipt.status !== "finished"}<p class="small dim">

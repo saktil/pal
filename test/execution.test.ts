@@ -4,8 +4,9 @@ import { mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { createInterface } from "node:readline";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import { openPal } from "../src/core/app.ts";
+import { fakeRtk } from "./fixtures/fake-rtk.ts";
 import { startOpenAIFixture } from "./fixtures/openai-server.ts";
-import { tmpdir } from "node:os";
+import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
 import { HostCommands, WorkspaceLocks, shellTools } from "../src/core/execution.ts";
@@ -176,5 +177,82 @@ describe("trusted host commands", () => {
       }),
     ).rejects.toThrow("failed");
     expect(await locks.run("/workspace", async () => true)).toBe(true);
+  });
+});
+
+describe("compact command output", () => {
+  async function shell(compact: boolean) {
+    const { root, commands } = await setup();
+    const rtk = await fakeRtk();
+    cleanups.push(rtk.cleanup);
+    const entries: { data: { shell: Record<string, unknown> } }[] = [];
+    const tools = shellTools({
+      root: async () => root,
+      commands,
+      locks: new WorkspaceLocks(),
+      compact: async () => compact,
+    });
+    const tool = tools.tools?.find((tool) => tool.name === "shell_run") as ToolRegistration;
+    const api = {
+      conversationId: 1 as ConversationId,
+      taskId: 7,
+      output: () => undefined,
+      commit: async (work: (tx: unknown) => Promise<unknown>) =>
+        work({ appendEntry: async (_conversation: unknown, entry: (typeof entries)[number]) => entries.push(entry) }),
+    } as unknown as ToolExecutionApi;
+    const call = async (command: string) =>
+      (await tool.execute({ command, timeout: 5 } as never, api, context)) as {
+        structuredOutput: Record<string, unknown>;
+        isError: boolean;
+      };
+    return { root, commands, rtk, entries, call };
+  }
+
+  it("runs the rtk equivalent, keeps its exit code, and names it from intent to receipt", async () => {
+    const { rtk, entries, call } = await shell(true);
+    const result = await call("report hello 5");
+    expect(result.isError).toBe(true);
+    expect(result.structuredOutput).toMatchObject({
+      output: "compact:hello\n",
+      exitCode: 5,
+      executed: "rtk report hello 5",
+    });
+    expect(entries.map((entry) => entry.data.shell)).toEqual([
+      expect.objectContaining({ status: "started", command: "report hello 5", executed: "rtk report hello 5" }),
+      expect.objectContaining({ status: "finished", command: "report hello 5", executed: "rtk report hello 5" }),
+    ]);
+    expect((await call("allowed again 0")).structuredOutput).toMatchObject({
+      output: "compact:again\n",
+      exitCode: 0,
+      executed: "rtk report again 0",
+    });
+    // The owner's rtk and agent configuration never apply: every call gets a throwaway home.
+    for (const { home } of await rtk.calls()) expect(home).not.toBe(homedir());
+  });
+
+  it("runs commands unchanged without an equivalent, on a denial, or without rtk", async () => {
+    const { root, commands, entries, call } = await shell(true);
+    const plain = await call("printf plain");
+    expect(plain.structuredOutput).toMatchObject({ output: "plain", exitCode: 0 });
+    expect(plain.structuredOutput).not.toHaveProperty("executed");
+    const denied = await call("denied thing");
+    expect(denied.structuredOutput).toMatchObject({ exitCode: 127 });
+    expect(denied.structuredOutput).not.toHaveProperty("executed");
+    for (const entry of entries) expect(entry.data.shell).not.toHaveProperty("executed");
+    const path = process.env.PATH;
+    process.env.PATH = "/usr/bin:/bin";
+    try {
+      expect(await commands.rewrite(root, "report hello 0")).toBeUndefined();
+    } finally {
+      process.env.PATH = path;
+    }
+  });
+
+  it("never consults rtk for chats without compact output", async () => {
+    const { rtk, call } = await shell(false);
+    const result = await call("report hello 0");
+    expect(result.structuredOutput).toMatchObject({ exitCode: 127 });
+    expect(result.structuredOutput).not.toHaveProperty("executed");
+    expect(await rtk.calls()).toEqual([]);
   });
 });

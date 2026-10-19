@@ -17,6 +17,7 @@
   packages = [
     pkgs.git
     pkgs.python3
+    pkgs.rtk
   ];
 
   # `devenv up`: API server on 7338 plus Vite on 5173, which forwards /api to it.

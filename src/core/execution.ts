@@ -1,10 +1,11 @@
-import { spawn } from "node:child_process";
+import { execFile, spawn } from "node:child_process";
 import { mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, relative, isAbsolute, sep } from "node:path";
 import { StringDecoder } from "node:string_decoder";
 import { defineExtension, defineTool, type ConversationId } from "@earendil-works/pi-durable";
 import type { CodemodeNamespace } from "@earendil-works/pi-durable/codemode";
+import type { Context } from "@earendil-works/chord";
 import { Type } from "typebox";
 import { gnuTimeout } from "./timeout.ts";
 
@@ -45,9 +46,50 @@ export class WorkspaceLocks {
 
 export type ShellResult = { output: string; exitCode: number; truncated: boolean; timedOut: boolean };
 
+/** Marks a chat whose host commands run through rtk's compact equivalents; it adds no tools of its own. */
+export const COMPACT_EXTENSION = "pal.compact";
+export const compactOutput = defineExtension({ name: COMPACT_EXTENSION });
+
+function cleanEnv(home: string): NodeJS.ProcessEnv {
+  return {
+    PATH: process.env.PATH ?? "/run/current-system/sw/bin:/usr/bin:/bin",
+    HOME: home,
+    TMPDIR: home,
+    LANG: "C",
+    TERM: "dumb",
+  };
+}
+
 /** Explicit high-trust host execution. Cwd and a clean environment are not filesystem/network confinement. */
 export class HostCommands {
   readonly #running = new Map<AbortController, Promise<ShellResult>>();
+
+  /**
+   * rtk's own rewrite, as its agent hooks use it: the compact equivalent (exit 0 or 3), or undefined to run the
+   * command unchanged. It runs with an empty home, so the owner's rtk and agent configuration never apply, and a
+   * missing, slow or failing rtk only leaves the command as it was.
+   */
+  async rewrite(cwd: string, command: string): Promise<string | undefined> {
+    const home = await mkdtemp(join(tmpdir(), "pal-rtk-"));
+    try {
+      return await new Promise<string | undefined>((resolve) => {
+        execFile(
+          "rtk",
+          ["rewrite", command],
+          { cwd, env: cleanEnv(home), timeout: 5_000, maxBuffer: 64 * 1024 },
+          (error, stdout) => {
+            const code = error === null ? 0 : error.code;
+            const rewritten = stdout.trim();
+            const valid = rewritten !== "" && rewritten.length <= 16_384 && !rewritten.includes("\0");
+            resolve((code === 0 || code === 3) && valid && rewritten !== command ? rewritten : undefined);
+          },
+        );
+      });
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  }
+
   async run(
     cwd: string,
     command: string,
@@ -92,13 +134,7 @@ export class HostCommands {
             cwd,
             detached: true,
             stdio: ["ignore", "pipe", "pipe"],
-            env: {
-              PATH: process.env.PATH ?? "/run/current-system/sw/bin:/usr/bin:/bin",
-              HOME: home,
-              TMPDIR: home,
-              LANG: "C",
-              TERM: "dumb",
-            },
+            env: cleanEnv(home),
           },
         );
         let output = "";
@@ -174,6 +210,8 @@ export function shellTools(options: {
   root: (id: ConversationId) => Promise<string | undefined>;
   commands: HostCommands;
   locks: WorkspaceLocks;
+  /** Whether the conversation's frozen extension selection includes compact output. */
+  compact?: (id: ConversationId, context: Context) => Promise<boolean>;
 }) {
   return defineExtension({
     name: "pal.shell",
@@ -181,7 +219,7 @@ export function shellTools(options: {
       defineTool({
         name: "shell_run",
         description:
-          "Run a trusted host command in the project folder. Not sandboxed; clean environment, bounded output, 120-second maximum. Never access Pal secrets. An interrupted command must not be blindly retried.",
+          "Run a trusted host command in the project folder. Not sandboxed; clean environment, bounded output, 120-second maximum. Never access Pal secrets. An interrupted command must not be blindly retried. When `executed` is present, the command ran as that rtk equivalent and its output is condensed; if the result is unusable, run `rtk bypass <command>` for the unfiltered output.",
         parameters: Type.Object({
           command: Type.String({ minLength: 1, maxLength: 16_384 }),
           timeout: Type.Optional(Type.Number({ minimum: 0.01, maximum: 120 })),
@@ -194,26 +232,39 @@ export function shellTools(options: {
           exitCode: Type.Number(),
           truncated: Type.Boolean(),
           timedOut: Type.Boolean(),
+          executed: Type.Optional(Type.String()),
         }),
         execute: async (args, api, context) => {
           const configured = await options.root(api.conversationId);
           if (configured === undefined) throw new Error("this conversation has no active project");
           const cwd = await realpath(configured);
           return options.locks.run(cwd, async () => {
-            const shell = { callId: String(api.taskId), command: args.command, cwd, status: "started" };
+            // Decided before the durable intent, so the receipt names exactly what was dispatched.
+            const executed =
+              (await options.compact?.(api.conversationId, context)) === true
+                ? await options.commands.rewrite(cwd, args.command)
+                : undefined;
+            const shell = {
+              callId: String(api.taskId),
+              command: args.command,
+              ...(executed === undefined ? {} : { executed }),
+              cwd,
+              status: "started",
+            };
             await api.commit(
               (tx) => tx.appendEntry(api.conversationId, { kind: "pal.shell", data: { shell } }),
               context,
             );
             if ((await options.root(api.conversationId)) !== configured)
               throw new Error("the workspace was revoked before command dispatch");
-            const result = await options.commands.run(
+            const ran = await options.commands.run(
               cwd,
-              args.command,
+              executed ?? args.command,
               args.timeout ?? 120,
               context.abortSignal,
               (text) => api.output(text),
             );
+            const result = executed === undefined ? ran : { ...ran, executed };
             await api.commit(
               (tx) =>
                 tx.appendEntry(api.conversationId, {

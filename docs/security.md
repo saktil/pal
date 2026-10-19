@@ -45,6 +45,11 @@ grants, workspace and command-approval mode immediately before it runs.
 - **Read-only mode and worktrees are tool policies, not sandboxes.** They change which tools the agent has and
   which folder it works in. They do not confine shell commands, local programs or other processes.
 - **After a crash,** a command or write that may have started is reported as interrupted, never re-run on its own.
+- **Compact command output** (opt-in, per chat) runs a command's [rtk](https://github.com/rtk-ai/rtk) equivalent,
+  such as `rtk git status` for `git status`, so the model reads condensed output. The approval shows the command the
+  model asked for; the receipt shows the one that ran. The rewrite is rtk's own and is trusted like any program on
+  PATH, and it runs with an empty home, so your rtk and agent configuration do not apply. Without rtk, or without
+  an equivalent, the command runs unchanged.
 
 Treat workspace files, web pages and tool results as untrusted input. They can contain instructions meant for the
 model (prompt injection), and Pal does not grant them any authority. Keep Ask mode on for chats that read content

@@ -54,14 +54,25 @@ export const BUILTINS = [
     description:
       "Sandboxed project browser. Agent access still needs an explicit, expiring handoff and action approvals.",
   },
+  {
+    id: "compact",
+    version: 1,
+    name: "Compact command output",
+    native: "pal.compact",
+    panels: [],
+    // Off until chosen: it changes which command runs, not only what the model reads.
+    optIn: true,
+    description:
+      "Agent commands with an rtk equivalent run as it, so the model reads condensed output. Needs rtk on PATH; approvals show the original command and receipts the one that ran.",
+  },
 ] as const;
 export type BuiltinId = (typeof BUILTINS)[number]["id"];
 export type PanelId = (typeof BUILTINS)[number]["panels"][number];
 const Choice = Type.Object(
-  { id: Type.Enum(["files", "shell", "memory", "browser"]), version: Type.Literal(1) },
+  { id: Type.Enum(["files", "shell", "memory", "browser", "compact"]), version: Type.Literal(1) },
   { additionalProperties: false },
 );
-const Choices = Type.Array(Choice, { maxItems: 4, uniqueItems: true });
+const Choices = Type.Array(Choice, { maxItems: BUILTINS.length, uniqueItems: true });
 const Scope = Type.Object({ selected: Choices }, { additionalProperties: false });
 const RequestPin = Type.Object(
   { task: Type.Integer({ minimum: 1 }), release: Type.String({ maxLength: 64 }), selected: Choices },
@@ -99,7 +110,8 @@ export function extensionScope(intent: string): string | undefined {
   return body.extensions;
 }
 export function selectedExtensions(scope: string | undefined): ExtensionScope["selected"] {
-  if (scope === undefined) return BUILTINS.map(({ id, version }) => ({ id, version }));
+  if (scope === undefined)
+    return BUILTINS.flatMap((item) => ("optIn" in item ? [] : [{ id: item.id, version: item.version }]));
   let value: unknown;
   try {
     value = JSON.parse(scope);

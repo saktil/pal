@@ -38,6 +38,8 @@ export type Attachment = { id: string; name: string; size: number; mediaType: st
 export type ShellReceipt = {
   callId: string;
   command: string;
+  /** The rtk equivalent that ran instead, when the chat has compact output. */
+  executed?: string;
   cwd: string;
   status: string;
   output?: string;
