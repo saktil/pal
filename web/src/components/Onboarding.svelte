@@ -98,15 +98,16 @@
   }
 </script>
 
+<header class="brand">
+  <PalMark size={22} cutout="var(--bg1)" /><span class="wordmark">pal</span>
+</header>
 <section aria-label="Set up Pal">
-  <div class="intro">
-    <h1><PalMark size={22} cutout="var(--bg1)" />Welcome to Pal</h1>
-    <ol aria-label="Setup steps">
-      {#each STEPS as label, index (label)}
-        <li aria-current={index === at ? "step" : undefined}>{label}</li>
-      {/each}
-    </ol>
-  </div>
+  <h1 class="sr">Welcome to Pal</h1>
+  <ol aria-label="Setup steps">
+    {#each STEPS as label, index (label)}
+      <li aria-current={index === at ? "step" : undefined}>{label}</li>
+    {/each}
+  </ol>
   <div class="content" bind:this={content}>
     {#if error !== undefined}
       <div class="callout er" role="alert">Couldn't load setup: {error}</div>
@@ -124,17 +125,19 @@
             <input type="radio" name="provider" value={entry.id} bind:group={chosen} />
             <span class="what">
               <span class="line">
-                <strong>{entry.name}</strong><span class="pill">{entry.method}</span>
-                {#if entry.status !== undefined}<span class="pill" class:ok={entry.status !== "Ready · off"}
+                <strong>{entry.name}</strong><span class="method">{entry.method}</span>
+                {#if entry.status !== undefined}<span class="status" class:ok={entry.status !== "Ready · off"}
                     >{entry.status}</span
                   >{/if}
               </span>
-              <span class="setd">{entry.billing}</span>
+              <span class="billing">{entry.billing}</span>
             </span>
+            <span class="dot" aria-hidden="true"></span>
           </label>
         {/each}
       </div>
       <div class="nav">
+        <span class="later">You can add more later in Settings.</span>
         <button class="b p" disabled={option === undefined} onclick={() => go("connect")}>Continue</button>
       </div>
     {:else if step === "connect" && option !== undefined}
@@ -194,129 +197,178 @@
 </section>
 
 <style>
+  .brand {
+    position: absolute;
+    top: 0;
+    left: 0;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding: 20px clamp(16px, 4vw, 32px);
+  }
+  .wordmark {
+    font-family: var(--display);
+    font-size: 19px;
+    font-weight: 700;
+    letter-spacing: -0.04em;
+  }
   section {
     height: 100dvh;
     display: flex;
     flex-direction: column;
+    gap: 18px;
     overflow: auto;
+    padding: 100px max(16px, calc((100% - 568px) / 2)) 48px;
     background: var(--bg1);
   }
-  .intro,
-  .content {
-    width: 100%;
-    max-width: 800px;
-    margin: 0 auto;
-    padding: 24px 20px;
+  ol {
+    list-style: none;
+    display: grid;
+    grid-template-columns: repeat(4, minmax(0, 1fr));
+    gap: 6px;
+    margin: 0;
+    padding: 0;
+  }
+  li {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+    font-size: 12px;
+    color: var(--tx3);
+  }
+  li::before {
+    content: "";
+    height: 3px;
+    border-radius: 2px;
+    background: var(--line2);
+  }
+  [aria-current="step"] {
+    color: var(--tx);
+  }
+  [aria-current="step"]::before {
+    background: var(--primary);
   }
   .content {
     display: flex;
     flex-direction: column;
-    gap: 14px;
-    padding-top: 0;
-    padding-bottom: 48px;
-  }
-  h1 {
-    display: flex;
-    align-items: center;
-    gap: 12px;
-    font-size: 28px;
-    font-weight: 750;
-    letter-spacing: -0.025em;
-    margin: 12px 0 16px;
+    gap: 28px;
   }
   .content :global(h2:focus) {
     outline: none;
   }
-  ol {
-    list-style: none;
-    display: flex;
-    flex-wrap: wrap;
-    gap: 8px;
-    margin: 0;
-    padding: 0;
-    counter-reset: step;
-  }
-  li {
-    counter-increment: step;
-    display: flex;
-    align-items: center;
-    gap: 8px;
-    padding: 3px 12px 3px 3px;
-    border: 1px solid var(--line2);
-    border-radius: 999px;
-    color: var(--tx3);
-    font-size: 13px;
-    font-weight: 550;
-  }
-  li::before {
-    content: counter(step);
-    display: grid;
-    place-items: center;
-    width: 22px;
-    height: 22px;
-    border-radius: 50%;
-    background: var(--bg3);
-    font-size: 12px;
-    font-weight: 700;
-  }
-  [aria-current="step"] {
-    color: var(--tx);
-    border-color: var(--acln);
-    background: var(--acbg);
-  }
-  [aria-current="step"]::before {
-    background: var(--primary);
-    color: var(--on-primary);
-  }
   hgroup {
     display: flex;
     flex-direction: column;
-    gap: 6px;
+    gap: 10px;
     margin: 0;
+  }
+  hgroup :global(.h2) {
+    font-family: var(--display);
+    font-size: 30px;
+    line-height: 1.1;
+    font-weight: 650;
+    letter-spacing: -0.025em;
+  }
+  hgroup :global(.sub) {
+    font-size: 15px;
+    color: var(--tx2);
   }
   .choices {
     display: flex;
     flex-direction: column;
-    gap: 8px;
-  }
-  .choice {
-    display: flex;
-    align-items: flex-start;
-    gap: 12px;
-    padding: 12px 14px;
     border: 1px solid var(--line);
-    border-radius: 12px;
+    border-radius: 14px;
+    background: var(--side);
+    overflow: hidden;
+  }
+  /* The native radio covers its row invisibly, so pointer, keyboard and assistive tech all reach it. */
+  .choice {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 14px 16px;
     cursor: pointer;
-    transition:
-      border-color var(--fast) var(--ease),
-      background-color var(--fast) var(--ease);
+    transition: background-color var(--fast) var(--ease);
   }
-  .choice:hover {
-    border-color: var(--line2);
-  }
-  .choice:has(:checked) {
-    border-color: var(--acln);
-    background: var(--acbg);
+  .choice + .choice {
+    border-top: 1px solid var(--line);
   }
   .choice input {
-    flex: 0 0 auto;
-    margin-top: 2px;
+    position: absolute;
+    inset: 0;
+    width: 100%;
+    height: 100%;
+    margin: 0;
+    opacity: 0;
+    cursor: pointer;
+  }
+  .choice:hover {
+    background: var(--bg2);
+  }
+  .choice:has(:checked) {
+    background: color-mix(in srgb, var(--ac) 4%, var(--bg2));
+  }
+  .choice:has(:focus-visible) {
+    outline: 2px solid var(--focus);
+    outline-offset: -2px;
   }
   .what {
+    flex: 1;
+    min-width: 0;
     display: flex;
     flex-direction: column;
     gap: 2px;
-    min-width: 0;
   }
   .line {
     display: flex;
-    align-items: center;
+    align-items: baseline;
     gap: 8px;
     flex-wrap: wrap;
   }
+  .line strong {
+    font-size: 14.5px;
+    font-weight: 550;
+  }
+  .method,
+  .status {
+    font-size: 12px;
+    color: var(--tx3);
+  }
+  .status.ok {
+    color: var(--ok);
+  }
+  .billing {
+    font-size: 13px;
+    color: var(--tx2);
+  }
+  .dot {
+    width: 18px;
+    height: 18px;
+    flex: none;
+    border: 1.5px solid var(--line3);
+    border-radius: 50%;
+  }
+  .choice:has(:checked) .dot {
+    border: 5px solid var(--primary);
+    background: var(--tx);
+  }
   .nav {
     display: flex;
+    align-items: center;
+    justify-content: flex-end;
     gap: 8px;
     flex-wrap: wrap;
+  }
+  .later {
+    flex: 1;
+    font-size: 13.5px;
+    color: var(--tx3);
+  }
+  .nav .b.p {
+    height: 40px;
+    padding: 0 20px;
+    border-radius: 10px;
+    font-size: 15px;
   }
 </style>
