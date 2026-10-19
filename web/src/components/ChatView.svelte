@@ -454,6 +454,7 @@
       edits > 0 ? count(edits, "file edit") : "",
       tools > 0 ? `used ${count(tools, "tool")}` : "",
     ].filter((part) => part !== "");
+    if (steps.some((step) => step.result?.isError)) did.push("with errors");
     const ran = steps.length === 1 ? "Ran a script" : `Ran ${steps.length} scripts`;
     return did.length > 0 ? `${ran} · ${did.join(", ")}` : ran;
   }
@@ -608,10 +609,7 @@
                   {#if item.live && item.steps.some((step) => step.result === undefined)}
                     <span class="ring spin" aria-hidden="true"></span>
                   {/if}
-                  <span
-                    >{summary(item.steps)}{#if item.steps.some((step) => step.result?.isError)}
-                      · with errors{/if}</span
-                  >
+                  <span>{summary(item.steps)}</span>
                   <Icon name={open ? "chevD" : "chevR"} size={13} />
                 </button>
                 {#if open}
