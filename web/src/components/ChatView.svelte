@@ -120,6 +120,8 @@
    * traps focus, closes on Escape and gives focus back to its opener. */
   let tools = $state(false);
   let sheet: HTMLDialogElement | undefined = $state();
+  /** Whether Escape found a popover open in the sheet; it closes that popover before the dialog sees `cancel`. */
+  let escaping = false;
   export function openTools() {
     tools = true;
   }
@@ -818,9 +820,12 @@
     bind:this={sheet}
     {@attach (node: HTMLDialogElement) => node.showModal()}
     onclose={() => (tools = false)}
+    onkeydowncapture={(event) => {
+      if (event.key === "Escape") escaping = sheet?.querySelector(".pop") != null;
+    }}
     oncancel={(event) => {
-      // An open popover in the sheet takes Escape first.
-      if (sheet?.querySelector(".pop")) event.preventDefault();
+      if (escaping) event.preventDefault();
+      escaping = false;
     }}
     onclick={(event) => {
       if (event.target === sheet) sheet.close();
