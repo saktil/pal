@@ -275,7 +275,7 @@
     </ul>
   {/if}
   <details class="details">
-    <summary
+    <summary title={root}
       ><span class="mono"
         >{changes === undefined
           ? "Baseline"
@@ -283,12 +283,12 @@
             ? "Baseline unavailable"
             : `Baseline ${changes.base?.slice(0, 12) ?? "empty tree"}`}</span
       >
-      · Details<Icon name="chevR" size={12} /></summary
+      · {workspace?.mode ?? (project.mode === "managed" ? "managed" : "host folder")} · Details<Icon
+        name="chevR"
+        size={12}
+      /></summary
     >
-    <p>
-      {workspace?.mode ?? (project.mode === "managed" ? "Managed" : "Host folder")} ·
-      <span class="mono" title={root}>{root}</span>
-    </p>
+    <p class="mono">{root}</p>
     {#if changes !== undefined}<p>{changes.note}</p>{/if}
     <label
       ><input

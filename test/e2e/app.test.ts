@@ -1668,10 +1668,10 @@ describe("Pal in a browser", () => {
     expect(fixture.apiRequests.length).toBe(modelRequests);
     await page.reload();
     await page.getByRole("button", { name: "Changes", exact: true }).click();
+    await details.click();
     expect(await include.isChecked()).toBe(false);
     expect(await panel.getByRole("button", { name: /local.secret/ }).count()).toBe(0);
     expect(await panel.getByText("Review ignored fixture", { exact: true }).count()).toBe(0);
-    await details.click();
     await include.check();
     await panel.getByRole("button", { name: /local.secret/ }).click();
     await panel.getByRole("button", { name: "Discard…", exact: true }).click();
