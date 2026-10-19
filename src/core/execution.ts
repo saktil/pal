@@ -3,8 +3,9 @@ import { mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, relative, isAbsolute, sep } from "node:path";
 import { StringDecoder } from "node:string_decoder";
-import { defineExtension, defineTool, type ConversationId } from "@earendil-works/pi-durable";
+import { defineExtension, defineTool, type ConversationId, type TaskId } from "@earendil-works/pi-durable";
 import type { CodemodeNamespace } from "@earendil-works/pi-durable/codemode";
+import type { Context } from "@earendil-works/chord";
 import { Type } from "typebox";
 import { gnuTimeout } from "./timeout.ts";
 
@@ -45,9 +46,131 @@ export class WorkspaceLocks {
 
 export type ShellResult = { output: string; exitCode: number; truncated: boolean; timedOut: boolean };
 
+/** Marks a chat whose host commands run through rtk's compact equivalents; it adds no tools of its own. */
+export const COMPACT_EXTENSION = "pal.compact";
+export const compactOutput = defineExtension({ name: COMPACT_EXTENSION });
+
+function cleanEnv(home: string): NodeJS.ProcessEnv {
+  return {
+    PATH: process.env.PATH ?? "/run/current-system/sw/bin:/usr/bin:/bin",
+    HOME: home,
+    TMPDIR: home,
+    LANG: "C",
+    TERM: "dumb",
+  };
+}
+
+/**
+ * Whether all of a command's output reaches the model, which is the only output rtk may condense. A pipe, redirect,
+ * here-document, command substitution or background job outside quotes sends output to a file or another program,
+ * where a summary would silently change the result. Unsure means no.
+ */
+export function outputReachesModel(command: string): boolean {
+  let quote: "'" | '"' | undefined;
+  for (let i = 0; i < command.length; i++) {
+    const c = command[i];
+    if (quote === "'") {
+      if (c === "'") quote = undefined;
+      continue;
+    }
+    if (c === "\\") {
+      i++;
+      continue;
+    }
+    if (c === "`" || (c === "$" && command[i + 1] === "(")) return false;
+    if (quote === '"') {
+      if (c === '"') quote = undefined;
+    } else if (c === "'" || c === '"') quote = c;
+    else if (c === "|" || c === ">" || c === "<" || c === "\n") return false;
+    else if (c === "&") {
+      if (command[i + 1] !== "&") return false;
+      i++;
+    }
+  }
+  return quote === undefined;
+}
+
 /** Explicit high-trust host execution. Cwd and a clean environment are not filesystem/network confinement. */
 export class HostCommands {
   readonly #running = new Map<AbortController, Promise<ShellResult>>();
+  readonly #rewrites = new Map<AbortController, Promise<string | undefined>>();
+  readonly #rewriteMs: number;
+  constructor(options: { rewriteMs?: number } = {}) {
+    this.#rewriteMs = options.rewriteMs ?? 5_000;
+  }
+
+  /**
+   * rtk's own rewrite, as its agent hooks use it: the compact equivalent (exit 0 or 3), or undefined to run the
+   * command unchanged. It runs with an empty home, so the owner's rtk and agent configuration never apply, and a
+   * missing, slow or failing rtk only leaves the command as it was. Its process group is killed at the deadline,
+   * on Stop and on close, which also wait for it.
+   */
+  async rewrite(cwd: string, command: string, signal?: AbortSignal): Promise<string | undefined> {
+    if (!outputReachesModel(command)) return undefined;
+    const controller = new AbortController();
+    const active = signal === undefined ? controller.signal : AbortSignal.any([signal, controller.signal]);
+    const job = this.#rewrite(cwd, command, active);
+    this.#rewrites.set(controller, job);
+    try {
+      return await job;
+    } finally {
+      this.#rewrites.delete(controller);
+    }
+  }
+  async #rewrite(cwd: string, command: string, signal: AbortSignal): Promise<string | undefined> {
+    const stopped = () => new Error("host command stopped before dispatch; nothing was run");
+    if (signal.aborted) throw stopped();
+    const home = await mkdtemp(join(tmpdir(), "pal-rtk-"));
+    try {
+      const result = await new Promise<{ code: number | null; stdout: string } | undefined>((resolve) => {
+        const child = spawn("rtk", ["rewrite", command], {
+          cwd,
+          detached: true,
+          stdio: ["ignore", "pipe", "ignore"],
+          env: cleanEnv(home),
+        });
+        let stdout = "";
+        const kill = () => {
+          if (child.pid !== undefined) {
+            try {
+              process.kill(-child.pid, "SIGKILL");
+            } catch {
+              /* Already exited. */
+            }
+          }
+        };
+        const timer = setTimeout(kill, this.#rewriteMs);
+        const cleanup = () => {
+          clearTimeout(timer);
+          signal.removeEventListener("abort", kill);
+          kill();
+        };
+        child.stdout.on("data", (chunk: Buffer) => {
+          stdout += chunk.toString("utf8");
+          if (stdout.length > 64 * 1024) kill();
+        });
+        child.once("error", () => {
+          cleanup();
+          resolve(undefined);
+        });
+        child.once("exit", kill);
+        child.once("close", (code) => {
+          cleanup();
+          resolve({ code, stdout });
+        });
+        signal.addEventListener("abort", kill, { once: true });
+        if (signal.aborted) kill();
+      });
+      if (signal.aborted) throw stopped();
+      if (result === undefined || (result.code !== 0 && result.code !== 3)) return undefined;
+      const rewritten = result.stdout.trim();
+      const valid = rewritten !== "" && rewritten.length <= 16_384 && !rewritten.includes("\0");
+      return valid && rewritten !== command ? rewritten : undefined;
+    } finally {
+      await rm(home, { recursive: true, force: true });
+    }
+  }
+
   async run(
     cwd: string,
     command: string,
@@ -69,8 +192,8 @@ export class HostCommands {
     }
   }
   async close(): Promise<void> {
-    for (const controller of this.#running.keys()) controller.abort();
-    await Promise.allSettled(this.#running.values());
+    for (const controller of [...this.#running.keys(), ...this.#rewrites.keys()]) controller.abort();
+    await Promise.allSettled([...this.#running.values(), ...this.#rewrites.values()]);
   }
   async #execute(
     cwd: string,
@@ -92,13 +215,7 @@ export class HostCommands {
             cwd,
             detached: true,
             stdio: ["ignore", "pipe", "pipe"],
-            env: {
-              PATH: process.env.PATH ?? "/run/current-system/sw/bin:/usr/bin:/bin",
-              HOME: home,
-              TMPDIR: home,
-              LANG: "C",
-              TERM: "dumb",
-            },
+            env: cleanEnv(home),
           },
         );
         let output = "";
@@ -174,6 +291,11 @@ export function shellTools(options: {
   root: (id: ConversationId) => Promise<string | undefined>;
   commands: HostCommands;
   locks: WorkspaceLocks;
+  /**
+   * Whether this call may run its rtk equivalent: the conversation selected compact output and no owner approved
+   * the call, since an approval covers exactly the command that was shown.
+   */
+  compact?: (id: ConversationId, task: TaskId, context: Context) => Promise<boolean>;
 }) {
   return defineExtension({
     name: "pal.shell",
@@ -181,7 +303,7 @@ export function shellTools(options: {
       defineTool({
         name: "shell_run",
         description:
-          "Run a trusted host command in the project folder. Not sandboxed; clean environment, bounded output, 120-second maximum. Never access Pal secrets. An interrupted command must not be blindly retried.",
+          "Run a trusted host command in the project folder. Not sandboxed; clean environment, bounded output, 120-second maximum. Never access Pal secrets. An interrupted command must not be blindly retried. When `executed` is present, the command ran as that rtk equivalent and its output is condensed; if the result is unusable, run `rtk bypass <command>` for the unfiltered output. Output sent to files or other programs is never condensed.",
         parameters: Type.Object({
           command: Type.String({ minLength: 1, maxLength: 16_384 }),
           timeout: Type.Optional(Type.Number({ minimum: 0.01, maximum: 120 })),
@@ -194,26 +316,39 @@ export function shellTools(options: {
           exitCode: Type.Number(),
           truncated: Type.Boolean(),
           timedOut: Type.Boolean(),
+          executed: Type.Optional(Type.String()),
         }),
         execute: async (args, api, context) => {
           const configured = await options.root(api.conversationId);
           if (configured === undefined) throw new Error("this conversation has no active project");
           const cwd = await realpath(configured);
           return options.locks.run(cwd, async () => {
-            const shell = { callId: String(api.taskId), command: args.command, cwd, status: "started" };
+            // Decided before the durable intent, so the receipt names exactly what was dispatched.
+            const executed =
+              (await options.compact?.(api.conversationId, api.taskId, context)) === true
+                ? await options.commands.rewrite(cwd, args.command, context.abortSignal)
+                : undefined;
+            const shell = {
+              callId: String(api.taskId),
+              command: args.command,
+              ...(executed === undefined ? {} : { executed }),
+              cwd,
+              status: "started",
+            };
             await api.commit(
               (tx) => tx.appendEntry(api.conversationId, { kind: "pal.shell", data: { shell } }),
               context,
             );
             if ((await options.root(api.conversationId)) !== configured)
               throw new Error("the workspace was revoked before command dispatch");
-            const result = await options.commands.run(
+            const ran = await options.commands.run(
               cwd,
-              args.command,
+              executed ?? args.command,
               args.timeout ?? 120,
               context.abortSignal,
               (text) => api.output(text),
             );
+            const result = executed === undefined ? ran : { ...ran, executed };
             await api.commit(
               (tx) =>
                 tx.appendEntry(api.conversationId, {

@@ -56,7 +56,10 @@
           >
         </div>
         <p>{item.description}</p>
-        <div class="fine">Contributes: {item.panels.join(", ")} · <span class="mono">{item.native}</span></div>
+        <div class="fine">
+          {#if item.panels.length > 0}Contributes: {item.panels.join(", ")} ·
+          {/if}<span class="mono">{item.native}</span>
+        </div>
       </div>
       <label class="choice">
         <span>New chats</span>

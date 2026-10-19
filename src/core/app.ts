@@ -27,7 +27,14 @@ import { Changes } from "./changes.ts";
 import { FILES_NAMESPACE, fileTools, projectFiles } from "./files.ts";
 import { FolderGrants } from "./folders.ts";
 import { MEMORY_NAMESPACE, ProjectMemory } from "./memory.ts";
-import { HostCommands, SHELL_NAMESPACE, shellTools, WorkspaceLocks } from "./execution.ts";
+import {
+  COMPACT_EXTENSION,
+  compactOutput,
+  HostCommands,
+  SHELL_NAMESPACE,
+  shellTools,
+  WorkspaceLocks,
+} from "./execution.ts";
 import { Owner } from "./owner.ts";
 import { type Project, Projects } from "./projects.ts";
 import { ProjectSearch } from "./search.ts";
@@ -216,7 +223,20 @@ export async function openPal(options: PalOptions, context: Context): Promise<Pa
         },
       }),
     );
-    registry.install(shellTools({ root: (conversation) => workspaceRoot(conversation, true), commands, locks }));
+    registry.install(
+      shellTools({
+        root: (conversation) => workspaceRoot(conversation, true),
+        commands,
+        locks,
+        // Only calls that ran without an approval: Ask mode binds the owner's decision to the shown command.
+        compact: async (conversation, task, ctx) => {
+          if (approvals === undefined || (await approvals.asked(task))) return false;
+          const agent = await (await harness?.conversation(conversation, ctx))?.agent(ctx);
+          return agent?.extensions.some((extension) => extension.name === COMPACT_EXTENSION) === true;
+        },
+      }),
+    );
+    registry.install(compactOutput);
     registry.install(browserTools(() => browsers));
     const commandApprovals = new CommandApprovals({
       database,

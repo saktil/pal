@@ -40,6 +40,9 @@ silently repeating it.
 - **Browser** (Linux). A per-project Chromium with its own profile, running in a network-less sandbox whose only
   egress is a broker that admits public addresses. You drive it from the panel. The agent may use it only after
   you hand it control.
+- **Compact command output** (opt-in). Commands with an [rtk](https://github.com/rtk-ai/rtk) equivalent, such as
+  `git status` or `ls`, run as it in Full access, so long outputs cost the model fewer tokens. Approved commands,
+  pipes and redirects always run unchanged, and receipts show what actually ran.
 - **Extensions and releases.** Built-in tools and panels can be toggled for new chats and are pinned per chat. On
   Linux with Nix, `pal check-release` and `pal supervise` test a candidate build and activate it only after your
   explicit approval, with health checks and rollback.

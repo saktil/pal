@@ -205,6 +205,11 @@ export class CommandApprovals {
     this.#changed(chatId);
   }
 
+  /** Whether this tool call went to the owner, so it must run exactly as shown, whatever was decided. */
+  async asked(task: TaskId): Promise<boolean> {
+    return (await this.#database.get("SELECT 1 FROM pal_command_approvals WHERE task_id = ?", task)) !== undefined;
+  }
+
   /** Called on every approval or mode change of the chat until the returned function is called. */
   watch(chatId: string, listener: () => void): () => void {
     const listeners = this.#listeners.get(chatId) ?? new Set();

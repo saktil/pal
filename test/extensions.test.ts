@@ -12,6 +12,7 @@ import { openPal, type Pal } from "../src/core/app.ts";
 import { ChatService, type Chat } from "../src/core/chats.ts";
 import { BUILTINS, BuiltinExtensions, releaseIdentity } from "../src/core/extensions.ts";
 import { startServer } from "../src/core/server.ts";
+import { fakeRtk } from "./fixtures/fake-rtk.ts";
 
 const cleanups: (() => unknown)[] = [];
 afterEach(async () => {
@@ -55,7 +56,10 @@ describe("versioned built-in contributions", () => {
   it("persists exact new-chat selections and refuses unsupported, duplicate or stale choices", async () => {
     const f = await fixture();
     const before = await f.pal.extensions.view();
-    expect(before.selected).toEqual(BUILTINS.map(({ id, version }) => ({ id, version })));
+    expect(before.selected).toEqual(
+      BUILTINS.flatMap((item) => ("optIn" in item ? [] : [{ id: item.id, version: item.version }])),
+    );
+    expect(before.selected.map((item) => item.id)).not.toContain("compact");
     for (const selected of [
       [{ id: "files", version: 2 }],
       [{ id: "downloaded", version: 1 }],
@@ -141,6 +145,49 @@ describe("versioned built-in contributions", () => {
     expect(pins).toEqual(
       expect.arrayContaining([expect.objectContaining({ release: current.release, selected: current.selected })]),
     );
+  });
+
+  it("runs a chat's host commands through rtk only when compact output was selected for it", async () => {
+    const rtk = await fakeRtk();
+    cleanups.push(rtk.cleanup);
+    const f = await fixture();
+    const shell = async (id: string) => {
+      const chat = await f.pal.chats.createChat(id, { projectId: f.project.id }, context);
+      await f.pal.approvals.setMode(chat.id, "full");
+      const conversation = await run(f.pal, chat, 'return await tools.shell_run({command:"report hello 0"});');
+      await conversation.waitForIdle(context);
+      return JSON.stringify((await conversation.context(context)).messages);
+    };
+    expect(await shell("compact-default")).not.toContain("compact:hello");
+    expect(await rtk.calls()).toEqual([]);
+    const view = await f.pal.extensions.view();
+    await f.pal.extensions.select({ selected: [...view.selected, { id: "compact", version: 1 }], digest: view.digest });
+    const compacted = await shell("compact-selected");
+    expect(compacted).toContain("compact:hello");
+    expect(compacted).toContain("rtk report hello 0");
+  });
+
+  it("runs exactly the command the owner approved, never its rtk equivalent", async () => {
+    const rtk = await fakeRtk();
+    cleanups.push(rtk.cleanup);
+    const f = await fixture();
+    const view = await f.pal.extensions.view();
+    await f.pal.extensions.select({ selected: [...view.selected, { id: "compact", version: 1 }], digest: view.digest });
+    const chat = await f.pal.chats.createChat("compact-ask", { projectId: f.project.id }, context);
+    const conversation = await run(f.pal, chat, 'return await tools.shell_run({command:"report hello 0"});');
+    let pending;
+    for (let i = 0; i < 400 && pending === undefined; i++) {
+      pending = (await f.pal.approvals.view(chat.id)).approvals.find((item) => item.state === "pending");
+      if (pending === undefined) await sleep(10);
+    }
+    if (pending === undefined) throw new Error("no native approval");
+    expect(pending.command).toBe("report hello 0");
+    await f.pal.approvals.decide(chat.id, pending.id, "approve", pending.digest);
+    await conversation.waitForIdle(context);
+    const messages = JSON.stringify((await conversation.context(context)).messages);
+    expect(messages).not.toContain("compact:hello");
+    expect(messages).not.toContain("rtk report");
+    expect(await rtk.calls()).toEqual([]);
   });
 
   it("blocks a tool with a different native implementation memo before its external effect", async () => {

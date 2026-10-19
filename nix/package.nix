@@ -9,6 +9,7 @@
   bash,
   coreutils,
   git,
+  rtk,
   autoPatchelfHook,
   node-gyp,
   python3,
@@ -145,6 +146,8 @@ stdenv.mkDerivation (finalAttrs: {
           coreutils
           git
           nodejs_24
+          # Compact command output rewrites commands to rtk equivalents, which run by name.
+          rtk
         ]
       } \
       --set PAL_BASH ${lib.getExe bash} --set PAL_TIMEOUT ${coreutils}/bin/timeout \
