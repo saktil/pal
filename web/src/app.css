@@ -383,12 +383,6 @@ svg.i {
   background: var(--bg3);
   color: var(--tx);
 }
-.chatrow {
-  flex-direction: column;
-  align-items: flex-start;
-  gap: 0;
-  padding: 6px 9px 6px 30px;
-}
 .cmeta {
   font-size: 12px;
   color: var(--tx3);
@@ -399,13 +393,6 @@ svg.i {
 }
 .cmeta.wa {
   color: var(--wa);
-}
-.lbl {
-  font-size: 12px;
-  font-weight: 650;
-  letter-spacing: 0.01em;
-  color: var(--tx3);
-  padding: 12px 9px 4px;
 }
 .pill {
   display: inline-flex;

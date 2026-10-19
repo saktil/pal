@@ -27,6 +27,12 @@
   /** The route the drawer was opened on: navigating anywhere closes it. */
   let drawerRoute: Route | undefined = $state();
   const drawer = $derived(drawerRoute !== undefined && drawerRoute === app.route);
+  /** On desktop the sidebar sits beside the chat unless the owner hid it; saved in this browser. */
+  let sidebarShown = $state(readSetting("pal.sidebar") !== "hidden");
+  function showSidebar(shown: boolean) {
+    sidebarShown = shown;
+    saveSetting("pal.sidebar", shown ? "shown" : "hidden");
+  }
   let creating = $state(false);
   let renaming: ChatSummary | undefined = $state.raw();
   let error: string | undefined = $state();
@@ -115,6 +121,12 @@
     panelView = view;
   }
   const size = $derived(viewport());
+  const beside = $derived(size === "desktop" && sidebarShown);
+  /** Where the sidebar is not beside the chat, a header button brings it back: as a drawer, or beside again. */
+  function openSidebar() {
+    if (size === "desktop") showSidebar(true);
+    else drawerRoute = app.route;
+  }
   const docked = $derived(panel && panelView === "Terminal" && size === "desktop");
   const chatId = $derived(app.route.view === "chat" ? app.route.chatId : undefined);
   const located = $derived.by(() => {
@@ -200,18 +212,20 @@
       </header>
     {/if}
     <div class="body">
-      {#if size === "desktop" || drawer}
+      {#if beside || (size !== "desktop" && drawer)}
         <div
           class="side"
           class:drawer={size !== "desktop"}
-          style:width={size === "desktop" ? "264px" : size === "phone" ? "86%" : "300px"}
+          style:width={size === "desktop" ? "260px" : size === "phone" ? "86%" : "300px"}
         >
           <Sidebar
             currentChatId={chatId}
             onNewChat={newChat}
             onCreateProject={() => (creating = true)}
             onRenameChat={(chat) => (renaming = { ...chat })}
-            {...size === "desktop" ? {} : { onClose: () => (drawerRoute = undefined) }}
+            {...size === "desktop"
+              ? { onCollapse: () => showSidebar(false) }
+              : { onClose: () => (drawerRoute = undefined) }}
           />
         </div>
       {/if}
@@ -230,6 +244,11 @@
                 class="b i q"
                 aria-label="Projects and chats"
                 onclick={() => (drawerRoute = app.route)}><Icon name="menu" /></button
+              >{:else if size === "desktop" && !sidebarShown}<button
+                class="b i q tip"
+                aria-label="Show sidebar"
+                data-tip="Show sidebar"
+                onclick={openSidebar}><Icon name="sidebar" /></button
               >{/if}
             {#if size !== "phone"}
               <div class="titles">
@@ -383,8 +402,8 @@
           {@const ready = app.projects.find((project) => project.state === "ready")}
           <div class="center">
             <div class="intro">
-              {#if size === "tablet"}
-                <button class="b q" onclick={() => (drawerRoute = app.route)}><Icon name="menu" />Projects</button>
+              {#if size === "tablet" || (size === "desktop" && !sidebarShown)}
+                <button class="b q" onclick={openSidebar}><Icon name="menu" />Projects</button>
               {/if}
               <h1>{chatId === undefined ? "Pick a chat" : "Chat not found"}</h1>
               <p>Choose a chat in a project, or start a new one.</p>
