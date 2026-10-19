@@ -1,7 +1,7 @@
 <script lang="ts">
   import { api, type ChatSummary } from "../lib/api.ts";
-  import mark from "../assets/pal-mark.png";
   import Icon from "../lib/Icon.svelte";
+  import PalMark from "../lib/PalMark.svelte";
   import { app, navigate, refreshProjects } from "../lib/state.svelte.ts";
   import ConfirmRemoval from "./ConfirmRemoval.svelte";
 
@@ -49,7 +49,7 @@
 
 <aside aria-label="Projects and chats">
   <div class="brand">
-    <img class="mark" src={mark} alt="" width="28" height="28" />
+    <PalMark size={22} cutout="var(--side)" />
     <span class="wordmark">pal</span>
     {#if onClose !== undefined}
       <button class="b i q" aria-label="Close projects" onclick={onClose}><Icon name="x" /></button>
@@ -163,14 +163,12 @@
     min-height: 56px;
     padding: 10px 10px 4px 16px;
   }
-  .mark {
-    margin-left: -4px;
-  }
   .wordmark {
     flex: 1;
-    font-size: 21px;
-    font-weight: 750;
-    letter-spacing: -0.03em;
+    font-family: var(--display);
+    font-size: 19px;
+    font-weight: 700;
+    letter-spacing: -0.04em;
     line-height: 1;
   }
   .actions {

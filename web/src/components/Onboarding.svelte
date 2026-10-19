@@ -1,8 +1,8 @@
 <script lang="ts">
   import { onMount, tick } from "svelte";
-  import mark from "../assets/pal-mark.png";
   import { api, ApiError } from "../lib/api.ts";
   import Icon from "../lib/Icon.svelte";
+  import PalMark from "../lib/PalMark.svelte";
   import {
     app,
     defaultReady,
@@ -100,7 +100,7 @@
 
 <section aria-label="Set up Pal">
   <div class="intro">
-    <h1><img src={mark} alt="" width="40" height="40" />Welcome to Pal</h1>
+    <h1><PalMark size={22} cutout="var(--bg1)" />Welcome to Pal</h1>
     <ol aria-label="Setup steps">
       {#each STEPS as label, index (label)}
         <li aria-current={index === at ? "step" : undefined}>{label}</li>

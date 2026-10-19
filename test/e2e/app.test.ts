@@ -182,7 +182,7 @@ describe("Pal in a browser", () => {
     await shoot("chat-1440");
   });
 
-  it("serves the mascot as small favicons and an in-app mark under the page's own CSP", async () => {
+  it("serves the mark as small favicons and an inline in-app mark under the page's own CSP", async () => {
     const icons = await page.evaluate(() =>
       [...document.querySelectorAll<HTMLLinkElement>('link[rel="icon"], link[rel="apple-touch-icon"]')].map(
         (link) => link.href,
@@ -199,9 +199,9 @@ describe("Pal in a browser", () => {
       // Deliberate small derivatives, not the full-size source artwork.
       expect((await response.arrayBuffer()).byteLength).toBeLessThan(16 * 1024);
     }
-    const mark = page.getByRole("complementary", { name: "Projects and chats" }).locator("img").first();
-    await expect.poll(() => mark.evaluate((image: HTMLImageElement) => image.complete && image.naturalWidth)).toBe(128);
-    expect(await mark.getAttribute("alt")).toBe("");
+    const mark = page.getByRole("complementary", { name: "Projects and chats" }).locator("svg.mark").first();
+    expect((await mark.boundingBox())?.width).toBe(22);
+    expect(await mark.getAttribute("aria-hidden")).toBe("true");
   });
 
   it("keeps reasoning effort for this chat across reload and sends it to the model", async () => {

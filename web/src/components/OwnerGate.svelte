@@ -1,6 +1,6 @@
 <script lang="ts">
-  import mark from "../assets/pal-mark.png";
   import { api, ApiError, type Session } from "../lib/api.ts";
+  import PalMark from "../lib/PalMark.svelte";
   import { app } from "../lib/state.svelte.ts";
 
   let { session, onSignedIn }: { session: Session; onSignedIn: () => void } = $props();
@@ -44,7 +44,7 @@
 <div class="gate">
   {#if !session.owner && setupToken === undefined}
     <div class="card">
-      <img class="mark" src={mark} alt="" width="56" height="56" />
+      <PalMark size={56} cutout="var(--bg1)" />
       <h1>Pal isn't set up yet</h1>
       <p>
         Open the setup link printed in the terminal where <code class="code">pal</code> is running. Only someone who can see
@@ -53,7 +53,7 @@
     </div>
   {:else}
     <form class="card" onsubmit={submit}>
-      <img class="mark" src={mark} alt="" width="56" height="56" />
+      <PalMark size={56} cutout="var(--bg1)" />
       <h1>{session.owner ? "Sign in to Pal" : "Set up Pal"}</h1>
       <p>
         {session.owner
@@ -92,9 +92,6 @@
     justify-content: center;
     padding: 24px 16px;
     background: var(--bg1);
-  }
-  .mark {
-    margin: 0 0 4px -6px;
   }
   .card {
     width: 100%;
