@@ -1,4 +1,4 @@
-<p align="center"><img src="assets/Neon%20Ribbon%20Robot%20Mascot.png" alt="Pal's robot mascot" width="128" height="128"></p>
+<p align="center"><img src="assets/pal-mark.svg" alt="Pal" width="128" height="128"></p>
 
 # Pal
 
