@@ -4,7 +4,8 @@
   import Icon from "../lib/Icon.svelte";
   import { navigate } from "../lib/state.svelte.ts";
 
-  let { project }: { project: Project } = $props();
+  /** `row`: the trigger is a list row's value, as in a phone's tools sheet. */
+  let { project, row = false }: { project: Project; row?: boolean } = $props();
   let settings: ProjectMcp | undefined = $state.raw();
   let modes: Record<string, "inherit" | "subset"> = $state({});
   let choices: Record<string, string[]> = $state({});
@@ -59,6 +60,10 @@
       busy = undefined;
     }
   }
+  function show() {
+    open = true;
+    void refresh();
+  }
   function select(server: string, name: string, checked: boolean) {
     const current = choices[server] ?? [];
     choices[server] = checked ? [...current, name] : current.filter((tool) => tool !== name);
@@ -71,16 +76,19 @@
   });
 </script>
 
-<button
-  class="b i q tip end"
-  aria-label="Project internet tools"
-  data-tip={names ? `Internet tools · ${names}` : "Internet tools · none enabled"}
-  disabled={busy !== undefined && !open}
-  onclick={() => {
-    open = true;
-    void refresh();
-  }}><Icon name="plug" /></button
->
+{#if row}
+  <button class="b t" aria-label="Project internet tools" disabled={busy !== undefined && !open} onclick={show}
+    >{names || "None enabled"}<Icon name="chevR" size={14} /></button
+  >
+{:else}
+  <button
+    class="b i q tip end"
+    aria-label="Project internet tools"
+    data-tip={names ? `Internet tools · ${names}` : "Internet tools · none enabled"}
+    disabled={busy !== undefined && !open}
+    onclick={show}><Icon name="plug" /></button
+  >
+{/if}
 
 {#if open}
   <dialog
@@ -97,8 +105,9 @@
         <h2 id="project-mcp-title">Internet tools</h2>
       </div>
       <button
-        class="b i q"
+        class="b i q tip end"
         aria-label="Close project internet tools"
+        data-tip="Close"
         disabled={busy !== undefined}
         onclick={() => dialog?.close()}><Icon name="x" /></button
       >

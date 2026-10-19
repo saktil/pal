@@ -103,6 +103,7 @@
   });
   /** On-screen keys only where a physical keyboard is unlikely; desktop shells take keys directly. */
   const touchKeys = $derived(viewport() !== "desktop" || matchMedia("(pointer: coarse)").matches);
+  const phone = $derived(viewport() === "phone");
   let runtime: { terminal: Terminal; ws: WebSocket; epoch: number } | undefined;
   const bytes = (text: string) => new TextEncoder().encode(text).length;
 
@@ -321,54 +322,92 @@
 </script>
 
 <div class="terminal">
-  <div class="bar">
-    <h2 class="sr">Terminal</h2>
-    <div class="sessions" role="group" aria-label="Terminal sessions">
-      {#each terminals as terminal, index (terminal.id)}
-        <span class="session" class:on={selected === terminal.id}>
-          <button class="tab" aria-pressed={selected === terminal.id} onclick={() => (selected = terminal.id)}
-            ><span class="dot" class:ended={terminal.ended}></span>Shell {index + 1}</button
+  {#if phone}
+    <!-- Full screen on a phone: back to the chat, the folder, a shell picker and sharing the selection. -->
+    <div class="phonebar">
+      <button class="b i q tip start" aria-label="Back to chat" data-tip="Back to chat" onclick={onClose}
+        ><Icon name="chevL" /></button
+      >
+      <div class="where">
+        <h2>Terminal</h2>
+        <div class="mono" title={root}>{root}</div>
+      </div>
+      {#if terminals.length > 0}
+        <label class="picker"
+          ><span class="dot" class:ended={active?.ended} aria-hidden="true"></span><select
+            aria-label="Shell"
+            bind:value={selected}
           >
-          <button
-            class="close"
-            aria-label={`Close terminal ${index + 1}`}
-            disabled={busy}
-            onclick={() => close(terminal.id)}><Icon name="x" size={12} /></button
-          >
-        </span>
-      {/each}
+            {#each terminals as terminal, index (terminal.id)}<option value={terminal.id}>Shell {index + 1}</option
+              >{/each}
+          </select><Icon name="chevD" size={14} /></label
+        >
+      {/if}
       <button
-        class="b i q sm tip up"
+        class="b i q tip"
         aria-label="New host terminal"
         data-tip="New shell"
         disabled={busy || !trust || (workspace != null && workspace.state !== "ready")}
-        onclick={create}><Icon name="plus" size={14} /></button
+        onclick={create}><Icon name="plus" /></button
+      >
+      {#if active}<button
+          class="b i q tip end"
+          aria-label="Send selection to composer"
+          data-tip="Send selection"
+          disabled={!selection || bytes(selection) > 16 * 1024}
+          onclick={() => onSelection(selection)}><Icon name="comment" /></button
+        >{/if}
+    </div>
+  {:else}
+    <div class="bar">
+      <h2 class="sr">Terminal</h2>
+      <div class="sessions" role="group" aria-label="Terminal sessions">
+        {#each terminals as terminal, index (terminal.id)}
+          <span class="session" class:on={selected === terminal.id}>
+            <button class="tab" aria-pressed={selected === terminal.id} onclick={() => (selected = terminal.id)}
+              ><span class="dot" class:ended={terminal.ended}></span>Shell {index + 1}</button
+            >
+            <button
+              class="close"
+              aria-label={`Close terminal ${index + 1}`}
+              disabled={busy}
+              onclick={() => close(terminal.id)}><Icon name="x" size={12} /></button
+            >
+          </span>
+        {/each}
+        <button
+          class="b i q sm tip up"
+          aria-label="New host terminal"
+          data-tip="New shell"
+          disabled={busy || !trust || (workspace != null && workspace.state !== "ready")}
+          onclick={create}><Icon name="plus" size={14} /></button
+        >
+      </div>
+      {#if active}<button
+          class="b t sm"
+          disabled={!selection || bytes(selection) > 16 * 1024}
+          onclick={() => onSelection(selection)}>Send selection to composer</button
+        >{/if}
+      {#if dock !== undefined}
+        <div class="dock" role="radiogroup" aria-label="Terminal position" tabindex="-1" onkeydown={dockKeys}>
+          {#each [["bottom", "Bottom", "dockBottom", "Dock at bottom"], ["side", "Side", "dockSide", "Dock at side"]] as const as [where, label, icon, tip] (where)}
+            <button
+              class="b i q sm tip up"
+              role="radio"
+              aria-label={label}
+              data-tip={tip}
+              aria-checked={dock === where}
+              tabindex={dock === where ? 0 : -1}
+              onclick={() => onDock(where)}><Icon name={icon} /></button
+            >
+          {/each}
+        </div>
+      {/if}
+      <button class="b i q sm tip up end" aria-label="Close panel" data-tip="Close" onclick={onClose}
+        ><Icon name="x" /></button
       >
     </div>
-    {#if active}<button
-        class="b t sm"
-        disabled={!selection || bytes(selection) > 16 * 1024}
-        onclick={() => onSelection(selection)}>Send selection to composer</button
-      >{/if}
-    {#if dock !== undefined}
-      <div class="dock" role="radiogroup" aria-label="Terminal position" tabindex="-1" onkeydown={dockKeys}>
-        {#each [["bottom", "Bottom", "dockBottom", "Dock at bottom"], ["side", "Side", "dockSide", "Dock at side"]] as const as [where, label, icon, tip] (where)}
-          <button
-            class="b i q sm tip up"
-            role="radio"
-            aria-label={label}
-            data-tip={tip}
-            aria-checked={dock === where}
-            tabindex={dock === where ? 0 : -1}
-            onclick={() => onDock(where)}><Icon name={icon} /></button
-          >
-        {/each}
-      </div>
-    {/if}
-    <button class="b i q sm tip up end" aria-label="Close panel" data-tip="Close" onclick={onClose}
-      ><Icon name="x" /></button
-    >
-  </div>
+  {/if}
   <div class="trust" class:ok={trust || terminals.length > 0}>
     {#if trust || terminals.length > 0}
       <span class="warn" aria-hidden="true"></span><span class="grow ellipsis" title={root}
@@ -389,14 +428,14 @@
   <div class="surface" class:inactive={!active} style:background={palette.background} bind:this={surface}></div>
   {#if active && touchKeys}
     <div class="keys" role="toolbar" aria-label="Terminal keys">
-      <button class="b sm" disabled={!control} onclick={() => key("\x1b")}>Esc</button>
-      <button class="b sm" disabled={!control} aria-pressed={ctrl} onclick={() => (ctrl = !ctrl)}>Ctrl</button>
-      <button class="b sm" disabled={!control} onclick={() => key("\t")}>Tab</button>
-      <button class="b sm" disabled={!control} onclick={() => key("\x03")}>Ctrl+C</button>
-      <button class="b sm" disabled={!control} onclick={() => key("\x1b[A")} aria-label="Up arrow">↑</button>
-      <button class="b sm" disabled={!control} onclick={() => key("\x1b[B")} aria-label="Down arrow">↓</button>
-      <button class="b sm" disabled={!control} onclick={() => key("\x1b[D")} aria-label="Left arrow">←</button>
-      <button class="b sm" disabled={!control} onclick={() => key("\x1b[C")} aria-label="Right arrow">→</button>
+      <button disabled={!control} aria-label="Esc" onclick={() => key("\x1b")}>esc</button>
+      <button disabled={!control} aria-label="Tab" onclick={() => key("\t")}>tab</button>
+      <button disabled={!control} aria-label="Ctrl" aria-pressed={ctrl} onclick={() => (ctrl = !ctrl)}>ctrl</button>
+      <button disabled={!control} aria-label="Ctrl+C" onclick={() => key("\x03")}>^C</button>
+      <button disabled={!control} onclick={() => key("\x1b[D")} aria-label="Left arrow">←</button>
+      <button disabled={!control} onclick={() => key("\x1b[A")} aria-label="Up arrow">↑</button>
+      <button disabled={!control} onclick={() => key("\x1b[B")} aria-label="Down arrow">↓</button>
+      <button disabled={!control} onclick={() => key("\x1b[C")} aria-label="Right arrow">→</button>
     </div>
   {/if}
   {#if active}
@@ -606,17 +645,84 @@
     font-size: 13.5px;
   }
   .keys {
-    display: flex;
-    gap: 6px;
-    overflow-x: auto;
-    padding: 6px 8px;
+    display: grid;
+    grid-template-columns: repeat(8, minmax(0, 1fr));
+    gap: 5px;
+    padding: 8px;
     border-top: 1px solid var(--line);
+    background: var(--side);
     flex-shrink: 0;
   }
-  .keys .b {
-    min-width: 38px;
-    min-height: 36px;
-    font-family: var(--mono);
+  .keys button {
+    height: 44px;
+    padding: 0;
+    border: 0;
+    border-radius: 9px;
+    background: var(--bg3);
+    color: color-mix(in srgb, var(--tx) 90%, transparent);
+    font: 12px var(--mono);
+  }
+  .keys button[aria-pressed="true"] {
+    background: var(--acbg);
+    color: var(--ac);
+  }
+  .keys button:disabled {
+    opacity: 0.42;
+  }
+  .phonebar {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 6px;
+    padding-top: max(6px, env(safe-area-inset-top));
+    border-bottom: 1px solid var(--line);
+    background: var(--bg1);
+    flex-shrink: 0;
+  }
+  .phonebar .b.i {
+    width: 44px;
+    height: 44px;
+    border-radius: var(--radius-md);
+    color: color-mix(in srgb, var(--tx) 85%, transparent);
+  }
+  .phonebar .where {
+    flex: 1;
+    min-width: 0;
+    padding-left: 4px;
+    line-height: 1.25;
+  }
+  .phonebar h2 {
+    margin: 0;
+    font-size: 15px;
+    font-weight: 550;
+  }
+  .phonebar .mono {
+    font-size: 11.5px;
+    color: var(--tx3);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+  }
+  .picker {
+    position: relative;
+    height: 36px;
+    gap: 6px;
+    padding: 0 10px 0 12px;
+    border-radius: 10px;
+    background: var(--bg3);
+    color: color-mix(in srgb, var(--tx) 90%, transparent);
+    font-size: 13px;
+  }
+  .picker select {
+    appearance: none;
+    border: 0;
+    background: transparent;
+    font-size: 13px;
+    color: inherit;
+    padding: 0;
+  }
+  .picker :global(svg) {
+    color: var(--tx3);
   }
   .status {
     display: flex;

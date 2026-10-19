@@ -24,18 +24,34 @@
     textOf,
   } from "../lib/chat.svelte.ts";
   import Icon from "../lib/Icon.svelte";
+  import type { IconName } from "../lib/icons.ts";
   import AddMenu from "./AddMenu.svelte";
   import CommandMode from "./CommandMode.svelte";
   import InternetSources from "./InternetSources.svelte";
   import ModelControl, { type Group } from "./ModelControl.svelte";
+  import ProjectMcpSettings from "./ProjectMcpSettings.svelte";
   import WorkspaceMode from "./WorkspaceMode.svelte";
   import { codeCopy } from "../lib/copy.ts";
   import { renderMarkdown } from "../lib/markdown.ts";
   import { rise } from "../lib/motion.ts";
   import { app, navigate, refreshChatGPT, refreshProjects, viewport } from "../lib/state.svelte.ts";
 
-  let { chat, project, onNewChat }: { chat: ChatSummary; project: Project; onNewChat: (mode: Mode) => Promise<void> } =
-    $props();
+  let {
+    chat,
+    project,
+    onNewChat,
+    panels,
+    onPanel,
+    changeCount,
+  }: {
+    chat: ChatSummary;
+    project: Project;
+    onNewChat: (mode: Mode) => Promise<void>;
+    /** The workspace panels this chat offers; on a phone they open from the tools sheet. */
+    panels: readonly { id: string; icon: IconName }[];
+    onPanel: (id: string) => void;
+    changeCount?: number | undefined;
+  } = $props();
   const workspace = $derived(chat.workspace);
   const root = $derived(workspace?.root ?? project.root);
   const ready = $derived(workspace == null || workspace.state === "ready");
@@ -100,6 +116,17 @@
   /** Texts this page queued, by submission, so a queued item can show what it says. */
   let queuedTexts: Record<number, string> = $state({});
   const phone = $derived(viewport() === "phone");
+  /** A phone's tools sheet: panels, then the composer's model, approval and workspace choices. A modal dialog, so it
+   * traps focus, closes on Escape and gives focus back to its opener. */
+  let tools = $state(false);
+  let sheet: HTMLDialogElement | undefined = $state();
+  export function openTools() {
+    tools = true;
+  }
+  // Wider screens have no sheet, so it doesn't reappear on the next phone-width layout.
+  $effect(() => {
+    if (!phone) tools = false;
+  });
   /** Set once the history has rendered, so only items arriving afterwards animate in. */
   let settled = $state(false);
   $effect(() => {
@@ -434,7 +461,34 @@
   }
 </script>
 
-<section aria-label="Chat">
+{#snippet modelControl()}
+  <ModelControl
+    {groups}
+    {effective}
+    {current}
+    {effort}
+    busy={choosing}
+    {connected}
+    {isDefault}
+    {usable}
+    onModel={(choice) => chooseModel(choice)}
+    onEffort={(level) => (current === undefined ? Promise.resolve() : chooseModel(current, level))}
+    onDefault={useForNewChats}
+  />
+{/snippet}
+
+{#snippet busySwitch()}
+  <div class="seg" role="radiogroup" aria-label="While the agent is running">
+    <button class="segb" role="radio" aria-checked={whenBusy === "steer"} onclick={() => (whenBusy = "steer")}
+      >Steer</button
+    >
+    <button class="segb" role="radio" aria-checked={whenBusy === "followUp"} onclick={() => (whenBusy = "followUp")}
+      >Queue</button
+    >
+  </div>
+{/snippet}
+
+<section aria-label="Chat" class:phone>
   <div class="scroller">
     <div
       class="transcript"
@@ -631,7 +685,7 @@
     </div>
   </div>
 
-  <div class="dock" style:padding={phone ? "0 12px 10px" : "8px 24px 20px"}>
+  <div class="dock">
     <div class="dockin">
       {#if app.pet.enabled}
         {#await import("./Pet.svelte") then { default: Pet }}
@@ -697,8 +751,9 @@
         </div>
       {/if}
       {#if error !== undefined}<div class="callout er" role="alert">{error}</div>{/if}
+      {#if phone && stream?.running}{@render busySwitch()}{/if}
 
-      <div class="cbx">
+      <div class="cbx" class:oneline={phone}>
         {#if attachments.length > 0 || uploading > 0}
           <div class="chips">
             {#each attachments as attachment (attachment.id)}
@@ -722,49 +777,32 @@
           id="composer"
           bind:this={composer}
           class="cta"
-          rows="2"
-          placeholder={stream?.running ? "Steer the run or queue a follow-up" : "Message Pal"}
+          rows={phone ? 1 : 2}
+          placeholder={stream?.running
+            ? phone
+              ? "Steer or queue"
+              : "Steer the run or queue a follow-up"
+            : "Message Pal"}
           bind:value={draft}
           onfocus={() => (typing = true)}
           onblur={() => (typing = false)}
           onkeydown={onKey}></textarea>
         <div class="tools">
           <AddMenu onFiles={upload} />
-          {#if workspace?.mode !== "read-only"}<CommandMode mode={stream?.mode} onChoose={chooseMode} />{/if}
-          <WorkspaceMode {workspace} {onNewChat} compact={phone} />
-          <span class="grow"></span>
-          <ModelControl
-            {groups}
-            {effective}
-            {current}
-            {effort}
-            busy={choosing}
-            {connected}
-            {isDefault}
-            {usable}
-            compact={phone}
-            onModel={(choice) => chooseModel(choice)}
-            onEffort={(level) => (current === undefined ? Promise.resolve() : chooseModel(current, level))}
-            onDefault={useForNewChats}
-          />
+          {#if !phone}
+            {#if workspace?.mode !== "read-only"}<CommandMode mode={stream?.mode} onChoose={chooseMode} />{/if}
+            <WorkspaceMode {workspace} {onNewChat} />
+            <span class="grow"></span>
+            {@render modelControl()}
+            {#if stream?.running}{@render busySwitch()}{/if}
+          {/if}
           {#if stream?.running}
-            <div class="seg" role="radiogroup" aria-label="While the agent is running">
-              <button class="segb" role="radio" aria-checked={whenBusy === "steer"} onclick={() => (whenBusy = "steer")}
-                >Steer</button
-              >
-              <button
-                class="segb"
-                role="radio"
-                aria-checked={whenBusy === "followUp"}
-                onclick={() => (whenBusy = "followUp")}>Queue</button
-              >
-            </div>
             <button class="b p send busy" onclick={send} disabled={!canSend}>
               <Icon name={whenBusy === "steer" ? "steer" : "send"} />{whenBusy === "steer" ? "Steer" : "Queue"}
             </button>
           {:else}
             <button class="b p send" aria-label="Send" title="Send" onclick={send} disabled={!canSend}>
-              <Icon name="send" size={15} />
+              <Icon name="send" size={phone ? 18 : 15} />
             </button>
           {/if}
         </div>
@@ -772,6 +810,57 @@
     </div>
   </div>
 </section>
+
+{#if phone && tools}
+  <dialog
+    class="sheet"
+    aria-label="Workspace tools"
+    bind:this={sheet}
+    {@attach (node: HTMLDialogElement) => node.showModal()}
+    onclose={() => (tools = false)}
+    oncancel={(event) => {
+      // An open popover in the sheet takes Escape first.
+      if (sheet?.querySelector(".pop")) event.preventDefault();
+    }}
+    onclick={(event) => {
+      if (event.target === sheet) sheet.close();
+    }}
+  >
+    <span class="grip" aria-hidden="true"></span>
+    <div class="tiles">
+      {#each panels as item (item.id)}
+        <button
+          class="tile"
+          onclick={() => {
+            sheet?.close();
+            onPanel(item.id);
+          }}
+          ><Icon name={item.icon} />{item.id}{#if item.id === "Changes" && changeCount}<span
+              class="n"
+              aria-hidden="true">{changeCount}</span
+            >{/if}</button
+        >
+      {/each}
+      <button
+        class="tile"
+        onclick={() => {
+          sheet?.close();
+          navigate({ view: "settings", tab: "general" });
+        }}><Icon name="settings" />Settings</button
+      >
+    </div>
+    <div class="list">
+      <div class="li"><span class="lab">Model</span>{@render modelControl()}</div>
+      {#if workspace?.mode !== "read-only"}
+        <div class="li">
+          <span class="lab">Commands</span><CommandMode mode={stream?.mode} onChoose={chooseMode} />
+        </div>
+      {/if}
+      <div class="li"><span class="lab">Workspace</span><WorkspaceMode {workspace} {onNewChat} /></div>
+      <div class="li"><span class="lab">Internet tools</span><ProjectMcpSettings {project} row /></div>
+    </div>
+  </dialog>
+{/if}
 
 <style>
   .appr {
@@ -1174,6 +1263,10 @@
   }
   .dock {
     flex: 0 0 auto;
+    padding: 8px 24px 20px;
+  }
+  .phone .dock {
+    padding: 6px 12px max(12px, env(safe-area-inset-bottom));
   }
   .dockin {
     max-width: 672px;
@@ -1250,5 +1343,155 @@
   }
   .plain {
     padding-right: 8px;
+  }
+  /* Phone: the composer is one pill with "+" and Send either side; model and approval live in the tools sheet. */
+  .cbx.oneline {
+    flex-direction: row;
+    flex-wrap: wrap;
+    align-items: flex-end;
+    gap: 4px;
+    padding: 5px;
+    border-radius: 24px;
+  }
+  .oneline .tools {
+    display: contents;
+  }
+  .oneline .chips {
+    order: -1;
+    flex-basis: 100%;
+    padding: 4px 6px 0;
+  }
+  .oneline .cta {
+    order: 1;
+    flex: 1;
+    min-width: 0;
+    padding: 11px 2px;
+    font-size: 15.5px;
+  }
+  .oneline .send {
+    order: 2;
+    width: 44px;
+    height: 44px;
+    margin: 0;
+  }
+  .oneline .send.busy {
+    width: auto;
+    padding: 0 14px;
+    border-radius: 22px;
+  }
+  .oneline :global(.plus) {
+    width: 44px;
+    height: 44px;
+    margin: 0;
+    border-radius: 50%;
+  }
+  .dockin > .seg {
+    align-self: flex-start;
+  }
+  .phone .transcript {
+    gap: 18px;
+    padding-top: 16px;
+  }
+  .phone .bubble {
+    border-radius: 18px;
+    padding: 10px 14px;
+    font-size: 15px;
+  }
+  .phone .assistant {
+    font-size: 15px;
+    line-height: 1.65;
+  }
+  .phone .appr {
+    border-radius: 14px;
+    padding: 14px;
+  }
+  .phone .appr .acts {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+  .phone .appr .acts .b {
+    height: 44px;
+    border-radius: var(--radius-md);
+    font-size: 14px;
+  }
+  .phone .appr .acts .p {
+    order: 2;
+  }
+  .phone .running {
+    min-height: 32px;
+    padding: 0 8px;
+    font-size: 13px;
+  }
+  /* Pinned to the bottom edge; a click outside it lands on the dialog's backdrop and closes it. */
+  .sheet[open] {
+    inset: auto 0 0;
+    width: 100%;
+    max-width: none;
+    margin: 0;
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+    padding: 10px 16px max(20px, env(safe-area-inset-bottom));
+    border: 0;
+    border-top: 1px solid var(--line2);
+    border-radius: 24px 24px 0 0;
+    animation: rise var(--mid) var(--ease);
+  }
+  .grip {
+    align-self: center;
+    width: 40px;
+    height: 5px;
+    border-radius: 3px;
+    background: var(--line3);
+  }
+  .tiles {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 8px;
+  }
+  .tile {
+    position: relative;
+    height: 84px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    gap: 8px;
+    border: 0;
+    border-radius: var(--radius-lg);
+    background: var(--bg3);
+    color: var(--tx);
+    font-size: 13px;
+  }
+  .tile .n {
+    position: absolute;
+    top: 10px;
+    right: 12px;
+    font: 11.5px var(--mono);
+    color: var(--ac);
+  }
+  .list {
+    display: flex;
+    flex-direction: column;
+    border-radius: var(--radius-lg);
+    background: var(--bg3);
+  }
+  /* Each row anchors its control's popover, so it opens across the sheet's width. */
+  .li {
+    position: relative;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    min-height: 52px;
+    padding: 0 8px 0 16px;
+  }
+  .li + .li {
+    border-top: 1px solid var(--line2);
+  }
+  .lab {
+    flex: 1;
+  }
+  .li :global(.model) {
+    position: static;
   }
 </style>

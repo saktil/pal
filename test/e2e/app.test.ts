@@ -128,6 +128,12 @@ async function onboardWithChatGPT(view: Page): Promise<void> {
   await view.getByRole("button", { name: "Continue" }).click();
 }
 
+/** Opens a workspace panel from the chat header, or from the tools sheet at phone width. */
+async function openPanel(name: string, view: Page = page): Promise<void> {
+  if ((view.viewportSize()?.width ?? 1440) < 700) await view.getByRole("button", { name: "Workspace tools" }).click();
+  await view.getByRole("button", { name, exact: true }).click();
+}
+
 /** The composer's model control opens on reasoning; its model header opens the model list. */
 async function openModelList(): Promise<void> {
   await page.getByRole("button", { name: /^Model and reasoning/ }).click();
@@ -746,7 +752,7 @@ describe("Pal in a browser", () => {
         await shoot(`context-memory-${width}`);
       }
       await page.reload();
-      await page.getByRole("button", { name: "Context", exact: true }).click();
+      await openPanel("Context");
       await panel.getByRole("heading", { name: "Chat decision", exact: true }).waitFor();
       await panel
         .getByRole("region", { name: "Recent memory lookups", exact: true })
@@ -976,7 +982,7 @@ describe("Pal in a browser", () => {
       expect(JSON.stringify(fixture.apiRequests.at(-1)?.body)).toContain("My retained owner preference.");
       expect(JSON.stringify(fixture.apiRequests.at(-1)?.body)).toContain("Attached jade fixture source.");
       const after = count();
-      await page.getByRole("button", { name: "Context", exact: true }).click();
+      await openPanel("Context");
       await panel.getByRole("button", { name: "Inspect prepared prompt" }).click();
       const prepared = panel.getByRole("region", { name: "Last prepared context" });
       await prepared.getByText("pinned", { exact: true }).click();
@@ -994,7 +1000,7 @@ describe("Pal in a browser", () => {
         await shoot(`context-prepared-${width}`);
       }
       await page.reload();
-      await page.getByRole("button", { name: "Context", exact: true }).click();
+      await openPanel("Context");
       await panel.getByRole("button", { name: "Inspect prepared prompt" }).click();
       await prepared.locator("time").waitFor();
       expect(await prepared.locator("time").getAttribute("datetime")).toBe(at);
@@ -1047,6 +1053,11 @@ describe("Pal in a browser", () => {
     await expect.poll(async () => (await pal.mcp.grants.decision(project.id, server.id, "search")).allowed).toBe(true);
     for (const width of [1440, 768, 390]) {
       await page.setViewportSize({ width, height: 900 });
+      // A phone has no chat header; the same settings open from its tools sheet.
+      if (width === 390) {
+        await page.getByRole("button", { name: "Workspace tools" }).click();
+        await button.click();
+      }
       await card.scrollIntoViewIfNeeded();
       expect(await page.evaluate("document.documentElement.scrollWidth <= innerWidth")).toBe(true);
       expect(await dialog.evaluate((element) => element.scrollWidth <= element.clientWidth)).toBe(true);
@@ -1249,6 +1260,8 @@ describe("Pal in a browser", () => {
     expect(await page.getByRole("group", { name: "Approval request" }).count()).toBe(before);
     for (const width of [1440, 768, 390]) {
       await page.setViewportSize({ width, height: 900 });
+      // A phone keeps the composer's approval, model and workspace choices in its tools sheet.
+      if (width === 390) await page.getByRole("button", { name: "Workspace tools" }).click();
       await pill.click();
       await popover.waitFor();
       expect(await page.evaluate("document.documentElement.scrollWidth <= innerWidth")).toBe(true);
@@ -1480,6 +1493,7 @@ describe("Pal in a browser", () => {
       const picker = page.getByRole("dialog", { name: "Workspace mode", exact: true });
       for (const width of [1440, 768, 390]) {
         await page.setViewportSize({ width, height: 900 });
+        if (width === 390) await page.getByRole("button", { name: "Workspace tools" }).click();
         await mode.click();
         expect(await picker.getByRole("button").count()).toBe(3);
         await expect.poll(() => page.evaluate(() => document.activeElement?.textContent)).toContain("New local chat");
@@ -1754,11 +1768,17 @@ describe("Pal in a browser", () => {
     for (const width of [1440, 768, 390]) {
       await page.setViewportSize({ width, height: 900 });
       expect(await page.evaluate("document.documentElement.scrollWidth <= innerWidth")).toBe(true);
-      for (const name of ["Project internet tools", "Changes", "Files", "Terminal"]) {
-        const box = await page.getByRole("button", { name, exact: true }).boundingBox();
-        expect(box).not.toBeNull();
-        expect(box?.x).toBeGreaterThanOrEqual(0);
-        expect((box?.x ?? 0) + (box?.width ?? 0)).toBeLessThanOrEqual(width);
+      // A phone shows the panel full screen, so its own controls stand in for the chat header's.
+      for (const name of width === 390
+        ? ["Refresh", "Close panel"]
+        : ["Project internet tools", "Changes", "Files", "Terminal"]) {
+        // Overlay panels slide in when the layout changes; measure where they settle.
+        await expect
+          .poll(async () => {
+            const box = await page.getByRole("button", { name, exact: true }).boundingBox();
+            return box !== null && box.x >= 0 && box.x + box.width <= width;
+          })
+          .toBe(true);
       }
       await shoot(`comments-${width}`);
     }
@@ -1858,7 +1878,7 @@ describe("Pal in a browser", () => {
       await panel.waitFor({ state: "detached" });
       await expect.poll(() => page.getByLabel("Message").inputValue()).toContain("Keep this context line.");
       await expect.poll(async () => (await pal.changes.list(project.id)).comments[0]?.sent).toBe(true);
-      await page.getByRole("button", { name: "Changes", exact: true }).click();
+      await openPanel("Changes");
       await panel.getByRole("button", { name: "Delete comment on line 2" }).click();
       await expect.poll(() => panel.getByText("Keep this context line.").count()).toBe(0);
     } finally {
@@ -1991,7 +2011,7 @@ describe("Pal in a browser", () => {
       phone.on("pageerror", onError);
       await phone.setViewportSize({ width: 390, height: 844 });
       await phone.goto(chatUrl);
-      await phone.getByRole("button", { name: "Terminal", exact: true }).click();
+      await openPanel("Terminal", phone);
       const mobile = phone.getByRole("complementary", { name: "Workspace panel" });
       await mobile.getByRole("button", { name: "Take control" }).click();
       await mobile.getByRole("status").filter({ hasText: "You control this shell" }).waitFor();
@@ -2803,6 +2823,8 @@ describe("Pal in a browser", () => {
   });
 
   it("lays out for tablet and phone", async () => {
+    // From the main chat with no panel: a phone shows an open panel full screen, over the header.
+    await page.goto(chatUrl);
     await page.setViewportSize({ width: 768, height: 1024 });
     await shoot("chat-768");
     await page.setViewportSize({ width: 390, height: 844 });

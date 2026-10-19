@@ -108,9 +108,14 @@
   }
   /** A file Files asked Changes to open. */
   let diffPath: string | undefined = $state();
-  let chatView: { insertText(text: string): void } | undefined = $state();
+  let chatView: { insertText(text: string): void; openTools(): void } | undefined = $state();
   let changesView: { refresh(): Promise<void> } | undefined = $state();
   let changeStatus: { busy: boolean; files: number | undefined; add: number; del: number } | undefined = $state();
+  function openPanel(view: PanelView) {
+    diffPath = undefined;
+    panelRoute = app.route;
+    panelView = view;
+  }
   function togglePanel(view: PanelView) {
     diffPath = undefined;
     panelRoute = panel && panelView === view ? undefined : app.route;
@@ -194,17 +199,31 @@
   <Onboarding onCreateProject={() => (creating = true)} />
 {:else}
   <div class="shell">
-    {#if size === "phone" && app.route.view !== "settings"}
+    <!-- A phone shows one panel at a time, full screen with its own header. -->
+    {#if size === "phone" && app.route.view !== "settings" && !(located && panel && enabledPanels.has(panelView))}
       <header class="phonehdr">
-        <button class="b i q" aria-label="Projects and chats" onclick={() => (drawerRoute = app.route)}
-          ><Icon name="menu" /></button
+        <button
+          class="b i q tip start"
+          aria-label="Projects and chats"
+          data-tip="Projects and chats"
+          onclick={() => (drawerRoute = app.route)}><Icon name="menu" /></button
         >
         <div class="phonetitle">
           <div class="t">{located?.chat.title ?? (located ? "New chat" : "Pal")}</div>
           {#if located}<div class="s" title={located.chat.workspace?.root ?? located.project.root}>
-              {located.project.name} · {located.chat.workspace?.root ?? located.project.root}
+              {located.project.name} · {located.chat.workspace?.mode ?? "local"}
             </div>{/if}
         </div>
+        {#if located}
+          <button
+            class="b i q tip end toolsbtn"
+            aria-label="Workspace tools"
+            data-tip="Workspace tools"
+            onclick={() => chatView?.openTools()}
+            ><Icon name="grid" />{#if (changeStatus?.files ?? 0) > 0}<span class="dot" aria-hidden="true"
+              ></span>{/if}</button
+          >
+        {:else}<span class="toolsbtn" aria-hidden="true"></span>{/if}
       </header>
     {/if}
     <div class="body">
@@ -235,41 +254,43 @@
           <Settings tab={app.route.tab} {onSignOut} />
         {:else if located !== undefined}
           {@const root = located.chat.workspace?.root ?? located.project.root}
-          <header class="chathead" class:compact={size === "phone"}>
-            {#if size === "tablet"}<button
-                class="b i q"
-                aria-label="Projects and chats"
-                onclick={() => (drawerRoute = app.route)}><Icon name="menu" /></button
-              >{:else if size === "desktop" && !sidebarShown}<button
-                class="b i q tip"
-                aria-label="Show sidebar"
-                data-tip="Show sidebar"
-                onclick={openSidebar}><Icon name="sidebar" /></button
-              >{/if}
-            {#if size !== "phone"}
+          {#if size !== "phone"}<header class="chathead">
+              {#if size === "tablet"}<button
+                  class="b i q tip start"
+                  aria-label="Projects and chats"
+                  data-tip="Projects and chats"
+                  onclick={() => (drawerRoute = app.route)}><Icon name="menu" /></button
+                >{:else if size === "desktop" && !sidebarShown}<button
+                  class="b i q tip"
+                  aria-label="Show sidebar"
+                  data-tip="Show sidebar"
+                  onclick={openSidebar}><Icon name="sidebar" /></button
+                >{/if}
               <h1 class="title">
                 <button aria-haspopup="dialog" onclick={() => (renaming = { ...located.chat })}
                   ><span>{located.chat.title ?? "New chat"}</span><Icon name="chevD" size={14} /></button
                 >
               </h1>
               <span class="where" title={root}>{located.project.name} · {located.chat.workspace?.mode ?? "local"}</span>
-            {/if}
-            <div class="tools">
-              {#each panelButtons as item (item.id)}
-                {#if enabledPanels.has(item.id)}
-                  <button
-                    class="b i q tip"
-                    aria-label={item.id}
-                    data-tip={item.id}
-                    aria-expanded={panel && panelView === item.id}
-                    onclick={() => togglePanel(item.id)}><Icon name={item.icon} /></button
-                  >
-                {/if}
-              {/each}
-              <span class="sep" aria-hidden="true"></span>
-              {#key located.project.id}<ProjectMcpSettings project={located.project} />{/key}
-            </div>
-          </header>
+              <div class="tools">
+                {#each panelButtons as item (item.id)}
+                  {#if enabledPanels.has(item.id)}
+                    {@const changed = item.id === "Changes" ? (changeStatus?.files ?? 0) : 0}
+                    <button
+                      class="b i q tip"
+                      aria-label={item.id}
+                      data-tip={changed > 0 ? `Changes · ${changed} ${changed === 1 ? "file" : "files"}` : item.id}
+                      aria-expanded={panel && panelView === item.id}
+                      onclick={() => togglePanel(item.id)}
+                      ><Icon name={item.icon} />{#if changed > 0}<span class="dot" aria-hidden="true"
+                        ></span>{/if}</button
+                    >
+                  {/if}
+                {/each}
+                <span class="sep" aria-hidden="true"></span>
+                {#key located.project.id}<ProjectMcpSettings project={located.project} />{/key}
+              </div>
+            </header>{/if}
           <div
             class="workarea"
             class:dock-bottom={docked && dock === "bottom"}
@@ -283,6 +304,9 @@
                   chat={located.chat}
                   project={located.project}
                   onNewChat={(mode) => newChat(located.project.id, mode)}
+                  panels={panelButtons.filter((item) => enabledPanels.has(item.id))}
+                  onPanel={(id) => openPanel(id as PanelView)}
+                  changeCount={changeStatus?.files}
                 />{/key}
             </div>
             {#if panel && enabledPanels.has(panelView)}
@@ -448,20 +472,45 @@
     flex: 0 0 auto;
     display: flex;
     align-items: center;
-    gap: 2px;
-    padding: 2px 4px;
-    padding-top: max(2px, env(safe-area-inset-top));
-    border-bottom: 1px solid var(--line);
+    gap: 4px;
+    padding: 6px;
+    padding-top: max(6px, env(safe-area-inset-top));
     background: var(--bg1);
+  }
+  .phonehdr .b.i {
+    width: 44px;
+    height: 44px;
+    border-radius: var(--radius-md);
+    color: color-mix(in srgb, var(--tx) 85%, transparent);
+  }
+  .toolsbtn {
+    position: relative;
+    width: 44px;
+    flex: none;
+  }
+  .tools .dot,
+  .toolsbtn .dot {
+    position: absolute;
+    top: 6px;
+    right: 6px;
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--ac);
+  }
+  .toolsbtn .dot {
+    top: 10px;
+    right: 10px;
   }
   .phonetitle {
     flex: 1;
     min-width: 0;
-    padding: 4px;
+    text-align: center;
+    line-height: 1.25;
   }
   .phonetitle .t {
-    font-size: 14px;
-    font-weight: 600;
+    font-size: 15px;
+    font-weight: 550;
     white-space: nowrap;
     overflow: hidden;
     text-overflow: ellipsis;
@@ -511,10 +560,6 @@
     height: 56px;
     padding: 0 12px 0 24px;
     border-bottom: 1px solid var(--line);
-  }
-  .chathead.compact {
-    height: auto;
-    padding: 4px 6px;
   }
   .title {
     flex: 0 1 auto;
@@ -694,6 +739,9 @@
       width: 100%;
       border-left: 0;
       box-shadow: none;
+    }
+    .panelhead {
+      padding-top: env(safe-area-inset-top);
     }
   }
   .center {

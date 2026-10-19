@@ -29,7 +29,6 @@
     connected,
     isDefault,
     usable,
-    compact,
     onModel,
     onEffort,
     onDefault,
@@ -42,7 +41,6 @@
     connected: boolean;
     isDefault: boolean;
     usable: boolean;
-    compact: boolean;
     onModel: (choice: Choice) => Promise<void>;
     onEffort: (level: Effort) => Promise<void>;
     onDefault: () => Promise<void>;
@@ -132,7 +130,7 @@
   }}
 />
 
-<div class="model" class:compact bind:this={container}>
+<div class="model" bind:this={container}>
   <button
     class="b t trigger"
     bind:this={opener}
@@ -211,8 +209,11 @@
         </div>
       {:else}
         <div class="listhead">
-          <button class="b i q sm" aria-label="Back to reasoning" onclick={() => show("effort")}
-            ><Icon name="chevL" /></button
+          <button
+            class="b i q sm tip start"
+            aria-label="Back to reasoning"
+            data-tip="Back"
+            onclick={() => show("effort")}><Icon name="chevL" /></button
           >
           <span>Choose model</span>
         </div>
@@ -275,12 +276,6 @@
   }
   .level {
     color: var(--tx3);
-  }
-  .compact .trigger {
-    max-width: 150px;
-  }
-  .compact .level {
-    display: none;
   }
   .pop {
     bottom: calc(100% + 8px);
