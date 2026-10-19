@@ -2,13 +2,7 @@ import { mkdtemp, readFile, realpath, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-/**
- * A stand-in `rtk` first on PATH, following the real one's rewrite exit codes: `report …` has an equivalent (3),
- * `allowed …` one covered by allow rules (0), `denied …` a pipeline denial (2), `slow …` hangs ignoring SIGTERM
- * after recording its pid, and anything else has none (1). The
- * equivalent `rtk report <word> <code>` prints `compact:<word>` and exits with <code>. Every call is logged with the
- * HOME it saw. Returns the log reader and a cleanup that restores PATH.
- */
+/** RTK rewrite exits 0/3 with an equivalent, 1 without one, or 2 for a denial. */
 export async function fakeRtk() {
   const bin = await realpath(await mkdtemp(join(tmpdir(), "pal-fake-rtk-")));
   const log = join(bin, "calls");

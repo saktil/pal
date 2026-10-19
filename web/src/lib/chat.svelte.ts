@@ -1,5 +1,4 @@
-// One chat's live state from its server-sent events: a snapshot, then Pi's agent event batches.
-// Every snapshot, including the one after a reconnect, replaces the state; nothing is replayed from an offset.
+// Reconnect replaces live state from a snapshot; event offsets are not replayable.
 import type { ApprovalView, CommandApproval, CommandMode } from "../../../src/core/approvals.ts";
 import type { McpReceipt } from "../../../src/pi/mcp-source.ts";
 export type { CommandApproval, McpReceipt };
@@ -34,11 +33,9 @@ export type NestedCall = {
 
 export type Attachment = { id: string; name: string; size: number; mediaType: string };
 
-/** `pal.user` entries are user inputs with attachments; their `data` holds the labels. */
 export type ShellReceipt = {
   callId: string;
   command: string;
-  /** The rtk equivalent that ran instead, when the chat has compact output. */
   executed?: string;
   cwd: string;
   status: string;
@@ -80,14 +77,12 @@ type AgentEvent =
 
 export class ChatStream {
   entries: Entry[] = $state([]);
-  /** The assistant message being generated, if any. */
   partial: Message | undefined = $state();
   running = $state(false);
   inbox: { id: number; mode: "steer" | "followUp" }[] = $state([]);
   retry: { at: number; error: string } | undefined = $state();
   connected = $state(false);
   loaded = $state(false);
-  /** The chat's command approval mode and recent requests, replaced whole on every change. */
   mode: CommandMode | undefined = $state();
   approvals: readonly CommandApproval[] = $state([]);
   #source: EventSource | undefined;
@@ -95,18 +90,20 @@ export class ChatStream {
   constructor(chatId: string) {
     const source = new EventSource(`/api/chats/${chatId}/events`);
     this.#source = source;
-    source.addEventListener("snapshot", (event) => this.#reset(JSON.parse((event as MessageEvent).data)));
-    source.addEventListener("event", (event) => this.#apply(JSON.parse((event as MessageEvent).data)));
-    source.addEventListener("approvals", (event) => {
-      let view: ApprovalView;
-      try {
-        view = JSON.parse((event as MessageEvent).data) as ApprovalView;
-      } catch {
-        // Each view replaces the last whole, so a malformed one is skipped until the next change.
-        return;
-      }
-      this.showApprovals(view);
-    });
+    function listen<T>(name: string, apply: (data: T) => void) {
+      source.addEventListener(name, (event) => {
+        let data: T;
+        try {
+          data = JSON.parse((event as MessageEvent<string>).data) as T;
+        } catch {
+          return;
+        }
+        apply(data);
+      });
+    }
+    listen<Snapshot>("snapshot", (snapshot) => this.#reset(snapshot));
+    listen<AgentEvent>("event", (event) => this.#apply(event));
+    listen<ApprovalView>("approvals", (view) => this.showApprovals(view));
     source.addEventListener("open", () => (this.connected = true));
     source.addEventListener("error", () => (this.connected = false));
   }
@@ -177,7 +174,6 @@ export class ChatStream {
   }
 }
 
-/** Text of a user or tool message, whatever its content shape. */
 export function textOf(message: Message): string {
   if (typeof message.content === "string") return message.content;
   return message.content.map((block) => (block.type === "text" ? block.text : "")).join("");

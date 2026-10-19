@@ -267,6 +267,36 @@ describe("Pal in a browser", () => {
     });
   });
 
+  it("ignores invalid event JSON and handles the next snapshot", async () => {
+    const errors: string[] = [];
+    const recordError = (error: Error) => errors.push(error.message);
+    const events = "**/api/chats/*/events";
+    const text = "Stream recovered after invalid frames";
+    const snapshot = {
+      entries: [{ id: 1, kind: "pi.user", model: [{ role: "user", content: text }] }],
+      inbox: [],
+    };
+    page.on("pageerror", recordError);
+    await page.route(events, (route) =>
+      route.fulfill({
+        contentType: "text/event-stream",
+        body:
+          "event: snapshot\ndata: {\n\nevent: event\ndata: invalid\n\nevent: approvals\ndata: invalid\n\n" +
+          `event: snapshot\ndata: ${JSON.stringify(snapshot)}\n\n` +
+          'event: approvals\ndata: {"mode":"ask","approvals":[]}\n\n',
+      }),
+    );
+    try {
+      await page.reload();
+      await page.getByText(text, { exact: true }).waitFor();
+      expect(errors).toEqual([]);
+    } finally {
+      page.off("pageerror", recordError);
+      await page.unroute(events);
+      await page.reload();
+    }
+  });
+
   it("colors code blocks and copies them from the header", async () => {
     const code = 'package main\n\nfunc main() {\n\tfmt.Println("hi") // greet\n}';
     fixture.behavior.reply = `Save this as \`main.go\`:\n\n\`\`\`go\n${code}\n\`\`\``;

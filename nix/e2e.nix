@@ -1,5 +1,3 @@
-# Browser tests of the built UI: the test derivation plus nixpkgs' matched Chromium. Screenshots at the design's
-# 1440/768/390 widths are kept in the output for review.
 {
   lib,
   bash,

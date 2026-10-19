@@ -43,13 +43,19 @@ describe("code highlighting", () => {
   });
 
   it("treats members as names and keeps unfinished strings to one line while code streams in", () => {
-    expect(spans(highlight("map.get(key); event.type", "ts"))).toEqual(["f:get"]);
+    expect(spans(highlight("map.get(key); event.type; Type; Type()", "ts"))).toEqual(["f:get", "t:Type", "f:Type"]);
     expect(spans(highlight('const a = "open\nconst b = 1', "js"))).toEqual(["k:const", 's:"open', "k:const", "n:1"]);
   });
 
   it("resolves aliases and ignores names that are not languages", () => {
     expect(highlight("let x = 1", "TypeScript")).toContain("hl-k");
-    expect(highlight("x", "constructor")).toBe("x");
-    expect(highlight("x", "__proto__")).toBe("x");
+    const code = 'const value = "<tag>&";';
+    for (const language of ["constructor", "__proto__", "(a+)+$", "js|.*", "[", "sql(?=.)"])
+      expect(highlight(code, language)).toBe('const value = "&lt;tag&gt;&amp;";');
+  });
+
+  it("uses escaped plain text above the highlighting limit", () => {
+    const code = "x".repeat(200_000) + "<>&";
+    expect(highlight(code, "js")).toBe("x".repeat(200_000) + "&lt;&gt;&amp;");
   });
 });

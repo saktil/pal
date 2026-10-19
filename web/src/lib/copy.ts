@@ -19,7 +19,6 @@ export async function copyText(text: string): Promise<boolean> {
   }
 }
 
-/** Handles the Copy buttons that markdown.ts renders into code blocks, for everything inside `node`. */
 export function codeCopy(node: HTMLElement): () => void {
   async function copy(event: MouseEvent) {
     const button = event.target instanceof Element ? event.target.closest("button[data-copy]") : null;

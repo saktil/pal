@@ -26,8 +26,7 @@
 }:
 let
   root = sourceRoot;
-  # The owner's sandboxed browser (Linux only): the headless shell matching the pinned playwright-core, bubblewrap and
-  # socat for the network-less sandbox, coreutils for its relay and fonts so pages render text.
+  # Chromium must match the pinned Playwright client.
   browsers = playwright-driver.browsers.override {
     withChromium = false;
     withChromiumHeadlessShell = true;
@@ -82,8 +81,7 @@ let
     PAL_NIX = lib.getExe nix;
     PAL_FLOCK = "${util-linux}/bin/flock";
   };
-  # pnpm installs with --ignore-scripts, so node-pty is compiled here against this Node. Its prebuilds
-  # (darwin/win32 only; 1.1.0's darwin spawn-helper lacks the executable bit) and Windows sources are dropped.
+  # Build node-pty against this Node ABI; pnpm skips install scripts.
   buildNodePty = ''
     pushd node_modules/node-pty
     node-gyp rebuild --nodedir=${nodejs_24}
@@ -146,7 +144,6 @@ stdenv.mkDerivation (finalAttrs: {
           coreutils
           git
           nodejs_24
-          # Compact command output rewrites commands to rtk equivalents, which run by name.
           rtk
         ]
       } \

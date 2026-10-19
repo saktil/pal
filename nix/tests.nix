@@ -1,4 +1,3 @@
-# Runs the repository's own static checks, test suite and build offline from the same pinned dependencies.
 {
   lib,
   stdenv,

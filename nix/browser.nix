@@ -1,5 +1,3 @@
-# Optional-capability feasibility: pinned playwright-core against nixpkgs' matched Chromium. The browser closure
-# exists only in this check; the Pal package never depends on it.
 {
   lib,
   stdenv,

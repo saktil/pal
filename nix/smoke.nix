@@ -1,4 +1,3 @@
-# Exercises the installed package itself: CLI, native/WASM probes from its closure, and the health endpoint.
 {
   runCommand,
   curl,
@@ -35,7 +34,6 @@ runCommand "pal-smoke-${pal.version}"
     port=$(grep listening server.log | grep -oE 'http://127\.0\.0\.1:[0-9]+' | grep -oE '[0-9]+$')
     curl -fsS "http://127.0.0.1:$port/api/health" | tee health.json
     grep -F '"status":"ok"' health.json
-    # A fresh installation has no owner and offers the one-time setup link on its terminal only.
     grep -F "http://127.0.0.1:$port/#setup=" server.log
     curl -fsS "http://127.0.0.1:$port/api/session" | grep -Fx '{"owner":false,"signedIn":false}'
     curl -fsS "http://127.0.0.1:$port/" | grep -F '<title>Pal</title>'

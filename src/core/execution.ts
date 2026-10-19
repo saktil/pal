@@ -46,7 +46,6 @@ export class WorkspaceLocks {
 
 export type ShellResult = { output: string; exitCode: number; truncated: boolean; timedOut: boolean };
 
-/** Marks a chat whose host commands run through rtk's compact equivalents; it adds no tools of its own. */
 export const COMPACT_EXTENSION = "pal.compact";
 export const compactOutput = defineExtension({ name: COMPACT_EXTENSION });
 
@@ -60,11 +59,7 @@ function cleanEnv(home: string): NodeJS.ProcessEnv {
   };
 }
 
-/**
- * Whether all of a command's output reaches the model, which is the only output rtk may condense. A pipe, redirect,
- * here-document, command substitution or background job outside quotes sends output to a file or another program,
- * where a summary would silently change the result. Unsure means no.
- */
+/** Condensing piped or redirected data changes command semantics, not just presentation. */
 export function outputReachesModel(command: string): boolean {
   let quote: "'" | '"' | undefined;
   for (let i = 0; i < command.length; i++) {
@@ -99,12 +94,7 @@ export class HostCommands {
     this.#rewriteMs = options.rewriteMs ?? 5_000;
   }
 
-  /**
-   * rtk's own rewrite, as its agent hooks use it: the compact equivalent (exit 0 or 3), or undefined to run the
-   * command unchanged. It runs with an empty home, so the owner's rtk and agent configuration never apply, and a
-   * missing, slow or failing rtk only leaves the command as it was. Its process group is killed at the deadline,
-   * on Stop and on close, which also wait for it.
-   */
+  /** Failed rewrites keep the original command; Stop and shutdown must terminate the helper. */
   async rewrite(cwd: string, command: string, signal?: AbortSignal): Promise<string | undefined> {
     if (!outputReachesModel(command)) return undefined;
     const controller = new AbortController();
@@ -291,10 +281,7 @@ export function shellTools(options: {
   root: (id: ConversationId) => Promise<string | undefined>;
   commands: HostCommands;
   locks: WorkspaceLocks;
-  /**
-   * Whether this call may run its rtk equivalent: the conversation selected compact output and no owner approved
-   * the call, since an approval covers exactly the command that was shown.
-   */
+  /** Approved calls must stay exact, even if the chat later switches to Full access. */
   compact?: (id: ConversationId, task: TaskId, context: Context) => Promise<boolean>;
 }) {
   return defineExtension({

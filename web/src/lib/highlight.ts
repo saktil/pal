@@ -256,28 +256,27 @@ const grammars = new Map<string, Grammar>();
 
 function grammar(language: string): Grammar | undefined {
   const name = (Object.hasOwn(ALIASES, language) ? ALIASES[language] : undefined) ?? language;
+  const cached = grammars.get(name);
+  if (cached !== undefined) return cached;
   const spec = Object.hasOwn(SPECS, name) ? SPECS[name] : undefined;
   if (spec === undefined) return undefined;
-  let built = grammars.get(name);
-  if (built === undefined) {
-    const words = new Map<string, string>();
-    for (const [kind, list] of [
-      ["n", spec.literals],
-      ["t", spec.types],
-      ["k", spec.keywords],
-    ] as const) {
-      for (const word of list?.split(" ") ?? []) words.set(word, kind);
-    }
-    const alternatives = spec.rules.map(([, pattern]) => `(${pattern})`);
-    built = {
-      pattern: new RegExp(`${alternatives.join("|")}|([A-Za-z_$][\\w$]*)`, "gm"),
-      kinds: spec.rules.map(([kind]) => kind),
-      words,
-      names: spec.names === true,
-      caseless: spec.caseless === true,
-    };
-    grammars.set(name, built);
+  const words = new Map<string, string>();
+  for (const [kind, list] of [
+    ["n", spec.literals],
+    ["t", spec.types],
+    ["k", spec.keywords],
+  ] as const) {
+    for (const word of list?.split(" ") ?? []) words.set(word, kind);
   }
+  const alternatives = spec.rules.map(([, pattern]) => `(${pattern})`);
+  const built = {
+    pattern: new RegExp(`${alternatives.join("|")}|([A-Za-z_$][\\w$]*)`, "gm"),
+    kinds: spec.rules.map(([kind]) => kind),
+    words,
+    names: spec.names === true,
+    caseless: spec.caseless === true,
+  };
+  grammars.set(name, built);
   return built;
 }
 
@@ -295,12 +294,15 @@ export function highlight(code: string, language: string): string {
     const text = match[0];
     const at = match.index;
     const group = match.findIndex((value, index) => index > 0 && value !== undefined);
-    let kind = group <= rules.kinds.length ? (rules.kinds[group - 1] ?? "") : "";
+    let kind = rules.kinds[group - 1] ?? "";
     if (group > rules.kinds.length) {
       // A name after "." is a member, never a keyword: `map.get(`, `event.type`.
       const member = code[at - 1] === "." && code[at - 2] !== ".";
-      kind = member ? "" : (rules.words.get(rules.caseless ? text.toLowerCase() : text) ?? "");
-      if (kind === "" && rules.names) kind = code[at + text.length] === "(" ? "f" : /^[A-Z]/.test(text) ? "t" : "";
+      if (!member) kind = rules.words.get(rules.caseless ? text.toLowerCase() : text) ?? "";
+      if (kind === "" && rules.names) {
+        if (code[at + text.length] === "(") kind = "f";
+        else if (/^[A-Z]/.test(text)) kind = "t";
+      }
     }
     if (kind === "") continue;
     html += `${escapeHtml(code.slice(last, at))}<span class="hl-${kind}">${escapeHtml(text)}</span>`;
