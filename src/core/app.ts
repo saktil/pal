@@ -228,7 +228,9 @@ export async function openPal(options: PalOptions, context: Context): Promise<Pa
         root: (conversation) => workspaceRoot(conversation, true),
         commands,
         locks,
-        compact: async (conversation, ctx) => {
+        // Only calls that ran without an approval: Ask mode binds the owner's decision to the shown command.
+        compact: async (conversation, task, ctx) => {
+          if (approvals === undefined || (await approvals.asked(task))) return false;
           const agent = await (await harness?.conversation(conversation, ctx))?.agent(ctx);
           return agent?.extensions.some((extension) => extension.name === COMPACT_EXTENSION) === true;
         },

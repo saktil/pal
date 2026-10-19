@@ -9,7 +9,7 @@ import { startOpenAIFixture } from "./fixtures/openai-server.ts";
 import { homedir, tmpdir } from "node:os";
 import { join } from "node:path";
 import { afterEach, describe, expect, it } from "vitest";
-import { HostCommands, WorkspaceLocks, shellTools } from "../src/core/execution.ts";
+import { HostCommands, WorkspaceLocks, outputReachesModel, shellTools } from "../src/core/execution.ts";
 import type { ConversationId, ToolExecutionApi, ToolRegistration } from "@earendil-works/pi-durable";
 
 const cleanups: (() => Promise<unknown>)[] = [];
@@ -230,14 +230,25 @@ describe("compact command output", () => {
     for (const { home } of await rtk.calls()) expect(home).not.toBe(homedir());
   });
 
-  it("runs commands unchanged without an equivalent, on a denial, or without rtk", async () => {
-    const { root, commands, entries, call } = await shell(true);
+  it("runs commands unchanged without an equivalent, on a denial, when output is redirected, or without rtk", async () => {
+    const { root, commands, rtk, entries, call } = await shell(true);
     const plain = await call("printf plain");
     expect(plain.structuredOutput).toMatchObject({ output: "plain", exitCode: 0 });
     expect(plain.structuredOutput).not.toHaveProperty("executed");
     const denied = await call("denied thing");
     expect(denied.structuredOutput).toMatchObject({ exitCode: 127 });
     expect(denied.structuredOutput).not.toHaveProperty("executed");
+    // Output that feeds a file or another program must stay exact, so rtk is never asked.
+    const consulted = (await rtk.calls()).length;
+    for (const command of [
+      "report hi 0 > out",
+      "report hi 0 | cat",
+      "report hi 0 2>&1",
+      'x="$(report hi 0)"; echo "$x"',
+    ])
+      expect((await call(command)).structuredOutput).not.toHaveProperty("executed");
+    expect(await rtk.calls()).toHaveLength(consulted);
+    expect(await readFile(join(root, "out"), "utf8")).toBe("");
     for (const entry of entries) expect(entry.data.shell).not.toHaveProperty("executed");
     const path = process.env.PATH;
     process.env.PATH = "/usr/bin:/bin";
@@ -254,5 +265,69 @@ describe("compact command output", () => {
     expect(result.structuredOutput).toMatchObject({ exitCode: 127 });
     expect(result.structuredOutput).not.toHaveProperty("executed");
     expect(await rtk.calls()).toEqual([]);
+  });
+
+  it("rewrites only commands whose whole output reaches the model", () => {
+    for (const command of [
+      "git status",
+      "git status && git log -2",
+      "git status; ls",
+      "git log --format='%h|%s' -2",
+      'git log --format="%h > %s"',
+      "grep -n a\\|b file",
+    ])
+      expect(outputReachesModel(command), command).toBe(true);
+    for (const command of [
+      "git diff > patch",
+      "git diff >> patch",
+      "git diff | wc -l",
+      "git status || true",
+      "git diff 2>&1",
+      "git diff < input",
+      "cat <<EOF\nx\nEOF",
+      "git diff | tee out",
+      "x=$(git status)",
+      'echo "$(git status)"',
+      "echo `git status`",
+      "git status &",
+      "git status\ngit diff > patch",
+      "git log --format='unterminated",
+    ])
+      expect(outputReachesModel(command), command).toBe(false);
+  });
+
+  it("bounds a rewrite that ignores termination, and stops one in flight on Stop or close", async () => {
+    const root = await realpath(await mkdtemp(join(tmpdir(), "pal-command-test-")));
+    cleanups.push(() => rm(root, { recursive: true, force: true }));
+    const rtk = await fakeRtk();
+    cleanups.push(rtk.cleanup);
+    const bounded = new HostCommands({ rewriteMs: 500 });
+    cleanups.push(() => bounded.close());
+    // The first exec of a new script can be slower than the deadline on macOS, which would hide the hang.
+    expect(await bounded.rewrite(root, "printf warm", AbortSignal.timeout(30_000))).toBeUndefined();
+    const started = Date.now();
+    expect(await bounded.rewrite(root, "slow deadline")).toBeUndefined();
+    expect(Date.now() - started).toBeLessThan(3_000);
+    const late = await rtk.slowPid();
+    expect(late).toBeDefined();
+    await expect.poll(() => running(late ?? 0)).toBe(false);
+
+    const commands = new HostCommands({ rewriteMs: 60_000 });
+    const pid = async (previous: number | undefined) => {
+      await expect.poll(async () => (await rtk.slowPid()) !== previous).toBe(true);
+      return (await rtk.slowPid()) ?? 0;
+    };
+    const controller = new AbortController();
+    const stopped = commands.rewrite(root, "slow stop", controller.signal);
+    const first = await pid(late);
+    controller.abort();
+    await expect(stopped).rejects.toThrow(/stopped before dispatch/);
+    await expect.poll(() => running(first)).toBe(false);
+
+    const closing = commands.rewrite(root, "slow close");
+    const second = await pid(first);
+    await commands.close();
+    await expect(closing).rejects.toThrow(/stopped before dispatch/);
+    await expect.poll(() => running(second)).toBe(false);
   });
 });

@@ -115,7 +115,7 @@ while you enable them, and a key echoed back in an error message is scrubbed out
 - `src/core/extensions.ts`: built-in contributions (files, shell, memory, browser, compact) can be switched for new
   chats. Each chat freezes its selection and the implementation versions it ran with. Compact output is opt-in: in
   a chat that selected it, `shell_run` asks `rtk rewrite` for an equivalent before recording its intent, runs that
-  instead and returns it as `executed`.
+  instead and returns it as `executed`, but only for calls no owner approved and whose output reaches the model.
 - `pal check-release` (`src/core/release-check.ts`): builds and tests a candidate Git worktree with the running
   package's own protected recipes and tests. Only a fixed set of UI files may differ.
 - `pal supervise` (`src/core/supervise.ts`): a small parent process that owns only release selection. It starts one

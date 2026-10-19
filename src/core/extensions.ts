@@ -63,7 +63,7 @@ export const BUILTINS = [
     // Off until chosen: it changes which command runs, not only what the model reads.
     optIn: true,
     description:
-      "Agent commands with an rtk equivalent run as it, so the model reads condensed output. Needs rtk on PATH; approvals show the original command and receipts the one that ran.",
+      "In Full access, agent commands with an rtk equivalent run as it, so the model reads condensed output. Approved commands, pipes and redirects run unchanged. Needs rtk on PATH; receipts show what ran.",
   },
 ] as const;
 export type BuiltinId = (typeof BUILTINS)[number]["id"];

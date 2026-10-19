@@ -167,6 +167,29 @@ describe("versioned built-in contributions", () => {
     expect(compacted).toContain("rtk report hello 0");
   });
 
+  it("runs exactly the command the owner approved, never its rtk equivalent", async () => {
+    const rtk = await fakeRtk();
+    cleanups.push(rtk.cleanup);
+    const f = await fixture();
+    const view = await f.pal.extensions.view();
+    await f.pal.extensions.select({ selected: [...view.selected, { id: "compact", version: 1 }], digest: view.digest });
+    const chat = await f.pal.chats.createChat("compact-ask", { projectId: f.project.id }, context);
+    const conversation = await run(f.pal, chat, 'return await tools.shell_run({command:"report hello 0"});');
+    let pending;
+    for (let i = 0; i < 400 && pending === undefined; i++) {
+      pending = (await f.pal.approvals.view(chat.id)).approvals.find((item) => item.state === "pending");
+      if (pending === undefined) await sleep(10);
+    }
+    if (pending === undefined) throw new Error("no native approval");
+    expect(pending.command).toBe("report hello 0");
+    await f.pal.approvals.decide(chat.id, pending.id, "approve", pending.digest);
+    await conversation.waitForIdle(context);
+    const messages = JSON.stringify((await conversation.context(context)).messages);
+    expect(messages).not.toContain("compact:hello");
+    expect(messages).not.toContain("rtk report");
+    expect(await rtk.calls()).toEqual([]);
+  });
+
   it("blocks a tool with a different native implementation memo before its external effect", async () => {
     const open = Harness.open;
     vi.spyOn(Harness, "open").mockImplementation((storage, options, context) => {

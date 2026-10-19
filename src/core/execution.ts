@@ -1,9 +1,9 @@
-import { execFile, spawn } from "node:child_process";
+import { spawn } from "node:child_process";
 import { mkdtemp, realpath, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join, relative, isAbsolute, sep } from "node:path";
 import { StringDecoder } from "node:string_decoder";
-import { defineExtension, defineTool, type ConversationId } from "@earendil-works/pi-durable";
+import { defineExtension, defineTool, type ConversationId, type TaskId } from "@earendil-works/pi-durable";
 import type { CodemodeNamespace } from "@earendil-works/pi-durable/codemode";
 import type { Context } from "@earendil-works/chord";
 import { Type } from "typebox";
@@ -60,31 +60,112 @@ function cleanEnv(home: string): NodeJS.ProcessEnv {
   };
 }
 
+/**
+ * Whether all of a command's output reaches the model, which is the only output rtk may condense. A pipe, redirect,
+ * here-document, command substitution or background job outside quotes sends output to a file or another program,
+ * where a summary would silently change the result. Unsure means no.
+ */
+export function outputReachesModel(command: string): boolean {
+  let quote: "'" | '"' | undefined;
+  for (let i = 0; i < command.length; i++) {
+    const c = command[i];
+    if (quote === "'") {
+      if (c === "'") quote = undefined;
+      continue;
+    }
+    if (c === "\\") {
+      i++;
+      continue;
+    }
+    if (c === "`" || (c === "$" && command[i + 1] === "(")) return false;
+    if (quote === '"') {
+      if (c === '"') quote = undefined;
+    } else if (c === "'" || c === '"') quote = c;
+    else if (c === "|" || c === ">" || c === "<" || c === "\n") return false;
+    else if (c === "&") {
+      if (command[i + 1] !== "&") return false;
+      i++;
+    }
+  }
+  return quote === undefined;
+}
+
 /** Explicit high-trust host execution. Cwd and a clean environment are not filesystem/network confinement. */
 export class HostCommands {
   readonly #running = new Map<AbortController, Promise<ShellResult>>();
+  readonly #rewrites = new Map<AbortController, Promise<string | undefined>>();
+  readonly #rewriteMs: number;
+  constructor(options: { rewriteMs?: number } = {}) {
+    this.#rewriteMs = options.rewriteMs ?? 5_000;
+  }
 
   /**
    * rtk's own rewrite, as its agent hooks use it: the compact equivalent (exit 0 or 3), or undefined to run the
    * command unchanged. It runs with an empty home, so the owner's rtk and agent configuration never apply, and a
-   * missing, slow or failing rtk only leaves the command as it was.
+   * missing, slow or failing rtk only leaves the command as it was. Its process group is killed at the deadline,
+   * on Stop and on close, which also wait for it.
    */
-  async rewrite(cwd: string, command: string): Promise<string | undefined> {
+  async rewrite(cwd: string, command: string, signal?: AbortSignal): Promise<string | undefined> {
+    if (!outputReachesModel(command)) return undefined;
+    const controller = new AbortController();
+    const active = signal === undefined ? controller.signal : AbortSignal.any([signal, controller.signal]);
+    const job = this.#rewrite(cwd, command, active);
+    this.#rewrites.set(controller, job);
+    try {
+      return await job;
+    } finally {
+      this.#rewrites.delete(controller);
+    }
+  }
+  async #rewrite(cwd: string, command: string, signal: AbortSignal): Promise<string | undefined> {
+    const stopped = () => new Error("host command stopped before dispatch; nothing was run");
+    if (signal.aborted) throw stopped();
     const home = await mkdtemp(join(tmpdir(), "pal-rtk-"));
     try {
-      return await new Promise<string | undefined>((resolve) => {
-        execFile(
-          "rtk",
-          ["rewrite", command],
-          { cwd, env: cleanEnv(home), timeout: 5_000, maxBuffer: 64 * 1024 },
-          (error, stdout) => {
-            const code = error === null ? 0 : error.code;
-            const rewritten = stdout.trim();
-            const valid = rewritten !== "" && rewritten.length <= 16_384 && !rewritten.includes("\0");
-            resolve((code === 0 || code === 3) && valid && rewritten !== command ? rewritten : undefined);
-          },
-        );
+      const result = await new Promise<{ code: number | null; stdout: string } | undefined>((resolve) => {
+        const child = spawn("rtk", ["rewrite", command], {
+          cwd,
+          detached: true,
+          stdio: ["ignore", "pipe", "ignore"],
+          env: cleanEnv(home),
+        });
+        let stdout = "";
+        const kill = () => {
+          if (child.pid !== undefined) {
+            try {
+              process.kill(-child.pid, "SIGKILL");
+            } catch {
+              /* Already exited. */
+            }
+          }
+        };
+        const timer = setTimeout(kill, this.#rewriteMs);
+        const cleanup = () => {
+          clearTimeout(timer);
+          signal.removeEventListener("abort", kill);
+          kill();
+        };
+        child.stdout.on("data", (chunk: Buffer) => {
+          stdout += chunk.toString("utf8");
+          if (stdout.length > 64 * 1024) kill();
+        });
+        child.once("error", () => {
+          cleanup();
+          resolve(undefined);
+        });
+        child.once("exit", kill);
+        child.once("close", (code) => {
+          cleanup();
+          resolve({ code, stdout });
+        });
+        signal.addEventListener("abort", kill, { once: true });
+        if (signal.aborted) kill();
       });
+      if (signal.aborted) throw stopped();
+      if (result === undefined || (result.code !== 0 && result.code !== 3)) return undefined;
+      const rewritten = result.stdout.trim();
+      const valid = rewritten !== "" && rewritten.length <= 16_384 && !rewritten.includes("\0");
+      return valid && rewritten !== command ? rewritten : undefined;
     } finally {
       await rm(home, { recursive: true, force: true });
     }
@@ -111,8 +192,8 @@ export class HostCommands {
     }
   }
   async close(): Promise<void> {
-    for (const controller of this.#running.keys()) controller.abort();
-    await Promise.allSettled(this.#running.values());
+    for (const controller of [...this.#running.keys(), ...this.#rewrites.keys()]) controller.abort();
+    await Promise.allSettled([...this.#running.values(), ...this.#rewrites.values()]);
   }
   async #execute(
     cwd: string,
@@ -210,8 +291,11 @@ export function shellTools(options: {
   root: (id: ConversationId) => Promise<string | undefined>;
   commands: HostCommands;
   locks: WorkspaceLocks;
-  /** Whether the conversation's frozen extension selection includes compact output. */
-  compact?: (id: ConversationId, context: Context) => Promise<boolean>;
+  /**
+   * Whether this call may run its rtk equivalent: the conversation selected compact output and no owner approved
+   * the call, since an approval covers exactly the command that was shown.
+   */
+  compact?: (id: ConversationId, task: TaskId, context: Context) => Promise<boolean>;
 }) {
   return defineExtension({
     name: "pal.shell",
@@ -219,7 +303,7 @@ export function shellTools(options: {
       defineTool({
         name: "shell_run",
         description:
-          "Run a trusted host command in the project folder. Not sandboxed; clean environment, bounded output, 120-second maximum. Never access Pal secrets. An interrupted command must not be blindly retried. When `executed` is present, the command ran as that rtk equivalent and its output is condensed; if the result is unusable, run `rtk bypass <command>` for the unfiltered output.",
+          "Run a trusted host command in the project folder. Not sandboxed; clean environment, bounded output, 120-second maximum. Never access Pal secrets. An interrupted command must not be blindly retried. When `executed` is present, the command ran as that rtk equivalent and its output is condensed; if the result is unusable, run `rtk bypass <command>` for the unfiltered output. Output sent to files or other programs is never condensed.",
         parameters: Type.Object({
           command: Type.String({ minLength: 1, maxLength: 16_384 }),
           timeout: Type.Optional(Type.Number({ minimum: 0.01, maximum: 120 })),
@@ -241,8 +325,8 @@ export function shellTools(options: {
           return options.locks.run(cwd, async () => {
             // Decided before the durable intent, so the receipt names exactly what was dispatched.
             const executed =
-              (await options.compact?.(api.conversationId, context)) === true
-                ? await options.commands.rewrite(cwd, args.command)
+              (await options.compact?.(api.conversationId, api.taskId, context)) === true
+                ? await options.commands.rewrite(cwd, args.command, context.abortSignal)
                 : undefined;
             const shell = {
               callId: String(api.taskId),
