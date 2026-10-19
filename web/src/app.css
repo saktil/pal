@@ -1,65 +1,92 @@
-/* Pal's "Graphite" system: neutral near-black surfaces and hierarchy from type weight and surface steps, with one blue
-   for what you act on (primary actions, links, focus, live state). Red, green and amber appear only for status and diffs;
-   the syntax colors only inside code. */
+/* Pal's "Quiet" system: neutral grey surfaces, depth from surface steps rather than shadow or colour, and one blue
+   (--primary) only for a view's primary action, focus and links. Status is a dot or plain coloured text. */
 :root {
   color-scheme: dark;
-  --bg0: #08080a;
-  --bg1: #0e0e10;
-  --bg2: #141416;
-  --bg3: #1c1c1f;
-  --bg4: #26262a;
-  --line: #1f1f23;
-  --line2: #2a2a2f;
-  --line3: #3a3a41;
-  --tx: #ececee;
-  --tx2: #a3a3ab;
-  --tx3: #85858e;
-  --ac: #7aa5ff;
-  --acbg: rgba(122, 165, 255, 0.12);
-  --acln: rgba(122, 165, 255, 0.4);
-  --primary: #376ae8;
-  --primary-hi: #3062dc;
+
+  /* Surfaces: neutral, very slightly cool. Depth comes from these steps, not from shadows or colour. */
+  --bg0: #111214; /* wells: terminal, diff body, deep inputs */
+  --bg1: #141517; /* app + chat background */
+  --side: #17181b; /* sidebar and right-hand panels */
+  --bg2: #1b1c1f; /* cards: code blocks, approval, composer */
+  --bg3: #222327; /* hover, secondary buttons, inline code */
+  --bg4: #26272c; /* selected row, pressed icon button */
+  --line: #222327;
+  --line2: #2a2b30;
+  --line3: #3a3b42;
+
+  /* Text */
+  --tx: #e7e7ea;
+  --tx2: #a2a3aa;
+  --tx3: #85868e; /* still >= 4.5:1 on --side */
+
+  /* The only blue. Primary = send, approve, continue, focus. --ac = links, logo eyes. */
+  --ac: #8faaef;
+  --acbg: rgba(143, 170, 239, 0.1);
+  --acln: rgba(143, 170, 239, 0.35);
+  --primary: #4a6fcc; /* white text 4.9:1 */
+  --primary-hi: #5579d4;
   --on-primary: #ffffff;
-  --focus: #7aa5ff;
-  --ok: #86c29d;
-  --okbg: rgba(134, 194, 157, 0.1);
-  --wa: #d8b06c;
-  --wabg: rgba(216, 176, 108, 0.09);
-  --waln: #4d4130;
-  --er: #e6939c;
-  --erbg: rgba(230, 147, 156, 0.09);
-  --erln: #55313a;
-  --danger: #8f2f3b;
-  --danger-hi: #a13744;
-  --addbg: rgba(134, 194, 157, 0.1);
-  --addtx: #b0dbbf;
-  --delbg: rgba(230, 147, 156, 0.1);
-  --deltx: #f0b9c0;
-  --selection: rgba(255, 255, 255, 0.16);
-  --focus-ring: rgba(122, 165, 255, 0.14);
-  --syn-k: #7aa5ff;
-  --syn-s: #9fd17a;
-  --syn-n: #f5a46c;
-  --syn-c: #7c8296;
-  --syn-f: #78d3f5;
-  --syn-t: #c1a0f7;
-  --syn-p: #72d6c7;
-  --syn-m: #e2b46e;
-  --bubble: #1c1c1f;
-  --bubble-line: #26262a;
-  --shadow: 0 14px 36px rgba(0, 0, 0, 0.55), 0 1px 3px rgba(0, 0, 0, 0.4);
-  --scrim: rgba(0, 0, 0, 0.6);
-  --sans: "Atkinson Hyperlegible Next Variable", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
-  --mono: "Atkinson Hyperlegible Mono Variable", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --focus: #5b7bd0;
+  --focus-ring: rgba(91, 123, 208, 0.18);
+
+  /* Status: shown as 6px dots or text, never as coloured cards. */
+  --ok: #93bfa5;
+  --okbg: rgba(147, 191, 165, 0.08);
+  --wa: #c9a66b;
+  --wabg: rgba(201, 166, 107, 0.08);
+  --waln: #4a4232;
+  --er: #c99199;
+  --erbg: rgba(201, 145, 153, 0.08);
+  --erln: #4a3236;
+  --danger: #a63d4b;
+  --danger-hi: #b24a58;
+
+  /* Diffs */
+  --addbg: rgba(147, 191, 165, 0.07);
+  --addtx: #b3d2bf;
+  --delbg: rgba(201, 145, 153, 0.07);
+  --deltx: #d7aeb4;
+
+  --selection: rgba(143, 170, 239, 0.22);
+
+  /* Syntax: desaturated so code never shouts. */
+  --syn-k: #9db1e6;
+  --syn-s: #a9c29b;
+  --syn-n: #d2b48c;
+  --syn-c: #7a7b83;
+  --syn-f: #b9c3d9;
+  --syn-t: #c2b3e3;
+  --syn-p: #a7c7c9;
+  --syn-m: #c9b48a;
+
+  /* Chat */
+  --bubble: #232428; /* user message, no border */
+  --bubble-line: #232428;
+
+  --shadow: 0 12px 32px rgba(0, 0, 0, 0.35), 0 1px 2px rgba(0, 0, 0, 0.3);
+  --scrim: rgba(8, 8, 10, 0.55);
+
+  /* Type */
+  --sans: "Geist Variable", ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
+  --mono: "Geist Mono Variable", ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --display-font: "Bricolage Grotesque Variable", var(--sans);
+  --display: var(--display-font);
+
+  /* Shape */
+  --radius-sm: 8px; /* buttons, rows, icon buttons */
+  --radius-md: 12px; /* cards, code blocks, approval */
+  --radius-lg: 16px; /* composer, sheets */
+
   --ease: cubic-bezier(0.2, 0.8, 0.2, 1);
   --fast: 120ms;
   --mid: 190ms;
 }
-/* Light Graphite: the same roles in ink on white; every text/surface pair here is at least 4.5:1. */
+/* Light: the same roles in ink on white; every text/surface pair here is at least 4.5:1. */
 :root[data-theme="light"] {
   color-scheme: light;
   --bg0: #f4f4f5;
   --bg1: #fafafa;
+  --side: #f7f7f8;
   --bg2: #ffffff;
   --bg3: #f0f0f2;
   --bg4: #e6e6e9;
@@ -152,7 +179,7 @@ svg.i {
   height: 16px;
   fill: none;
   stroke: currentColor;
-  stroke-width: 1.5;
+  stroke-width: 1.6;
   stroke-linecap: round;
   stroke-linejoin: round;
   flex: 0 0 auto;
@@ -174,11 +201,11 @@ svg.i {
   align-items: center;
   justify-content: center;
   gap: 6px;
-  height: 30px;
-  padding: 0 11px;
-  border-radius: 8px;
-  border: 1px solid var(--line2);
-  background: var(--bg2);
+  height: 32px;
+  padding: 0 12px;
+  border-radius: var(--radius-sm);
+  border: 1px solid transparent;
+  background: var(--bg3);
   color: var(--tx);
   font-size: 13px;
   font-weight: 550;
@@ -191,14 +218,19 @@ svg.i {
     transform var(--fast) var(--ease);
 }
 .b:hover:not(:disabled) {
-  background: var(--bg3);
-  border-color: var(--line3);
+  background: var(--bg4);
 }
 .b:active:not(:disabled) {
   transform: translateY(1px) scale(0.98);
 }
 .b:disabled {
   opacity: 0.42;
+}
+.b.i {
+  width: 34px;
+  height: 34px;
+  padding: 0;
+  color: var(--tx2);
 }
 .b.p {
   background: var(--primary);
@@ -222,6 +254,11 @@ svg.i {
   background: var(--bg3);
   color: var(--tx);
 }
+.b.i[aria-pressed="true"],
+.b.i[aria-expanded="true"] {
+  background: var(--bg4);
+  color: var(--tx);
+}
 .b.d {
   color: var(--er);
 }
@@ -232,10 +269,6 @@ svg.i {
 }
 .b.dz:hover:not(:disabled) {
   background: var(--danger-hi);
-}
-.b.i {
-  width: 30px;
-  padding: 0;
 }
 .b.sm {
   height: 26px;
@@ -251,6 +284,46 @@ svg.i {
   background: var(--bg3);
   color: var(--tx);
   border-color: var(--line2);
+}
+/* An icon button names itself in a tooltip (data-tip) on hover and keyboard focus; aria-label stays its name.
+   Hidden tooltips are not rendered, so they never widen a scrolling container. */
+.tip {
+  position: relative;
+}
+.tip::after {
+  content: attr(data-tip);
+  display: none;
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 50%;
+  transform: translateX(-50%);
+  white-space: nowrap;
+  padding: 5px 9px;
+  border-radius: 7px;
+  background: var(--bg4);
+  color: var(--tx);
+  font: 500 12px/1.4 var(--sans);
+  box-shadow: var(--shadow);
+  pointer-events: none;
+  z-index: 50;
+  animation: fade var(--fast) var(--ease);
+}
+.tip.up::after {
+  top: auto;
+  bottom: calc(100% + 8px);
+}
+.tip.end::after {
+  left: auto;
+  right: 0;
+  transform: none;
+}
+.tip:focus-visible::after {
+  display: block;
+}
+@media (hover: hover) {
+  .tip:hover::after {
+    display: block;
+  }
 }
 .seg {
   display: inline-flex;

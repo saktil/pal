@@ -31,7 +31,7 @@
     document.documentElement.dataset.theme = theme;
     document
       .querySelector('meta[name="theme-color"]')
-      ?.setAttribute("content", theme === "light" ? "#f7f8fc" : "#0b0e16");
+      ?.setAttribute("content", theme === "light" ? "#f4f4f5" : "#141517");
   });
 
   async function signOut() {

@@ -14,7 +14,7 @@ markdown.renderer.rules.link_open = (tokens, index, options, env, renderer) => {
     : defaultLink(tokens, index, options, env, renderer);
 };
 
-const copyIcon = `<svg class="i" viewBox="0 0 16 16" aria-hidden="true"><path d="${ICONS.copy}"/></svg>`;
+const copyIcon = `<svg class="i" viewBox="0 0 24 24" aria-hidden="true"><path d="${ICONS.copy}"/></svg>`;
 /** A code block with its language and a Copy button; `codeCopy` in copy.ts handles the click. */
 function codeBlock(code: string, info: string): string {
   const language = info.trim().split(/\s+/)[0]?.toLowerCase() ?? "";

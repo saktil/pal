@@ -5,7 +5,7 @@
   import Icon from "../lib/Icon.svelte";
   import { shownTheme, viewport } from "../lib/state.svelte.ts";
 
-  const FONT = "Atkinson Hyperlegible Mono Variable";
+  const FONT = "Geist Mono Variable";
   /** ANSI colors on Pal's graphite background: each normal color stays legible as text, bright ones step up. */
   const THEME = {
     background: "#08080a",

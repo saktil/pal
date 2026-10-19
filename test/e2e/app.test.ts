@@ -316,7 +316,7 @@ describe("Pal in a browser", () => {
           .locator(".hl-k")
           .first()
           .evaluate((node) => getComputedStyle(node).color),
-      ).toBe("rgb(122, 165, 255)");
+      ).toBe("rgb(157, 177, 230)");
       expect(await block.locator("code").evaluate((node) => getComputedStyle(node).tabSize)).toBe("4");
       await page.context().grantPermissions(["clipboard-read", "clipboard-write"], { origin: base });
       const copy = block.locator("button[data-copy]");
@@ -406,7 +406,7 @@ describe("Pal in a browser", () => {
     // Dark stays the default even though this browser reports a light system preference.
     expect(await page.evaluate(() => matchMedia("(prefers-color-scheme: light)").matches)).toBe(true);
     expect(await theme()).toBe("dark");
-    expect(await background()).toBe("rgb(14, 14, 16)");
+    expect(await background()).toBe("rgb(20, 21, 23)");
     await page.goto(`${base}/#/settings/general`);
     const group = page.getByRole("radiogroup", { name: "Theme" });
     await group.getByRole("radio", { name: "Light" }).click();
