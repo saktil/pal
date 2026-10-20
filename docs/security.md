@@ -7,8 +7,9 @@ for sensitive work.
 ## Owner access
 
 - **Setup.** The first owner is created only through a one-time setup token printed on the server's terminal.
-  The passphrase must have at least 12 characters and is stored as an scrypt hash. Repeated wrong passphrases are
-  throttled.
+  The passphrase must have at least 12 characters and is stored as an scrypt hash. Sign-in admits at most ten
+  combined pending attempts and wrong passphrases completed in the last ten minutes. Pending attempts cannot age
+  out; successes and internal errors release their slot. This process-local limiter resets on restart.
 - **Sessions.** Sessions are random opaque tokens in an `HttpOnly`, `SameSite=Strict` cookie, `Secure` behind
   HTTPS. They are stored only as SHA-256 hashes and expire after 30 days. Signing out also closes that session's
   terminal and browser connections.
