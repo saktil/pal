@@ -309,12 +309,23 @@ export const api = {
   prepareWorkspace: (id: string) => call<{ chat: ChatSummary }>("POST", `chats/${id}/workspace`, {}),
   deleteChat: (id: string) => call<{ removed: true }>("DELETE", `chats/${id}`),
   chat: (id: string) =>
-    call<{ chat: ChatSummary; model: string | null; provider: string | null; effort: Effort }>("GET", `chats/${id}`),
-  send: (id: string, key: string, text: string, whenBusy: "followUp" | "steer", attachments: string[]) =>
+    call<{ chat: ChatSummary; model: string | null; provider: string | null; effort: Effort; configuration: string }>(
+      "GET",
+      `chats/${id}`,
+    ),
+  send: (
+    id: string,
+    key: string,
+    text: string,
+    whenBusy: "followUp" | "steer",
+    attachments: string[],
+    configuration: string,
+  ) =>
     call<{ admission: { submissionId: number } }>("POST", `chats/${id}/inputs`, {
       requestId: key,
       text,
       whenBusy,
+      configuration,
       ...(attachments.length === 0 ? {} : { attachments }),
     }),
   /** Admit an upload, then stream its bytes; the server checks size and hashes while receiving. */
@@ -345,8 +356,13 @@ export const api = {
       decision,
       digest,
     }),
-  setChatModel: (id: string, model: string, effort?: Effort, provider?: string) =>
-    call<{ model: string; provider: string; effort: Effort }>("PUT", `chats/${id}/model`, { model, effort, provider }),
+  setChatModel: (id: string, model: string, effort?: Effort, provider?: string, expected?: string) =>
+    call<{ model: string; provider: string; effort: Effort; configuration: string }>("PUT", `chats/${id}/model`, {
+      model,
+      effort,
+      provider,
+      expected,
+    }),
 
   mcp: () => call<McpListing>("GET", "mcp"),
   mcpReview: (enable: boolean) => call<McpListing>("POST", "mcp/review", { enable }),

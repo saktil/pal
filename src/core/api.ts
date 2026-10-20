@@ -16,7 +16,14 @@ import { StdioConfigError, StdioServerBody } from "../pi/mcp-stdio.ts";
 import type { Pal } from "./app.ts";
 import { ApprovalDecision, CommandModeBody } from "./approvals.ts";
 import { ExtensionSelection } from "./extensions.ts";
-import { AdmissionStopped, ChatNotFound, ProjectUnavailable, type ChatSummary } from "./chats.ts";
+import {
+  AdmissionStopped,
+  chatConfiguration,
+  ChatNotFound,
+  ConfigurationRevision,
+  ProjectUnavailable,
+  type ChatSummary,
+} from "./chats.ts";
 import { cookie, HttpError, isOwnOrigin, readJson, sendJson } from "./http.ts";
 import { OwnerError, SESSION_COOKIE, SESSION_MAX_AGE_SECONDS } from "./owner.ts";
 import { WorkspaceBusy } from "./execution.ts";
@@ -68,6 +75,7 @@ const ChatModelChoice = Type.Object(
   {
     ...ModelChoice.properties,
     provider: Type.Optional(ProviderId),
+    expected: Type.Optional(ConfigurationRevision),
     // Every Pi thinking level; the chosen model's own support is enforced by clamping below.
     effort: Type.Optional(Type.Enum(["off", "minimal", "low", "medium", "high", "xhigh", "max"])),
   },
@@ -715,6 +723,7 @@ export function createApi(pal: Pal, publicOrigin?: string, releases?: Pick<Relea
           model: agent.model?.modelId ?? null,
           provider: agent.model?.provider ?? null,
           effort: model === undefined ? "off" : clampThinkingLevel(model, agent.thinkingLevel),
+          configuration: chatConfiguration(agent),
         });
       }
       if (action === "extensions" && path.length === 3 && method === "GET")
@@ -774,11 +783,20 @@ export function createApi(pal: Pal, publicOrigin?: string, releases?: Pick<Relea
           model,
           provider = CHATGPT_PROVIDER,
           effort: requested,
+          expected,
         } = validate(ChatModelChoice, await readJson(request));
         const known = await chosenModel(provider, model);
         const effort = clampThinkingLevel(known, requested ?? (await conversation.agent(context)).thinkingLevel);
-        await conversation.configure({ model: { provider, modelId: model }, thinkingLevel: effort }, context);
-        return send(200, { chat: await describeChat(chat), model, provider, effort });
+        const configuration = await pal.chats.configure(
+          chat.id,
+          {
+            model: { provider, modelId: model },
+            thinkingLevel: effort,
+            ...(expected === undefined ? {} : { expected }),
+          },
+          context,
+        );
+        return send(200, { chat: await describeChat(chat), model, provider, effort, configuration });
       }
       if (action === "events" && method === "GET") return observe(request, response, chat.id, chat.conversationId);
     }

@@ -91,8 +91,9 @@ Settings → **Models**:
     point at a private network address, because you chose it.
 
 The model picker in each chat lists ChatGPT once you sign in and every enabled provider, with search. Choosing a
-model from another provider sends that chat's history to it with your next message. **Use for new chats** makes it
-the default.
+model from another provider sends that chat's history to it with your next message. Model and reasoning changes
+wait until active and queued work finishes. If another tab changes the saved settings, Send refuses until you reload
+and review them; your draft stays. **Use for new chats** makes the selection the default.
 Pal never reads model keys from environment variables such as `OPENAI_API_KEY`.
 
 ## Internet tools (MCP)

@@ -174,6 +174,30 @@ describe("saved chat settings", () => {
     },
   );
 
+  it("refuses a destination changed in another tab and keeps the draft for an explicit retry", async () => {
+    const { page, base, saved, provider, errors } = await setup(1440);
+    await page.goto(`${base}/#/chat/${saved.id}`);
+    const control = page.getByRole("button", { name: /^Model and reasoning:/ });
+    await expect.poll(() => control.getAttribute("title")).toContain("Anthropic API");
+    const changed = await page.request.put(`${base}/api/chats/${saved.id}/model`, {
+      headers: { origin: base },
+      data: { provider: "openrouter", model: "~deepseek/deepseek-flash-latest" },
+    });
+    expect(changed.status()).toBe(200);
+    await page.getByLabel("Message", { exact: true }).fill("Keep this destination explicit");
+    const submitted = page.waitForResponse(`${base}/api/chats/${saved.id}/inputs`);
+    await page.getByRole("button", { name: "Send", exact: true }).click();
+    expect((await submitted).status()).toBe(409);
+    expect(provider.requests).toEqual([]);
+    await page.getByRole("alert").filter({ hasText: "Chat settings changed elsewhere" }).waitFor();
+    expect(await page.getByLabel("Message", { exact: true }).inputValue()).toBe("Keep this destination explicit");
+    await page.getByRole("button", { name: "Try again", exact: true }).click();
+    await expect.poll(() => control.getAttribute("title")).toContain("OpenRouter");
+    await page.getByRole("button", { name: "Send", exact: true }).click();
+    await expect.poll(() => provider.requests.map((request) => request.path)).toEqual(["/api/v1/chat/completions"]);
+    expect(errors).toEqual([]);
+  });
+
   it("keeps malformed successful responses out of chat and project settings", async () => {
     const { page, base, saved, errors, mutations } = await setup(1440);
     await page.route(`**/api/chats/${saved.id}`, (route) =>

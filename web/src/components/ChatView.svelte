@@ -97,6 +97,7 @@
   let model: string | null = $state(null);
   let provider: string | null = $state(null);
   let effort: Effort = $state("off");
+  let configuration = $state("");
   let metadata = $state<"loading" | "unset" | "configured" | "failed">("loading");
   let metadataChat = $state("");
   let metadataError: string | undefined = $state();
@@ -111,7 +112,7 @@
     draft += `${draft ? "\n\n" : ""}${text}`;
     composer?.focus();
   }
-  let pending: { key: string; text: string; files: string } | undefined;
+  let pending: { key: string; text: string; files: string; configuration: string } | undefined;
   let attachments: Upload[] = $state([]);
   let uploading = $state(0);
   let whenBusy: "followUp" | "steer" = $state("followUp");
@@ -149,12 +150,14 @@
     model = null;
     provider = null;
     effort = "off";
+    configuration = "";
     try {
       const loaded = await api.chat(id);
       if (epoch !== loadEpoch) return;
       model = loaded.model;
       provider = loaded.provider;
       effort = loaded.effort;
+      configuration = loaded.configuration;
       metadata = loaded.model === null ? "unset" : "configured";
     } catch (failure) {
       if (epoch !== loadEpoch) return;
@@ -345,20 +348,30 @@
     const id = chat.id,
       epoch = loadEpoch;
     const ids = attachments.map((attachment) => attachment.id);
-    // A retry after a lost response reuses the key, so the server admits the message once.
-    if (pending?.text !== text || pending.files !== ids.join()) pending = { key: requestId(), text, files: ids.join() };
     sending = true;
     error = undefined;
     try {
+      let selected = configuration;
       if (model === null && effective !== null) {
-        const chosen = await api.setChatModel(id, effective.modelId, undefined, effective.provider);
+        const chosen = await api.setChatModel(id, effective.modelId, undefined, effective.provider, selected);
         if (epoch !== loadEpoch) return;
         model = chosen.model;
         provider = chosen.provider;
         effort = chosen.effort;
+        configuration = selected = chosen.configuration;
         metadata = "configured";
       }
-      const { admission } = await api.send(id, pending.key, text, stream?.running ? whenBusy : "followUp", ids);
+      // A retry after a lost response reuses the same destination and key.
+      if (pending?.text !== text || pending.files !== ids.join() || pending.configuration !== selected)
+        pending = { key: requestId(), text, files: ids.join(), configuration: selected };
+      const { admission } = await api.send(
+        id,
+        pending.key,
+        text,
+        stream?.running ? whenBusy : "followUp",
+        ids,
+        selected,
+      );
       if (epoch !== loadEpoch) return;
       if (stream?.running) queuedTexts[admission.submissionId] = text;
       pending = undefined;
@@ -366,10 +379,18 @@
       attachments = [];
       if (chat.title === null) void refreshProjects();
     } catch (failure) {
-      if (epoch === loadEpoch) error = failure instanceof ApiError ? failure.message : String(failure);
+      if (epoch === loadEpoch) settingsFailure(failure);
     } finally {
       if (epoch === loadEpoch) sending = false;
     }
+  }
+
+  function settingsFailure(failure: unknown) {
+    if (failure instanceof ApiError && failure.code === "configuration_stale") {
+      metadata = "failed";
+      metadataError = failure.message;
+      pending = undefined;
+    } else error = failure instanceof ApiError ? failure.message : String(failure);
   }
 
   async function chooseModel(choice: { provider: string; id: string }, level?: Effort) {
@@ -378,14 +399,15 @@
       epoch = loadEpoch;
     choosing = true;
     try {
-      const chosen = await api.setChatModel(id, choice.id, level, choice.provider);
+      const chosen = await api.setChatModel(id, choice.id, level, choice.provider, configuration);
       if (epoch !== loadEpoch) return;
       model = chosen.model;
       provider = chosen.provider;
       effort = chosen.effort;
+      configuration = chosen.configuration;
       metadata = "configured";
     } catch (failure) {
-      if (epoch === loadEpoch) error = failure instanceof ApiError ? failure.message : String(failure);
+      if (epoch === loadEpoch) settingsFailure(failure);
     } finally {
       if (epoch === loadEpoch) choosing = false;
     }
