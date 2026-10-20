@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount } from "svelte";
   import { api, ApiError, type ChatSummary, requestId, type WorkspaceMode } from "../lib/api.ts";
+  import type { ReviewFeedback } from "../../../src/core/feedback.ts";
   import Icon from "../lib/Icon.svelte";
   import {
     app,
@@ -108,7 +109,14 @@
   }
   /** A file Files asked Changes to open. */
   let diffPath: string | undefined = $state();
-  let chatView: { insertText(text: string): void; openTools(): void } | undefined = $state();
+  let chatView:
+    | {
+        insertText(text: string): boolean;
+        insertFeedback(text: string, feedback: ReviewFeedback): boolean;
+        hasFeedback(id: string): boolean;
+        openTools(): void;
+      }
+    | undefined = $state();
   let changesView: { refresh(): Promise<void> } | undefined = $state();
   let changeStatus: { busy: boolean; files: number | undefined; add: number; del: number } | undefined = $state();
   function openPanel(view: PanelView) {
@@ -301,6 +309,9 @@
             <div class="chat-area">
               {#key located.chat.id}<ChatView
                   bind:this={chatView}
+                  onAdmitted={() => {
+                    void changesView?.refresh();
+                  }}
                   chat={located.chat}
                   project={located.project}
                   onNewChat={(mode) => newChat(located.project.id, mode)}
@@ -414,8 +425,9 @@
                         project={located.project}
                         workspace={located.chat.workspace}
                         initialPath={diffPath}
-                        onFeedback={(text) => {
-                          const added = chatView?.insertText(text) ?? false;
+                        composed={(id) => chatView?.hasFeedback(id) ?? false}
+                        onFeedback={(text, feedback) => {
+                          const added = chatView?.insertFeedback(text, feedback) ?? false;
                           if (added && size !== "desktop") panelRoute = undefined;
                           return added;
                         }}

@@ -7,6 +7,8 @@ import { join } from "node:path";
 import { promisify } from "node:util";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import { watchEvents } from "@earendil-works/pi-durable";
+import { createModels, fauxAssistantMessage, fauxProvider } from "@earendil-works/pi-ai";
+import { commentFeedback } from "../src/core/feedback.ts";
 import { afterEach, describe, expect, it } from "vitest";
 import { startMcpFixture } from "./fixtures/mcp-server.ts";
 import { STDIO_FIXTURE } from "./fixtures/stdio-server.ts";
@@ -95,6 +97,18 @@ async function signedIn(publicOrigin?: string) {
   const app = await start(publicOrigin);
   await app.api("POST", "setup", { token: app.pal.owner.setupToken, passphrase: "correct horse battery" });
   return app;
+}
+
+async function fakeChatModel(pal: Awaited<ReturnType<typeof openPal>>, chatId: string) {
+  const faux = fauxProvider();
+  (pal.models as ReturnType<typeof createModels>).setProvider(faux.provider);
+  faux.setResponses([fauxAssistantMessage("ok")]);
+  const model = faux.getModel();
+  await pal.chats.configure(
+    chatId,
+    { model: { provider: model.provider, modelId: model.id }, thinkingLevel: "off" },
+    context,
+  );
 }
 
 async function putBytes(base: string, cookie: string, id: string, bytes: Uint8Array) {
@@ -351,7 +365,19 @@ describe("API", () => {
       .comment;
     expect(
       (await api("POST", `${path}/comments/sent`, { ids: [comment.id], workspace: chat.workspace.id })).status,
+    ).toBe(404);
+    expect((await api("GET", `${path}/changes?${query}`)).body.comments[0].sent).toBe(false);
+    await fakeChatModel(pal, chat.id);
+    expect(
+      (
+        await api("POST", `chats/${chat.id}/inputs`, {
+          requestId: "worktree-feedback-input",
+          text: commentFeedback(comment),
+          feedback: { ids: [comment.id], scope: "normal" },
+        })
+      ).status,
     ).toBe(200);
+    await pal.harness.waitForIdle(context);
     expect((await api("GET", `${path}/changes`)).body.comments).toEqual([]);
     expect((await api("GET", `${path}/changes?${query}`)).body.comments[0].sent).toBe(true);
     expect((await api("POST", `${path}/discard`, review)).status).toBe(200);
@@ -428,10 +454,32 @@ describe("API", () => {
     expect(added.status).toBe(200);
     expect((await api("GET", `${path}/changes`)).body.comments).toEqual([]);
     expect((await api("GET", `${path}/changes?scope=include-ignored`)).body.comments).toHaveLength(1);
-    expect((await api("POST", `${path}/comments/sent`, { ids: [added.body.comment.id] })).status).toBe(403);
+    expect((await api("POST", `${path}/comments/sent`, { ids: [added.body.comment.id] })).status).toBe(404);
+    const chat = (await api("POST", "chats", { requestId: "ignored-feedback-chat", projectId: project.id })).body.chat;
+    await fakeChatModel(pal, chat.id);
+    const input = { requestId: "ignored-feedback-input", text: commentFeedback(added.body.comment) };
     expect(
-      (await api("POST", `${path}/comments/sent`, { ids: [added.body.comment.id], scope: "include-ignored" })).status,
+      (
+        await api("POST", `chats/${chat.id}/inputs`, {
+          ...input,
+          feedback: { ids: [added.body.comment.id], scope: "normal" },
+        })
+      ).status,
+    ).toBe(403);
+    expect((await api("GET", `${path}/changes?scope=include-ignored`)).body.comments[0].sent).toBe(false);
+    expect(await pal.store.database.get("SELECT count(*) AS n FROM pal_admissions WHERE chat_id = ?", chat.id)).toEqual(
+      { n: 0 },
+    );
+    expect(
+      (
+        await api("POST", `chats/${chat.id}/inputs`, {
+          ...input,
+          feedback: { ids: [added.body.comment.id], scope: "include-ignored" },
+        })
+      ).status,
     ).toBe(200);
+    await pal.harness.waitForIdle(context);
+    expect((await api("GET", `${path}/changes?scope=include-ignored`)).body.comments[0].sent).toBe(true);
     expect((await fetch(`${base}/api/${path}/changes?scope=include-ignored`)).status).toBe(401);
     expect(
       (
@@ -583,7 +631,7 @@ describe("API", () => {
       409,
     );
     const other = (await api("POST", "projects", { requestId: "other-comments-api", name: "Other" })).body.project;
-    await api("POST", `projects/${other.id}/comments/sent`, { ids: [id] });
+    expect((await api("POST", `projects/${other.id}/comments/sent`, { ids: [id] })).status).toBe(404);
     await api("DELETE", `projects/${other.id}/comments/${id}`);
     expect((await api("GET", `projects/${project.id}/changes`)).body.comments).toHaveLength(1);
     expect((await api("GET", `projects/${project.id}/changes`)).body.comments[0].sent).toBe(false);

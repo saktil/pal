@@ -11,18 +11,21 @@
   } from "../lib/api.ts";
   import Icon from "../lib/Icon.svelte";
   import ConfirmRemoval from "./ConfirmRemoval.svelte";
+  import { commentFeedback, type ReviewFeedback } from "../../../src/core/feedback.ts";
 
   let {
     project,
     workspace,
     initialPath,
     onFeedback,
+    composed,
     onStatus,
   }: {
     project: Project;
     workspace?: Workspace | null | undefined;
     initialPath?: string | undefined;
-    onFeedback?: (text: string) => boolean;
+    onFeedback?: (text: string, feedback: ReviewFeedback) => boolean;
+    composed?: (id: string) => boolean;
     /** What the panel header shows: whether a scan is running and the totals of the last one. */
     onStatus?: (status: { busy: boolean; files: number | undefined; add: number; del: number }) => void;
   } = $props();
@@ -100,6 +103,7 @@
   );
   const outdatedCount = $derived(unplaced.filter((comment) => comment.outdated).length);
   const pending = $derived(changes?.comments.filter((comment) => !comment.sent) ?? []);
+  const copied = $derived(pending.some((comment) => composed?.(comment.id) === true));
 
   /** Added and removed lines in one file's patch, counted inside its hunks. */
   function counts(patch: string): { add: number; del: number } {
@@ -245,17 +249,15 @@
       if (composing === target && draft === text) clearDraft();
     });
   }
-  async function feedback() {
+  function feedback() {
     const sending = pending;
     const added = onFeedback?.(
       [
         "Review feedback:",
         `Workspace: ${root}${workspace == null ? "" : ` (${workspace.mode}, ${workspace.id})`}.`,
-        ...sending.map(
-          (comment) =>
-            `${comment.path} (revision ${comment.revision.slice(0, 12)}), line ${comment.line}${comment.outdated ? " (outdated)" : ""}: ${comment.lineText.trim()}\n${comment.body}`,
-        ),
+        ...sending.map(commentFeedback),
       ].join("\n\n"),
+      { ids: sending.map((comment) => comment.id), scope },
     );
     if (added !== true) {
       done = undefined;
@@ -263,15 +265,9 @@
         "Feedback could not be added to the draft. Your comments are kept; make room in the composer and copy again.";
       return;
     }
-    await act(() =>
-      api.commentsSent(
-        project.id,
-        sending.map((comment) => comment.id),
-        scope,
-        workspace?.id,
-      ),
-    );
-    if (error === undefined) done = "Feedback is in the composer. Edit it if needed, then send.";
+    error = undefined;
+    done =
+      "Feedback is in the composer, not yet admitted. Send it there, or copy again from here. Edited feedback stays recoverable in this panel.";
   }
   /** Only by the owner's choice: a commit by itself never moves the baseline, so it can't hide changes from review. */
   async function moveBaseline() {
@@ -455,7 +451,9 @@
       {/if}
       <span class="grow"></span>
       {#if onFeedback}<button class="b" disabled={busy || pending.length === 0} onclick={feedback}
-          >Send feedback to chat{pending.length > 0 ? ` (${pending.length})` : ""}</button
+          >{copied ? "Copy feedback again" : "Send feedback to chat"}{pending.length > 0
+            ? ` (${pending.length})`
+            : ""}</button
         >{/if}
     </div>
   {/if}
@@ -510,7 +508,9 @@
         >You · {comment.path === file?.path ? "" : `${comment.path} · `}line {comment.line}</span
       >
       {#if comment.outdated}<span class="warning">Outdated</span>{/if}
-      <span>·</span><span>{comment.sent ? "Added to composer" : "Not sent"}</span>
+      <span>·</span><span
+        >{comment.sent ? "Admitted to chat" : composed?.(comment.id) ? "In composer · not admitted" : "Not sent"}</span
+      >
       <span class="grow"></span>
       <button
         class="b i q sm tip end"

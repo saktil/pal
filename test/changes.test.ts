@@ -87,7 +87,7 @@ describe("revision-bound Git changes", () => {
     expect((await changes.list(project.id, "include-ignored")).comments).toMatchObject([
       { id: comment.id, lineText: "ignored fixture" },
     ]);
-    await expect(changes.markSent(project.id, [comment.id])).rejects.toMatchObject({ code: "ignored_permission" });
+    expect((await changes.list(project.id, "include-ignored")).comments[0]?.sent).toBe(false);
     await expect(changes.discard(project.id, path, revision)).rejects.toMatchObject({ code: "ignored_permission" });
     await changes.discard(project.id, path, revision, "include-ignored");
     await expect(access(join(root, path))).rejects.toThrow();
@@ -263,7 +263,7 @@ describe("revision-bound Git changes", () => {
   });
 
   it("keeps line comments on the revision shown and marks them outdated when that line changes", async () => {
-    const { root, project, changes } = await setup();
+    const { root, project, changes, store } = await setup();
     await writeFile(join(root, "file.txt"), "one\ntwo\nthree\n");
     const shown = (await changes.list(project.id)).files[0];
     if (shown === undefined) throw new Error("missing diff");
@@ -289,8 +289,9 @@ describe("revision-bound Git changes", () => {
       ["two", true],
       ["three", false],
     ]);
-    await changes.markSent(project.id, [comment.id]);
-    expect((await changes.list(project.id)).comments.map((c) => c.sent)).toEqual([true, false]);
+    // An old composed-only receipt must not become evidence of durable admission after an upgrade.
+    await store.database.run("UPDATE pal_change_comments SET sent_at = ? WHERE id = ?", Date.now(), comment.id);
+    expect((await changes.list(project.id)).comments.map((c) => c.sent)).toEqual([false, false]);
     await changes.uncomment(project.id, comment.id);
     expect((await changes.list(project.id)).comments.map((c) => c.body)).toEqual(["Keep three."]);
 

@@ -47,7 +47,9 @@ and package installer are not available yet. See [extension architecture](docs/a
   owner-approved local programs. Grants are per project, lookups are cached with explicit freshness, and results
   render as source cards.
 - **Review.** The Changes panel shows real Git diffs against a recorded baseline, with reviewed marks, line comments
-  you can send to the composer, and discards bound to the revision you looked at. The Files panel has fast
+  you can copy to the composer, and discards bound to the revision you looked at. Comments remain recoverable until
+  an input containing their unchanged feedback is durably admitted; copying or editing it is not acknowledgement.
+  Previously copied comments without admission receipts are offered again. The Files panel has fast
   [fff](https://github.com/dmtrKovalenko/fff)-powered search.
 - **Human terminal.** A real shell in the browser (node-pty + xterm). Reconnect from your phone and take over
   control.

@@ -1786,22 +1786,6 @@ describe("Pal in a browser", () => {
       await shoot(`comments-${width}`);
     }
     await page.setViewportSize({ width: 1440, height: 900 });
-    const receiptRoute = `**/api/projects/${project.id}/comments/sent`;
-    await page.route(receiptRoute, (route) =>
-      route.fulfill({
-        status: 503,
-        contentType: "application/json",
-        body: JSON.stringify({ error: "fixture_error", message: "Feedback receipt failed" }),
-      }),
-    );
-    try {
-      await panel.getByRole("button", { name: "Send feedback to chat (2)" }).click();
-      await panel.getByRole("alert").filter({ hasText: "Feedback receipt failed" }).waitFor();
-      expect(await panel.getByRole("status").filter({ hasText: "Feedback is in the composer" }).count()).toBe(0);
-      expect(await panel.getByText("Added to composer").count()).toBe(0);
-    } finally {
-      await page.unroute(receiptRoute);
-    }
     await page.getByLabel("Message").fill("");
     await panel.getByRole("button", { name: "Send feedback to chat (2)" }).click();
     await expect
@@ -1809,10 +1793,11 @@ describe("Pal in a browser", () => {
       .toMatch(
         /^Review feedback:\n\nWorkspace: [^\n]+\n\nbase\.txt \(revision [0-9a-f]{12}\), line 2 \(outdated\): two\nRename two\.\n\nbase\.txt \(revision [0-9a-f]{12}\), line 3: three\nKeep three\.$/,
       );
-    await expect.poll(() => panel.getByText("Added to composer").count()).toBe(2);
-    await expect
-      .poll(() => panel.getByRole("button", { name: "Send feedback to chat", exact: true }).isDisabled())
-      .toBe(true);
+    await expect.poll(() => panel.getByText("In composer · not admitted", { exact: true }).count()).toBe(2);
+    expect((await pal.changes.list(project.id)).comments.map((comment) => comment.sent)).toEqual([false, false]);
+    const composed = await page.getByLabel("Message").inputValue();
+    await panel.getByRole("button", { name: "Copy feedback again (2)", exact: true }).click();
+    expect(await page.getByLabel("Message").inputValue()).toBe(composed);
     expect(fixture.apiRequests.length).toBe(modelRequests);
     await panel.getByRole("button", { name: "Delete comment on line 3" }).click();
     await expect.poll(() => panel.getByText("Keep three.").count()).toBe(0);
@@ -1880,8 +1865,13 @@ describe("Pal in a browser", () => {
       await panel.getByRole("button", { name: "Send feedback to chat (1)" }).click();
       await panel.waitFor({ state: "detached" });
       await expect.poll(() => page.getByLabel("Message").inputValue()).toContain("Keep this context line.");
-      await expect.poll(async () => (await pal.changes.list(project.id)).comments[0]?.sent).toBe(true);
+      expect((await pal.changes.list(project.id)).comments[0]?.sent).toBe(false);
+      expect(
+        await pal.store.database.get("SELECT count(*) AS n FROM pal_admissions WHERE chat_id = ?", chat.id),
+      ).toEqual({ n: 0 });
       await openPanel("Changes");
+      await panel.getByText("In composer · not admitted", { exact: true }).waitFor();
+      await panel.getByRole("button", { name: "Copy feedback again (1)", exact: true }).waitFor();
       await panel.getByRole("button", { name: "Delete comment on line 2" }).click();
       await expect.poll(() => panel.getByText("Keep this context line.").count()).toBe(0);
     } finally {

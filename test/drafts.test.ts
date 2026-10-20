@@ -163,6 +163,51 @@ describe("per-chat draft ownership", () => {
     expect(draft.error).toMatch(/nothing was added/);
   });
 
+  it("links only unchanged copied feedback and freezes its receipt with the saved send", () => {
+    const draft = new ChatDraft("feedback-chat");
+    const receipt = { ids: ["comment-one"], scope: "normal" as const };
+    expect(draft.appendFeedback("Review feedback: original", receipt)).toBe(true);
+    const text = draft.text;
+    expect(draft.appendFeedback(text, receipt)).toBe(true);
+    expect(draft.text).toBe(text);
+    const snapshot = draft.snapshot(false);
+    receipt.ids.push("not-copied");
+    draft.text = "An unrelated message";
+    expect(draft.feedback).toBeUndefined();
+    expect(draft.snapshot(false).feedback).toBeUndefined();
+    const envelope = draft.stage("feedback-request", snapshot, "a".repeat(64));
+    expect(envelope.body.feedback).toEqual({ ids: ["comment-one"], scope: "normal" });
+    expect(Object.isFrozen(envelope.body.feedback)).toBe(true);
+    expect(Object.isFrozen(envelope.body.feedback?.ids)).toBe(true);
+    draft.confirm(envelope, ack(envelope));
+    expect(draft.text).toBe("An unrelated message");
+  });
+
+  it("bounds feedback links, retains separate blocks and lets explicit ignored-scope review replace a copied scope", () => {
+    const draft = new ChatDraft("feedback-chat");
+    const ids = Array.from({ length: 200 }, (_, i) => `comment-${i}`);
+    expect(draft.appendFeedback("First block", { ids, scope: "normal" })).toBe(true);
+    expect(draft.appendFeedback("Overflow", { ids: ["overflow"], scope: "normal" })).toBe(false);
+    expect(draft.text).toBe("First block");
+    expect(draft.feedback?.ids).toHaveLength(200);
+    expect(draft.appendFeedback("First block", { ids, scope: "include-ignored" })).toBe(true);
+    expect(draft.text).toBe("First block");
+    expect(draft.feedback?.scope).toBe("include-ignored");
+    draft.text = "";
+    draft.appendFeedback("First block", { ids: ["one"], scope: "normal" });
+    draft.appendFeedback("Second block", { ids: ["two"], scope: "include-ignored" });
+    draft.text = "Second block";
+    expect(draft.feedback).toEqual({ ids: ["two"], scope: "include-ignored" });
+    draft.unlinkFeedback(["two"]);
+    expect(draft.text).toBe("Second block");
+    expect(draft.feedback).toBeUndefined();
+    draft.appendFeedback("Third block", { ids: ["three"], scope: "normal" });
+    const envelope = pending(draft);
+    draft.confirm(envelope, ack(envelope));
+    expect(draft.feedback).toBeUndefined();
+    expect(draft.empty).toBe(true);
+  });
+
   it("clears and fences old cells on sign-out instead of exposing them to a later session", () => {
     const drafts = new ChatDrafts();
     const old = drafts.open("one");

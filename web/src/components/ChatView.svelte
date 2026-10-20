@@ -31,6 +31,7 @@
   import ProjectMcpSettings from "./ProjectMcpSettings.svelte";
   import WorkspaceMode from "./WorkspaceMode.svelte";
   import { drafts, MAX_DRAFT_CHARS, MAX_DRAFT_FILES, type PendingInput } from "../lib/drafts.svelte.ts";
+  import type { ReviewFeedback } from "../../../src/core/feedback.ts";
   import { codeCopy } from "../lib/copy.ts";
   import { renderMarkdown } from "../lib/markdown.ts";
   import { rise } from "../lib/motion.ts";
@@ -43,6 +44,7 @@
     panels,
     onPanel,
     changeCount,
+    onAdmitted,
   }: {
     chat: ChatSummary;
     project: Project;
@@ -51,6 +53,7 @@
     panels: readonly { id: string; icon: IconName }[];
     onPanel: (id: string) => void;
     changeCount?: number | undefined;
+    onAdmitted?: () => void;
   } = $props();
   const workspace = $derived(chat.workspace);
   const root = $derived(workspace?.root ?? project.root);
@@ -113,6 +116,14 @@
     const added = writing.append(text);
     if (added) composer?.focus();
     return added;
+  }
+  export function insertFeedback(text: string, feedback: ReviewFeedback): boolean {
+    const added = writing.appendFeedback(text, feedback);
+    if (added) composer?.focus();
+    return added;
+  }
+  export function hasFeedback(id: string): boolean {
+    return writing.feedback?.ids.includes(id) ?? false;
   }
   let error: string | undefined = $state();
   let openSteps: Record<string, boolean> = $state({});
@@ -363,14 +374,24 @@
         if (writing.pending !== undefined) writing.reject(writing.pending);
         if (epoch === loadEpoch) settingsFailure(failure);
         else writing.error = failure.message;
-      } else writing.error = failure instanceof Error ? failure.message : String(failure);
+      } else {
+        if (
+          failure instanceof ApiError &&
+          ["feedback_stale", "feedback_mismatch", "ignored_permission"].includes(failure.code) &&
+          writing.pending !== undefined
+        ) {
+          writing.unlinkFeedback(writing.pending.body.feedback?.ids ?? []);
+          writing.reject(writing.pending);
+        }
+        writing.error = failure instanceof Error ? failure.message : String(failure);
+      }
     } finally {
       writing.sending = false;
     }
   }
 
   async function deliver(envelope: PendingInput, epoch: number) {
-    const { text, whenBusy, attachments, configuration } = envelope.body;
+    const { text, whenBusy, attachments, configuration, feedback } = envelope.body;
     const { admission } = await api.send(
       envelope.chatId,
       envelope.requestId,
@@ -379,9 +400,11 @@
       attachments,
       configuration,
       writing.signal,
+      feedback,
     );
     writing.confirm(envelope, admission);
     if (epoch !== loadEpoch) return;
+    if (feedback !== undefined) onAdmitted?.();
     if (stream?.running) queuedTexts[admission.submissionId] = text;
     if (chat.title === null) void refreshProjects();
   }

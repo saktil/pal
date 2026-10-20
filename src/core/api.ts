@@ -144,14 +144,6 @@ const FileComment = Type.Object(
   },
   { additionalProperties: false },
 );
-const CommentsSent = Type.Object(
-  {
-    ids: Type.Array(Type.String({ maxLength: 64 }), { maxItems: 200 }),
-    scope: Type.Optional(ReviewScope),
-    workspace: WorkspaceId,
-  },
-  { additionalProperties: false },
-);
 const FileReview = Type.Object(
   {
     path: Type.String({ maxLength: 4096 }),
@@ -592,11 +584,6 @@ export function createApi(pal: Pal, publicOrigin?: string, releases?: Pick<Relea
             body.workspace,
           ),
         });
-      }
-      if (path.length === 4 && path[3] === "sent" && method === "POST") {
-        const body = validate(CommentsSent, await readJson(request));
-        await pal.changes.markSent(id, body.ids, body.scope, body.workspace);
-        return send(200, { sent: true });
       }
       if (path.length === 4 && path[3] !== undefined && method === "DELETE") {
         await pal.changes.uncomment(id, path[3], workspaceQuery(url));

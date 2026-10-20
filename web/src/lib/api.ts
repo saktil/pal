@@ -271,8 +271,6 @@ export const api = {
     }),
   uncomment: (id: string, comment: string, workspace?: string) =>
     call<{ deleted: true }>("DELETE", inWorkspace(`projects/${id}/comments/${comment}`, workspace)),
-  commentsSent: (id: string, ids: string[], scope: ReviewScope = "normal", workspace?: string) =>
-    call<{ sent: true }>("POST", `projects/${id}/comments/sent`, { ids, scope, workspace }),
   review: (
     id: string,
     path: string,
@@ -325,6 +323,7 @@ export const api = {
     attachments: readonly string[],
     configuration: string,
     signal?: AbortSignal,
+    feedback?: import("../../../src/core/feedback.ts").ReviewFeedback,
   ) =>
     call<{ admission: Admission }>(
       "POST",
@@ -334,6 +333,7 @@ export const api = {
         text,
         whenBusy,
         configuration,
+        feedback,
         ...(attachments.length === 0 ? {} : { attachments }),
       },
       signal,

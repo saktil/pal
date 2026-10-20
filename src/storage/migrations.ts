@@ -338,6 +338,14 @@ export const MIGRATIONS: readonly Migration[] = [
       );
     },
   },
+  {
+    version: 21,
+    name: "feedback_admission_receipts",
+    up: async (transaction) => {
+      // Historical sent_at meant copied into a composer, not durably admitted.
+      await transaction.exec("ALTER TABLE pal_change_comments ADD COLUMN submission_id INTEGER");
+    },
+  },
 ];
 
 /**

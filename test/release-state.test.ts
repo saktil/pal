@@ -7,6 +7,7 @@ import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
 import { describe, expect, it } from "vitest";
 import { openPal } from "../src/core/app.ts";
 import { openDatabase } from "../src/storage/sqlite.ts";
+import { MIGRATIONS } from "../src/storage/migrations.ts";
 import { releaseLock } from "../src/core/release-files.ts";
 import {
   compatibleRelease,
@@ -22,7 +23,7 @@ const base: ReleaseManifest = {
   format: 1,
   package: `/nix/store/${"0".repeat(32)}-pal`,
   nixpkgs: `/nix/store/${"1".repeat(32)}-source`,
-  schema: 20,
+  schema: MIGRATIONS.at(-1)?.version ?? 0,
   source: {
     files: [{ path: "web/src/app.css", hash: "a".repeat(64), size: 10, executable: false }],
     digest: "b".repeat(64),
@@ -158,7 +159,8 @@ describe("host release selection", () => {
         source: { ...base.source, digest: candidate.digest },
       }),
     ).not.toThrow();
-    expect(() => compatibleRelease(base, { ...base, schema: 21 })).toThrow(/no automatic migration/);
+    for (const schema of [base.schema - 1, base.schema + 1])
+      expect(() => compatibleRelease(base, { ...base, schema })).toThrow(/no automatic migration/);
     expect(() => compatibleRelease(base, { ...base, source: { ...base.source, compatibility: "different" } })).toThrow(
       /protected policy/,
     );

@@ -342,6 +342,7 @@ export async function openPal(options: PalOptions, context: Context): Promise<Pa
           void running.close(context).catch(() => console.error("pal: stopped admission runtime could not close"));
         },
         attachments: uploads,
+        feedback: changes,
         folderScope: (projectId, chatId) => folders.capture(projectId, chatId),
         extensions: () => extensions.capture(),
         agentFor: async (projectId, chatId, mode = "local", scope) => {

@@ -130,6 +130,34 @@ describe("store", () => {
     await reopened.close();
   });
 
+  it("preserves composed-only feedback on schema 20 upgrade without inventing an admission", async () => {
+    const database = await openDatabase(join(await tempDir(), "pal.sqlite"));
+    cleanups.push(() => database.close());
+    await migrate(database, MIGRATIONS.slice(0, 20));
+    await database.run(
+      "INSERT INTO pal_change_comments (id, scope_id, path, revision, line, line_text, line_hash, body, created_at, sent_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+      "comment-one",
+      "project-one",
+      "review.txt",
+      "a".repeat(64),
+      1,
+      "original line",
+      "b".repeat(64),
+      "Keep my feedback.",
+      100,
+      200,
+    );
+    await migrate(database);
+    await migrate(database);
+    expect(await database.get("SELECT body, sent_at, submission_id FROM pal_change_comments")).toEqual({
+      body: "Keep my feedback.",
+      sent_at: 200,
+      submission_id: null,
+    });
+    await expect(migrate(database, MIGRATIONS.slice(0, 20))).rejects.toThrow(/migration 21.*does not know/);
+    expect(await database.get("PRAGMA integrity_check")).toEqual({ integrity_check: "ok" });
+  });
+
   it("numbers migrations consecutively from 1", () => {
     expect(MIGRATIONS.map(({ version }) => version)).toEqual(MIGRATIONS.map((_, index) => index + 1));
   });

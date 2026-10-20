@@ -317,24 +317,47 @@ describe("chat draft admission", () => {
   it("reserves the ten-file budget before starting concurrent uploads", async () => {
     const { page, base, saved, project, provider, errors } = await setup(1440);
     await page.goto(`${base}/#/chat/${saved.id}`);
-    const release = Promise.withResolvers<undefined>();
+    const release = Promise.withResolvers<undefined>(),
+      reserved = Promise.withResolvers<undefined>();
+    const transfers: Promise<void>[] = [];
     let requests = 0;
     await page.route(`**/api/projects/${project.id}/uploads`, async (route) => {
       requests++;
-      await release.promise;
-      await route.continue();
+      if (requests === 10) reserved.resolve(undefined);
+      const transfer = (async () => {
+        await release.promise;
+        const response = await route.fetch();
+        expect(response.status()).toBe(200);
+        const { upload } = (await response.json()) as { upload: { id: string } };
+        const received = page.waitForResponse(`${base}/api/uploads/${upload.id}`);
+        await route.fulfill({ response });
+        const result = await received;
+        expect(result.status()).toBe(200);
+        expect(await result.json()).toMatchObject({ upload: { state: "ready" } });
+      })();
+      transfers.push(transfer);
+      await transfer;
     });
     cleanups.push(async () => {
       release.resolve(undefined);
+      await Promise.allSettled(transfers);
     });
     for (let i = 0; i < 11; i++)
       await page
         .locator('input[type="file"]')
         .setInputFiles({ name: `slot-${i}.txt`, mimeType: "text/plain", buffer: Buffer.from("fixture") });
-    await expect.poll(() => requests).toBe(10);
+    await reserved.promise;
+    expect(requests).toBe(10);
     await page.getByRole("alert").filter({ hasText: "at most 10 files" }).waitFor();
     release.resolve(undefined);
-    await expect.poll(() => page.getByRole("button", { name: /^Remove slot-/ }).count()).toBe(10);
+    await Promise.all(transfers);
+    await Promise.all(
+      Array.from({ length: 10 }, (_, i) =>
+        page.getByRole("button", { name: `Remove slot-${i}.txt`, exact: true }).waitFor(),
+      ),
+    );
+    expect(await page.getByRole("button", { name: /^Remove slot-/ }).count()).toBe(10);
+    expect(requests).toBe(10);
     expect(provider.requests).toEqual([]);
     expect(errors).toEqual([]);
   });
@@ -559,6 +582,134 @@ async function reviewFixture(width: number) {
 }
 
 describe("review comment drafts", () => {
+  it.each([1440, 390])(
+    "keeps copied feedback recoverable through reload and a lost admission reply at %s px",
+    async (width) => {
+      const { pal, page, base, saved, project, workspace, panel, errors } = await reviewFixture(width);
+      await panel.getByRole("button", { name: "Comment on line 1", exact: true }).click();
+      await panel.getByRole("textbox", { name: "Comment on line 1", exact: true }).fill("Keep this feedback.");
+      await panel.getByRole("button", { name: "Add comment", exact: true }).click();
+      await panel.getByText("Keep this feedback.", { exact: true }).waitFor();
+      const [comment] = (await pal.changes.list(project.id, "normal", workspace.id)).comments;
+      if (comment === undefined) throw new Error("missing feedback fixture");
+      await panel.getByRole("button", { name: "Send feedback to chat (1)", exact: true }).click();
+      await expect.poll(() => page.getByLabel("Message", { exact: true }).inputValue()).toContain(comment.body);
+      expect((await pal.changes.list(project.id, "normal", workspace.id)).comments[0]?.sent).toBe(false);
+      if (width < 700) {
+        await panel.waitFor({ state: "detached" });
+        await page.getByRole("button", { name: "Workspace tools", exact: true }).click();
+        await page.getByRole("button", { name: "Changes", exact: true }).click();
+      }
+      await panel.getByText("In composer · not admitted", { exact: true }).waitFor();
+      await panel.getByRole("button", { name: "Copy feedback again (1)", exact: true }).click();
+      const composed = await page.getByLabel("Message", { exact: true }).inputValue();
+      expect(composed.split(comment.body)).toHaveLength(2);
+      await page.reload();
+      if (width < 700) await page.getByRole("button", { name: "Workspace tools", exact: true }).click();
+      await expect.poll(() => page.getByRole("button", { name: /^Model and reasoning:/ }).isEnabled()).toBe(true);
+      expect(await page.getByLabel("Message", { exact: true }).inputValue()).toBe("");
+      await page.getByRole("button", { name: "Changes", exact: true }).click();
+      await panel.getByText("Not sent", { exact: true }).waitFor();
+      const legacy = await page.request.post(`${base}/api/projects/${project.id}/comments/sent`, {
+        headers: { origin: base },
+        data: { ids: [comment.id], workspace: workspace.id },
+      });
+      expect(legacy.status()).toBe(404);
+      expect((await pal.changes.list(project.id, "normal", workspace.id)).comments[0]?.sent).toBe(false);
+      await panel.getByRole("button", { name: "Send feedback to chat (1)", exact: true }).click();
+      if (width < 700) await panel.waitFor({ state: "detached" });
+      const lost = Promise.withResolvers<string>();
+      await page.route(
+        `**/api/chats/${saved.id}/inputs`,
+        async (route) => {
+          const response = await route.fetch({ timeout: 5000 });
+          expect(response.status()).toBe(200);
+          lost.resolve(route.request().postData() ?? "");
+          await route.abort("failed");
+        },
+        { times: 1 },
+      );
+      await page.getByRole("button", { name: "Send", exact: true }).click();
+      const original = await lost.promise;
+      expect(JSON.parse(original)).toMatchObject({ feedback: { ids: [comment.id], scope: "normal" } });
+      await page.getByRole("alert").filter({ hasText: "This send isn't confirmed" }).waitFor();
+      expect((await pal.changes.list(project.id, "normal", workspace.id)).comments[0]?.sent).toBe(true);
+      const [retried] = await Promise.all([
+        page.waitForResponse(`${base}/api/chats/${saved.id}/inputs`),
+        page.getByRole("button", { name: "Retry saved send", exact: true }).click(),
+      ]);
+      expect(retried.status()).toBe(200);
+      expect(retried.request().postData()).toBe(original);
+      expect(
+        await pal.store.database.get("SELECT count(*) AS n FROM pal_admissions WHERE chat_id = ?", saved.id),
+      ).toEqual({ n: 1 });
+      if (width < 700) {
+        await page.getByRole("button", { name: "Workspace tools", exact: true }).click();
+        await page.getByRole("button", { name: "Changes", exact: true }).click();
+      }
+      await panel.getByText("Admitted to chat", { exact: true }).waitFor();
+      await screenshot(page, `feedback-admitted-${width}`);
+      expect(errors).toEqual([]);
+    },
+  );
+
+  it("does not acknowledge copied comments when the owner sends different text", async () => {
+    const { pal, page, project, workspace, panel, saved, base, errors } = await reviewFixture(1440);
+    await panel.getByRole("button", { name: "Comment on line 1", exact: true }).click();
+    await panel.getByRole("textbox", { name: "Comment on line 1", exact: true }).fill("Keep the original note.");
+    await panel.getByRole("button", { name: "Add comment", exact: true }).click();
+    await panel.getByText("Keep the original note.", { exact: true }).waitFor();
+    await panel.getByRole("button", { name: "Send feedback to chat (1)", exact: true }).click();
+    await page.getByLabel("Message", { exact: true }).fill("Send an unrelated message instead.");
+    const [response] = await Promise.all([
+      page.waitForResponse(`${base}/api/chats/${saved.id}/inputs`),
+      page.getByRole("button", { name: "Send", exact: true }).click(),
+    ]);
+    expect(response.status()).toBe(200);
+    expect(response.request().postDataJSON()).not.toHaveProperty("feedback");
+    expect((await pal.changes.list(project.id, "normal", workspace.id)).comments).toMatchObject([
+      { body: "Keep the original note.", sent: false },
+    ]);
+    await panel.getByRole("button", { name: "Refresh", exact: true }).click();
+    await panel.getByRole("button", { name: "Send feedback to chat (1)", exact: true }).waitFor();
+    expect(errors).toEqual([]);
+  });
+
+  it("keeps text editable after a definitive stale-feedback rejection without retrying a different body", async () => {
+    const { pal, page, project, workspace, panel, saved, base, errors } = await reviewFixture(1440);
+    await panel.getByRole("button", { name: "Comment on line 1", exact: true }).click();
+    await panel
+      .getByRole("textbox", { name: "Comment on line 1", exact: true })
+      .fill("A note the owner later deletes.");
+    await panel.getByRole("button", { name: "Add comment", exact: true }).click();
+    await panel.getByText("A note the owner later deletes.", { exact: true }).waitFor();
+    const [comment] = (await pal.changes.list(project.id, "normal", workspace.id)).comments;
+    if (comment === undefined) throw new Error("missing feedback fixture");
+    await panel.getByRole("button", { name: "Send feedback to chat (1)", exact: true }).click();
+    const text = await page.getByLabel("Message", { exact: true }).inputValue();
+    await pal.changes.uncomment(project.id, comment.id, workspace.id);
+    const [rejected] = await Promise.all([
+      page.waitForResponse(`${base}/api/chats/${saved.id}/inputs`),
+      page.getByRole("button", { name: "Send", exact: true }).click(),
+    ]);
+    expect(rejected.status()).toBe(409);
+    expect(await rejected.json()).toMatchObject({ error: "feedback_stale" });
+    await page.getByRole("alert").filter({ hasText: "linked comment was removed" }).waitFor();
+    expect(await page.getByLabel("Message", { exact: true }).inputValue()).toBe(text);
+    expect(await page.getByRole("button", { name: "Retry saved send", exact: true }).count()).toBe(0);
+    expect(await pal.store.database.get("SELECT count(*) AS n FROM pal_admissions")).toEqual({ n: 0 });
+    const [sent] = await Promise.all([
+      page.waitForResponse(`${base}/api/chats/${saved.id}/inputs`),
+      page.getByRole("button", { name: "Send", exact: true }).click(),
+    ]);
+    expect(sent.status()).toBe(200);
+    expect(sent.request().postDataJSON()).toMatchObject({ text });
+    expect(sent.request().postDataJSON()).not.toHaveProperty("feedback");
+    expect(sent.request().postDataJSON().requestId).not.toBe(rejected.request().postDataJSON().requestId);
+    expect(await pal.store.database.get("SELECT count(*) AS n FROM pal_admissions")).toEqual({ n: 1 });
+    expect(errors).toEqual([]);
+  });
+
   it("keeps review feedback recoverable if the composer cannot accept the text", async () => {
     const { pal, page, project, workspace, panel, provider, errors } = await reviewFixture(1440);
     await panel.getByRole("button", { name: "Comment on line 1", exact: true }).click();
@@ -653,18 +804,18 @@ describe("review comment drafts", () => {
   );
 
   it("keeps newer comment text when an older comment acknowledgement arrives", async () => {
-    const { pal, page, project, workspace, panel, errors } = await reviewFixture(1440);
+    const { pal, page, base, project, workspace, panel, errors } = await reviewFixture(1440);
     await panel.getByRole("button", { name: "Comment on line 1", exact: true }).click();
     const draft = panel.getByRole("textbox", { name: "Comment on line 1", exact: true });
     await draft.fill("First comment");
-    const seen = Promise.withResolvers<undefined>(),
+    const seen = Promise.withResolvers<{ status: number; body: unknown }>(),
       release = Promise.withResolvers<undefined>(),
       done = Promise.withResolvers<undefined>();
     await page.route(
       "**/api/projects/*/comments",
       async (route) => {
         const response = await route.fetch();
-        seen.resolve(undefined);
+        seen.resolve({ status: response.status(), body: await response.json() });
         await release.promise;
         await route.fulfill({ response });
         done.resolve(undefined);
@@ -675,11 +826,25 @@ describe("review comment drafts", () => {
       release.resolve(undefined);
     });
     await panel.getByRole("button", { name: "Add comment", exact: true }).click();
-    await seen.promise;
+    const posted = await seen.promise;
+    expect(posted.status).toBe(200);
+    expect(posted.body).toMatchObject({ comment: { body: "First comment" } });
     await draft.fill("Newer unsent comment");
+    const refreshed = page.waitForResponse((response) =>
+      response.url().startsWith(`${base}/api/projects/${project.id}/changes?`),
+    );
     release.resolve(undefined);
     await done.promise;
-    await panel.getByText("First comment", { exact: true }).waitFor();
+    const response = await refreshed;
+    expect(response.status()).toBe(200);
+    expect(await response.json()).toMatchObject({ comments: [{ body: "First comment" }] });
+    await panel
+      .getByText("First comment", { exact: true })
+      .waitFor()
+      .catch(async (failure: unknown) => {
+        await screenshot(page, "review-late-ack-failed");
+        throw new Error(await panel.innerText(), { cause: failure });
+      });
     expect(await draft.inputValue()).toBe("Newer unsent comment");
     expect((await pal.changes.list(project.id, "normal", workspace.id)).comments).toMatchObject([
       { body: "First comment" },

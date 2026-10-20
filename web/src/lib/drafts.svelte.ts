@@ -1,6 +1,7 @@
 import { untrack } from "svelte";
-import { SvelteMap } from "svelte/reactivity";
+import { SvelteMap, SvelteSet } from "svelte/reactivity";
 import type { Admission, Upload } from "./api.ts";
+import type { ReviewFeedback } from "../../../src/core/feedback.ts";
 
 export const MAX_DRAFT_CHARS = 100_000;
 export const MAX_DRAFT_FILES = 10;
@@ -11,6 +12,7 @@ export type DraftSnapshot = Readonly<{
   text: string;
   attachments: readonly string[];
   whenBusy: BusyMode;
+  feedback?: ReviewFeedback | undefined;
 }>;
 export type PendingInput = Readonly<{
   chatId: string;
@@ -21,8 +23,12 @@ export type PendingInput = Readonly<{
     attachments: readonly string[];
     whenBusy: BusyMode;
     configuration: string;
+    feedback?: ReviewFeedback | undefined;
   }>;
 }>;
+type FeedbackBlock = Readonly<{ text: string; receipt: ReviewFeedback }>;
+const freezeFeedback = (feedback: ReviewFeedback) =>
+  Object.freeze({ ids: Object.freeze([...feedback.ids]), scope: feedback.scope });
 
 export class ChatDraft {
   readonly chatId: string;
@@ -31,6 +37,7 @@ export class ChatDraft {
   #active = $state(true);
   #text = $state("");
   #attachments = $state.raw<readonly Readonly<Upload>[]>([]);
+  #feedback = $state.raw<readonly FeedbackBlock[]>([]);
   #revision = 0;
   whenBusy = $state<BusyMode>("followUp");
   sending = $state(false);
@@ -61,6 +68,7 @@ export class ChatDraft {
       return;
     }
     this.#text = value;
+    this.#feedback = this.#feedback.filter((block) => value.includes(block.text));
     this.#revision++;
     if (this.pending === undefined) this.error = undefined;
   }
@@ -95,6 +103,40 @@ export class ChatDraft {
     this.text = value;
     return true;
   }
+  get feedback(): ReviewFeedback | undefined {
+    if (this.#feedback.length === 0) return undefined;
+    return freezeFeedback({
+      ids: [...new SvelteSet(this.#feedback.flatMap((block) => block.receipt.ids))],
+      scope: this.#feedback.some((block) => block.receipt.scope === "include-ignored") ? "include-ignored" : "normal",
+    });
+  }
+  appendFeedback(text: string, receipt: ReviewFeedback): boolean {
+    if (!this.active || this.blocked) return false;
+    const ids = new SvelteSet([...(this.feedback?.ids ?? []), ...receipt.ids]);
+    if (receipt.ids.length === 0 || ids.size > 200) {
+      this.error = "A draft can link at most 200 review comments; nothing was added.";
+      return false;
+    }
+    const copied = this.#feedback.find(
+      (block) => block.text === text && receipt.ids.every((id) => block.receipt.ids.includes(id)),
+    );
+    if (copied !== undefined) {
+      if (copied.receipt.scope !== receipt.scope) {
+        this.#feedback = this.#feedback.map((block) =>
+          block === copied ? Object.freeze({ text, receipt: freezeFeedback(receipt) }) : block,
+        );
+        this.touch();
+      }
+      return true;
+    }
+    if (!this.append(text)) return false;
+    this.#feedback = [...this.#feedback, Object.freeze({ text, receipt: freezeFeedback(receipt) })];
+    return true;
+  }
+  unlinkFeedback(ids: readonly string[]) {
+    this.#feedback = this.#feedback.filter((block) => !block.receipt.ids.some((id) => ids.includes(id)));
+    this.touch();
+  }
   touch() {
     this.#revision++;
   }
@@ -105,6 +147,7 @@ export class ChatDraft {
       text: this.text.trim(),
       attachments: Object.freeze(this.attachments.map((file) => file.id)),
       whenBusy: running ? this.whenBusy : "followUp",
+      feedback: this.feedback,
     });
   }
   stage(requestId: string, snapshot: DraftSnapshot, configuration: string): PendingInput {
@@ -118,6 +161,7 @@ export class ChatDraft {
         attachments: Object.freeze([...snapshot.attachments]),
         whenBusy: snapshot.whenBusy,
         configuration,
+        feedback: snapshot.feedback === undefined ? undefined : freezeFeedback(snapshot.feedback),
       }),
     });
     this.pending = envelope;
@@ -130,6 +174,7 @@ export class ChatDraft {
     if (this.#revision === envelope.revision) {
       this.#text = "";
       this.#attachments = [];
+      this.#feedback = [];
       this.#revision++;
       this.notice = undefined;
     } else this.notice = "The earlier message was admitted. Your newer draft is kept.";
@@ -144,6 +189,7 @@ export class ChatDraft {
     this.#controller.abort();
     this.#text = "";
     this.#attachments = [];
+    this.#feedback = [];
     this.pending = undefined;
     this.error = undefined;
     this.notice = undefined;

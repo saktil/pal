@@ -19,6 +19,7 @@ import { InvalidRequest, normalize, RequestConflict, validate } from "./requests
 import { extensionScope, selectedExtensions, type ExtensionScope } from "./extensions.ts";
 import { WorkspaceMode, workspaceMode } from "./workspaces.ts";
 import { HttpError } from "./http.ts";
+import type { Changes } from "./changes.ts";
 
 export const MAX_INPUT_CHARS = 100_000;
 
@@ -38,6 +39,13 @@ const RenameBody = Type.Object(
   { additionalProperties: false },
 );
 export const ConfigurationRevision = Type.String({ pattern: "^[a-f0-9]{64}$" });
+const FeedbackBody = Type.Object(
+  {
+    ids: Type.Array(Type.String({ minLength: 1, maxLength: 64 }), { minItems: 1, maxItems: 200, uniqueItems: true }),
+    scope: Type.Union([Type.Literal("normal"), Type.Literal("include-ignored")]),
+  },
+  { additionalProperties: false },
+);
 export const InputBody = Type.Object(
   {
     text: Type.String({ minLength: 1, maxLength: MAX_INPUT_CHARS }),
@@ -45,6 +53,7 @@ export const InputBody = Type.Object(
     /** Upload IDs from this chat's project, in the order shown. */
     attachments: Type.Optional(Type.Array(Type.String({ minLength: 1, maxLength: 64 }), { maxItems: 10 })),
     configuration: Type.Optional(ConfigurationRevision),
+    feedback: Type.Optional(FeedbackBody),
   },
   { additionalProperties: false },
 );
@@ -58,7 +67,7 @@ export class ProjectUnavailable extends Error {}
 export class AdmissionStopped extends Error {}
 
 /** Crash points between Pal's and Pi's commits, for deterministic recovery tests. */
-export type Barrier = "chat-recorded" | "chat-created" | "input-recorded" | "input-submitted";
+export type Barrier = "chat-recorded" | "chat-created" | "input-recorded" | "input-submitted" | "input-admitted";
 
 export type Chat = { readonly id: string; readonly conversationId: ConversationId };
 export type ChatSummary = Chat & {
@@ -103,6 +112,7 @@ export type ChatServiceOptions = {
     ): Promise<readonly { id: string; name: string; size: number; mediaType: string }[]>;
     content(projectId: string, ids: readonly string[]): Promise<(TextContent | ImageContent)[]>;
   };
+  readonly feedback?: Pick<Changes, "checkFeedback" | "admitFeedback">;
   /** Host authority frozen with the admission, not recomputed during retry or restart. */
   readonly folderScope?: (projectId: string, chatId: string) => Promise<string>;
   /** Notify the owning host once admission requires restart and reconciliation. */
@@ -329,6 +339,7 @@ export class ChatService {
       whenBusy: value.whenBusy ?? "followUp",
       attachments: value.attachments ?? [],
       configuration: value.configuration,
+      feedback: value.feedback === undefined ? undefined : { ids: value.feedback.ids, scope: value.feedback.scope },
     }));
     const attached = (body as InputBody).attachments ?? [];
     if (attached.length > 0) {
@@ -357,6 +368,11 @@ export class ChatService {
       const conversation = await this.#options.harness.conversation(chat.conversationId, context);
       if (conversation === undefined) throw new ChatNotFound("the chat's conversation is missing");
       if (chatConfiguration(await conversation.agent(context)) !== expected) throw configurationChanged();
+    }
+    const feedback = (body as InputBody).feedback;
+    if (previous === undefined && feedback !== undefined) {
+      if (this.#options.feedback === undefined) throw new InvalidRequest("review feedback is not available");
+      await this.#options.feedback.checkFeedback(chatId, feedback, (body as InputBody).text);
     }
     const scope = previous === undefined ? await this.#options.folderScope?.(chat.projectId, chatId) : undefined;
     const row = await this.#guard((db) =>
@@ -497,6 +513,10 @@ export class ChatService {
           chatId,
           requestId,
         );
+        if (intent.feedback !== undefined) {
+          if (this.#options.feedback === undefined) throw new Error("saved review feedback has no receipt handler");
+          await this.#options.feedback.admitFeedback(tx, chatId, intent.feedback, submissionId);
+        }
         await tx.run(
           "UPDATE pal_chats SET title = ? WHERE id = ? AND title IS NULL",
           untitledName(intent.text),
@@ -504,6 +524,7 @@ export class ChatService {
         );
       }),
     );
+    await this.#options.barrier?.("input-admitted");
     return { chatId, requestId, submissionId };
   }
 
