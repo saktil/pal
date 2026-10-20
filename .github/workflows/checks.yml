@@ -51,6 +51,15 @@ jobs:
         run: |
           nix build --max-jobs 2 --cores 2 -L --out-link result \
             ".#checks.$SYSTEM.portable"
+      - name: Native macOS saved-settings UI
+        if: runner.os == 'macOS'
+        env:
+          SYSTEM: ${{ matrix.system }}
+        run: |
+          nix build --max-jobs 2 --cores 2 -L --out-link ui-runner \
+            ".#packages.$SYSTEM.ui-check"
+          readlink ui-runner | tee -a identity.txt
+          ./ui-runner/bin/pal-ui-check "$PWD/native-ui"
       - name: Publish bounded coverage summary
         run: |
           cp result/summary.json summary.json
@@ -59,6 +68,11 @@ jobs:
             >> "$GITHUB_STEP_SUMMARY"
           tee -a "$GITHUB_STEP_SUMMARY" < identity.txt
           tee -a "$GITHUB_STEP_SUMMARY" < summary.json
+          if test -f native-ui/summary.json; then
+            printf '\n### Native saved-settings UI only\n\n' \
+              >> "$GITHUB_STEP_SUMMARY"
+            tee -a "$GITHUB_STEP_SUMMARY" < native-ui/summary.json
+          fi
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
         if: always()
         with:
@@ -66,6 +80,8 @@ jobs:
           path: |
             identity.txt
             summary.json
+            native-ui/summary.json
+            native-ui/screenshots/
           retention-days: 7
           if-no-files-found: error
 

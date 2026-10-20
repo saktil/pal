@@ -22,9 +22,18 @@
       forSystems = f: nixpkgs.lib.genAttrs systems (system: f nixpkgs.legacyPackages.${system});
     in
     {
-      packages = forSystems (pkgs: {
-        default = pkgs.callPackage ./nix/package.nix { pkgsPath = pkgs.path; };
-      });
+      packages = forSystems (
+        pkgs:
+        let
+          pal = pkgs.callPackage ./nix/package.nix { pkgsPath = pkgs.path; };
+        in
+        {
+          default = pal;
+          ui-check = pkgs.callPackage ./nix/ui-check.nix {
+            tests = pkgs.callPackage ./nix/tests.nix { inherit pal; };
+          };
+        }
+      );
 
       apps = forSystems (pkgs: {
         default = {
