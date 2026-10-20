@@ -113,12 +113,16 @@ export class HostCommands {
     const home = await mkdtemp(join(tmpdir(), "pal-rtk-"));
     try {
       const result = await new Promise<{ code: number | null; stdout: string } | undefined>((resolve) => {
-        const child = spawn("rtk", ["rewrite", command], {
-          cwd,
-          detached: true,
-          stdio: ["ignore", "pipe", "ignore"],
-          env: cleanEnv(home),
-        });
+        const child = spawn(
+          gnuTimeout(),
+          ["--kill-after=1s", `${this.#rewriteMs / 1000}s`, "rtk", "rewrite", command],
+          {
+            cwd,
+            detached: true,
+            stdio: ["ignore", "pipe", "ignore"],
+            env: cleanEnv(home),
+          },
+        );
         let stdout = "";
         const kill = () => {
           if (child.pid !== undefined) {
