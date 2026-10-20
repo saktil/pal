@@ -1,5 +1,5 @@
 import type { IncomingMessage } from "node:http";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import type { Duplex } from "node:stream";
 import type { Context } from "@earendil-works/chord";
 import { createModels, type Models } from "@earendil-works/pi-ai";
@@ -111,6 +111,7 @@ const NO_AMBIENT_AUTH = { env: async () => undefined, fileExists: async () => fa
 
 export async function openPal(options: PalOptions, context: Context): Promise<Pal> {
   const store = await openStore(options.dataRoot);
+  options = { ...options, dataRoot: dirname(store.path) };
   const commands = new HostCommands();
   const search = new ProjectSearch([options.dataRoot]);
   let changes: Changes | undefined;

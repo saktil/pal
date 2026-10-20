@@ -66,6 +66,7 @@ async function setup(width: number) {
     context,
   );
   await put(`chats/${saved.id}/model`, { provider: "anthropic", model: "claude-haiku-4-5" });
+  for (const chat of [saved, other]) expect(await pal.workspaces.info(chat.id)).toMatchObject({ state: "ready" });
   const view = await browser.newContext({ viewport: { width, height: 900 } });
   cleanups.push(() => view.close());
   await view.addCookies([{ name: "pal_session", value: token, url: base, httpOnly: true, sameSite: "Strict" }]);
@@ -186,9 +187,11 @@ describe("saved chat settings", () => {
     });
     expect(changed.status()).toBe(200);
     await page.getByLabel("Message", { exact: true }).fill("Keep this destination explicit");
-    const submitted = page.waitForResponse(`${base}/api/chats/${saved.id}/inputs`);
-    await page.getByRole("button", { name: "Send", exact: true }).click();
-    expect((await submitted).status()).toBe(409);
+    const [submitted] = await Promise.all([
+      page.waitForResponse(`${base}/api/chats/${saved.id}/inputs`),
+      page.getByRole("button", { name: "Send", exact: true }).click(),
+    ]);
+    expect(submitted.status()).toBe(409);
     expect(provider.requests).toEqual([]);
     await page.getByRole("alert").filter({ hasText: "Chat settings changed elsewhere" }).waitFor();
     expect(await page.getByLabel("Message", { exact: true }).inputValue()).toBe("Keep this destination explicit");

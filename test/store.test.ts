@@ -1,7 +1,7 @@
 import { type ChildProcess, spawn } from "node:child_process";
 import { once } from "node:events";
 import { existsSync } from "node:fs";
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdir, mkdtemp, realpath, rm, symlink } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { createInterface } from "node:readline";
@@ -64,6 +64,19 @@ describe("store", () => {
       MIGRATIONS.map(({ version, name }) => ({ version, name })),
     );
     await again.close();
+  });
+
+  it("pins the owned store path through a pre-existing parent-directory alias", async () => {
+    const root = await realpath(await tempDir());
+    const actual = join(root, "actual");
+    const alias = join(root, "alias");
+    await mkdir(actual);
+    await symlink(actual, alias);
+    const owner = await openStore(join(alias, "data"));
+    cleanups.push(() => owner.close());
+    expect(owner.path).toBe(join(actual, "data", "pal.sqlite"));
+    await expect(openStore(join(actual, "data"))).rejects.toBeInstanceOf(DatabaseOwnedError);
+    expect(owner.installationId).toBeDefined();
   });
 
   it("refuses a second owner in this process until the first closes", async () => {

@@ -51,6 +51,7 @@ jobs:
         run: |
           nix build --max-jobs 2 --cores 2 -L --out-link result \
             ".#checks.$SYSTEM.portable"
+          cp result/summary.json summary.json
       - name: Native macOS chat UI subset
         if: runner.os == 'macOS'
         env:
@@ -62,7 +63,6 @@ jobs:
           ./ui-runner/bin/pal-ui-check "$PWD/native-ui"
       - name: Publish bounded coverage summary
         run: |
-          cp result/summary.json summary.json
           printf '### Portable subset only\n\n' >> "$GITHUB_STEP_SUMMARY"
           printf '%s\n\n' 'Not a full browser/security/release parity gate.' \
             >> "$GITHUB_STEP_SUMMARY"
