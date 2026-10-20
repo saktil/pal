@@ -618,7 +618,7 @@ describe("Pal in a browser", () => {
     const project = await pal.projects.create("context-browser-project", { name: "Context fixture" });
     const chat = await pal.chats.createChat("context-browser-chat", { projectId: project.id }, context);
     const errors: string[] = [];
-    const onError = (error: Error) => errors.push(error.message);
+    const onError = (error: Error) => errors.push(error.stack ?? error.message);
     page.on("pageerror", onError);
     try {
       await writeFile(join(project.root, "decision.txt"), "Original cobalt source");

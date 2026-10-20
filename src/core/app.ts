@@ -4,6 +4,7 @@ import type { Duplex } from "node:stream";
 import type { Context } from "@earendil-works/chord";
 import { createModels, type Models } from "@earendil-works/pi-ai";
 import { type AgentChange, type ConversationId, createRegistry, Harness } from "@earendil-works/pi-durable";
+import type { SqliteExecutor } from "@earendil-works/pi-durable/storage/sqlite";
 import {
   CHATGPT_PROVIDER,
   ChatGPTConnection,
@@ -288,10 +289,10 @@ export async function openPal(options: PalOptions, context: Context): Promise<Pa
       status = end.reason === "failed" ? "failed" : "closed";
     });
 
-    const setting = async (key: string) =>
-      (await database.get<{ value: string }>("SELECT value FROM pal_settings WHERE key = ?", key))?.value;
-    const save = (key: string, value: string) =>
-      database.run(
+    const setting = async (key: string, db: SqliteExecutor = database) =>
+      (await db.get<{ value: string }>("SELECT value FROM pal_settings WHERE key = ?", key))?.value;
+    const save = (key: string, value: string, db: SqliteExecutor = database) =>
+      db.run(
         "INSERT INTO pal_settings (key, value) VALUES (?, ?) ON CONFLICT (key) DO UPDATE SET value = excluded.value",
         key,
         value,
@@ -299,15 +300,17 @@ export async function openPal(options: PalOptions, context: Context): Promise<Pa
     const settings: Settings = {
       model: () => setting("model"),
       setModel: (slug) => save("model", slug),
-      defaultModel: async () => {
-        const provider = (await setting("default_provider")) ?? CHATGPT_PROVIDER;
-        const modelId = await setting(provider === CHATGPT_PROVIDER ? "model" : "default_model");
-        return modelId === undefined ? undefined : { provider, modelId };
-      },
-      setDefaultModel: async ({ provider, modelId }) => {
-        await save(provider === CHATGPT_PROVIDER ? "model" : "default_model", modelId);
-        await save("default_provider", provider);
-      },
+      defaultModel: () =>
+        database.transaction(async (tx) => {
+          const provider = (await setting("default_provider", tx)) ?? CHATGPT_PROVIDER;
+          const modelId = await setting(provider === CHATGPT_PROVIDER ? "model" : "default_model", tx);
+          return modelId === undefined ? undefined : { provider, modelId };
+        }),
+      setDefaultModel: ({ provider, modelId }) =>
+        database.transaction(async (tx) => {
+          await save(provider === CHATGPT_PROVIDER ? "model" : "default_model", modelId, tx);
+          await save("default_provider", provider, tx);
+        }),
     };
     changes = new Changes(database, openedProjects, options.dataRoot, locks, openedWorkspaces);
     const owner = new Owner(database);

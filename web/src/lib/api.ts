@@ -104,7 +104,10 @@ async function call<T>(method: string, path: string, body?: unknown): Promise<T>
     headers: body === undefined ? {} : { "content-type": "application/json" },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
-  const data = (await response.json().catch(() => ({}))) as { error?: string; message?: string };
+  const data = (await response.json().catch((error: unknown) => {
+    if (response.ok) throw error;
+    return {};
+  })) as { error?: string; message?: string };
   if (!response.ok) {
     if (response.status === 401 && data.error === "signed_out") signedOut.dispatchEvent(new Event("signed-out"));
     throw new ApiError(response.status, data.error ?? "error", data.message ?? `HTTP ${response.status}`);

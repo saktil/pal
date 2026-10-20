@@ -97,6 +97,11 @@
   let model: string | null = $state(null);
   let provider: string | null = $state(null);
   let effort: Effort = $state("off");
+  let metadata = $state<"loading" | "unset" | "configured" | "failed">("loading");
+  let metadataChat = $state("");
+  let metadataError: string | undefined = $state();
+  let loadEpoch = 0;
+  const hydrated = $derived(metadataChat === chat.id && (metadata === "unset" || metadata === "configured"));
   let choosing = $state(false);
   let draft = $state("");
   let typing = $state(false);
@@ -135,23 +140,47 @@
     if (stream?.loaded && !settled) void tick().then(() => (settled = true));
   });
 
-  $effect(() => {
-    const current = new ChatStream(chat.id);
-    stream = current;
-    void api.chat(chat.id).then((loaded) => {
+  async function loadMetadata(id: string) {
+    const epoch = ++loadEpoch;
+    metadataChat = id;
+    metadata = "loading";
+    metadataError = undefined;
+    choosing = false;
+    model = null;
+    provider = null;
+    effort = "off";
+    try {
+      const loaded = await api.chat(id);
+      if (epoch !== loadEpoch) return;
       model = loaded.model;
       provider = loaded.provider;
       effort = loaded.effort;
-    });
-    return () => current.close();
+      metadata = loaded.model === null ? "unset" : "configured";
+    } catch (failure) {
+      if (epoch !== loadEpoch) return;
+      metadataError = failure instanceof Error ? failure.message : String(failure);
+      metadata = "failed";
+    }
+  }
+
+  $effect(() => {
+    const current = new ChatStream(chat.id);
+    stream = current;
+    void loadMetadata(chat.id);
+    return () => {
+      loadEpoch++;
+      current.close();
+    };
   });
 
   const items = $derived.by(() => build(stream?.entries ?? [], stream?.partial, stream?.approvals ?? []));
   const awaiting = $derived((stream?.approvals ?? []).some((approval) => approval.state === "pending"));
   const connected = $derived(app.chatgpt?.account != null);
-  const effective = $derived(
-    model !== null ? { provider: provider ?? "openai", modelId: model } : (app.chatgpt?.default ?? null),
-  );
+  const effective = $derived.by(() => {
+    if (!hydrated) return null;
+    if (model === null) return app.chatgpt?.default ?? null;
+    return provider === null ? null : { provider, modelId: model };
+  });
   /** ChatGPT once connected (or while it is this chat's provider), then each API-key provider the owner enabled. */
   const groups = $derived<Group[]>([
     ...(connected || effective?.provider === "openai"
@@ -204,7 +233,9 @@
       app.chatgpt?.default?.provider === effective.provider &&
       app.chatgpt.default.modelId === effective.modelId,
   );
-  const canSend = $derived(ready && !sending && !choosing && uploading === 0 && draft.trim() !== "" && usable);
+  const canSend = $derived(
+    hydrated && ready && !sending && !choosing && uploading === 0 && draft.trim() !== "" && usable,
+  );
 
   function build(entries: Entry[], partial: Message | undefined, approvals: readonly CommandApproval[]): Item[] {
     // A result belongs to the call of that ID in the latest assistant message before it; IDs may repeat across turns.
@@ -311,6 +342,8 @@
   async function send() {
     const text = draft.trim();
     if (!canSend) return;
+    const id = chat.id,
+      epoch = loadEpoch;
     const ids = attachments.map((attachment) => attachment.id);
     // A retry after a lost response reuses the key, so the server admits the message once.
     if (pending?.text !== text || pending.files !== ids.join()) pending = { key: requestId(), text, files: ids.join() };
@@ -318,35 +351,43 @@
     error = undefined;
     try {
       if (model === null && effective !== null) {
-        const chosen = await api.setChatModel(chat.id, effective.modelId, undefined, effective.provider);
+        const chosen = await api.setChatModel(id, effective.modelId, undefined, effective.provider);
+        if (epoch !== loadEpoch) return;
         model = chosen.model;
         provider = chosen.provider;
+        effort = chosen.effort;
+        metadata = "configured";
       }
-      const { admission } = await api.send(chat.id, pending.key, text, stream?.running ? whenBusy : "followUp", ids);
+      const { admission } = await api.send(id, pending.key, text, stream?.running ? whenBusy : "followUp", ids);
+      if (epoch !== loadEpoch) return;
       if (stream?.running) queuedTexts[admission.submissionId] = text;
       pending = undefined;
       draft = "";
       attachments = [];
       if (chat.title === null) void refreshProjects();
     } catch (failure) {
-      error = failure instanceof ApiError ? failure.message : String(failure);
+      if (epoch === loadEpoch) error = failure instanceof ApiError ? failure.message : String(failure);
     } finally {
-      sending = false;
+      if (epoch === loadEpoch) sending = false;
     }
   }
 
   async function chooseModel(choice: { provider: string; id: string }, level?: Effort) {
-    if (choosing) return;
+    if (choosing || sending || !hydrated) return;
+    const id = chat.id,
+      epoch = loadEpoch;
     choosing = true;
     try {
-      const chosen = await api.setChatModel(chat.id, choice.id, level, choice.provider);
+      const chosen = await api.setChatModel(id, choice.id, level, choice.provider);
+      if (epoch !== loadEpoch) return;
       model = chosen.model;
       provider = chosen.provider;
       effort = chosen.effort;
+      metadata = "configured";
     } catch (failure) {
-      error = failure instanceof ApiError ? failure.message : String(failure);
+      if (epoch === loadEpoch) error = failure instanceof ApiError ? failure.message : String(failure);
     } finally {
-      choosing = false;
+      if (epoch === loadEpoch) choosing = false;
     }
   }
 
@@ -471,6 +512,7 @@
     {current}
     {effort}
     busy={choosing}
+    disabled={!hydrated || sending}
     {connected}
     {isDefault}
     {usable}
@@ -700,7 +742,16 @@
             >{/if}
         </div>
       {/if}
-      {#if effective === null}
+      {#if !hydrated}
+        {#if metadata === "failed" && metadataChat === chat.id}
+          <div class="callout er" role="alert">
+            <span class="grow">Couldn't load saved chat settings. {metadataError}</span>
+            <button class="b sm" onclick={() => loadMetadata(chat.id)}>Try again</button>
+          </div>
+        {:else}
+          <div class="callout ac" role="status">Loading saved chat settings…</div>
+        {/if}
+      {:else if effective === null}
         <div class="callout wa nowrap" role="status">
           <span class="grow"><strong>No model is chosen.</strong> Connect a provider and choose a model to send.</span>
           <button class="b sm" onclick={() => navigate({ view: "settings", tab: "models" })}>Connect</button>
