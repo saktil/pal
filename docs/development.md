@@ -52,6 +52,59 @@ nix build .#checks.x86_64-linux.e2e       # UI and browser-runtime tests; keeps 
 The e2e output contains screenshots at 1440, 768 and 390 px widths for review. Any change to `package.json` or
 `pnpm-lock.yaml` may change the pnpm dependency hash in `nix/package.nix`; the build reports the new value.
 
+### CI and coverage boundaries
+
+`.github/workflows/checks.yml` checks pushes and pull requests targeting `development`, using the exact
+pushed or PR-head commit, not an implicit merge commit. Dependencies come from the frozen lockfiles through
+Nix. The native targets are Ubuntu 24.04 x86-64 and macOS 15 Apple Silicon; these are test targets, not a
+full-feature support claim or established minimum OS versions. Intel macOS and ARM64 Linux support remain
+undecided. Required branch-protection checks must be configured by the repository owner.
+
+Both targets run static checks, a portable subset and the build:
+
+```sh
+nix build .#checks.x86_64-linux.portable
+nix build .#checks.aarch64-darwin.portable
+# With the pinned development tools already available:
+pnpm exec vitest run --config vitest.portable.config.ts
+```
+
+The subset explicitly excludes `mcp-local`, `mcp-stdio`, `release-policy` and `release-state`: those suites
+need immutable Nix programs or Linux release-lock/source-confinement primitives. It fails on zero tests,
+skips or todos, and exports only test counts in `summary.json`. The full `tests` check is unchanged and
+still runs these suites on Linux. A separate Linux job runs all five packaged checks above. Nix may reuse
+an identical derivation; a successful build request is not necessarily a fresh runtime execution.
+
+This is an initial CI foundation for [#15](https://github.com/valdo766hi/pal/issues/15), not full platform
+acceptance. Build logs distinguish prerequisite errors from assertions; a failure before a suite runs
+leaves that coverage unexecuted, not passed. CI retains commit/tree/OS identity and bounded portable counts;
+it does not upload credentials, full transcripts or local runtime data. Independent onboarding fixtures,
+Bash/readline variants, sanitized rendered failure artifacts and host-scope security/release gates remain
+required work. The Nix e2e suite's user-systemd-scope skip is also unexecuted coverage.
+
+### Platform acceptance matrix
+
+[#30](https://github.com/valdo766hi/pal/issues/30) requires equivalent native behavior, not just a portable
+job. No row below establishes parity without exact-artifact native evidence. Shared policy stays in core;
+platform-specific isolation, locks and lifecycle belong behind narrow adapters.
+
+| Surface | Linux implementation / test entry point | macOS gap or required native evidence |
+| --- | --- | --- |
+| Owner, providers, chat and responsive UI | `owner`, `providers`, `api`; `test/e2e/app.test.ts` | Same rendered flows, revocation, hydration and immutable-submission regressions |
+| Projects, uploads, worktrees and review | `projects`, `uploads`, `workspaces`, `changes`; corresponding tests | Case/Unicode aliases, symlinks, permissions, long paths and revision rules |
+| Durable runs, Code Mode, memory and search | Pi/SQLite/QuickJS/fff; recovery, context, search and probe tests | Native locks/WAL/fullfsync, watcher changes/gaps and crash recovery |
+| Shell and human terminal | `execution`, `terminals`; process/PTY tests | Native descendant/deadline cleanup, Unicode, resize and reconnect |
+| Remote and local MCP | `mcp`, `mcp-stdio`; consent, stdio and local recovery tests | Immutable programs, native liveness and parent-death cleanup; no `/proc` substitutes that falsely report death |
+| Browser and private-login handoff | Bubblewrap, systemd scope and broker-only egress; `test/e2e/browser.test.ts` | Missing equivalent filesystem/network/resource isolation and protected native tests; proxy-only or disabled sandbox is not parity |
+| Compiled capabilities | `extensions`; selection/pin tests | Same lifecycle, compatibility and replay checks as new package contracts arrive |
+| Checked releases and supervision | Linux flock and `/proc` source confinement; release tests/host fixtures | Missing inherited-lock/confinement adapters and protected exact-artifact runtime evaluation |
+| Installation and data operations | Nix package/probes; smoke and schema tests | Clean install, diagnostics, launchd, sleep/wake and stopped-state backup/restore rehearsal |
+| Planned workflows | Roadmap #20/#22/#23/#28 | Both platforms need the same grants, budgets, durability and recovery tests |
+
+Browser and release activation currently fail closed without their Linux protections. Keep those gates until
+replacements pass adversarial tests; do not count unavailable capabilities or skipped tests as completed
+macOS support. Service installation or host security changes require a separately approved host plan.
+
 ## Project layout
 
 ```

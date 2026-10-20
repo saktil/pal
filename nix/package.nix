@@ -69,6 +69,7 @@ let
         (root + "/devenv.nix")
         (root + "/.envrc")
         (root + "/vitest.config.ts")
+        (root + "/vitest.portable.config.ts")
         (root + "/vitest.e2e.config.ts")
         (root + "/vitest.feasibility.config.ts")
         (root + "/eslint.config.js")

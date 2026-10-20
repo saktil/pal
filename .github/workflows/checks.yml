@@ -1,0 +1,91 @@
+---
+name: Checks
+
+"on":
+  push:
+    branches: [development]
+  pull_request:
+    branches: [development]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: checks-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  portable:
+    name: Portable (${{ matrix.system }})
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: ubuntu-24.04
+            system: x86_64-linux
+          - runner: macos-15
+            system: aarch64-darwin
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: cachix/install-nix-action@3c6342b75005b9cc7c7d4069c3e9179247c89012
+        with:
+          install_url: https://releases.nixos.org/nix/nix-2.34.9/install
+          enable_kvm: false
+      - name: Verify native target and record identity
+        env:
+          SYSTEM: ${{ matrix.system }}
+        run: |
+          native=$(nix eval --impure --raw --expr builtins.currentSystem)
+          test "$native" = "$SYSTEM"
+          git rev-parse HEAD 'HEAD^{tree}' | tee identity.txt
+          uname -srm | tee -a identity.txt
+          nix --version | tee -a identity.txt
+      - name: Static checks, portable tests and build
+        env:
+          SYSTEM: ${{ matrix.system }}
+        run: |
+          nix build --max-jobs 2 --cores 2 -L --out-link result \
+            ".#checks.$SYSTEM.portable"
+      - name: Publish bounded coverage summary
+        run: |
+          cp result/summary.json summary.json
+          printf '### Portable subset only\n\n' >> "$GITHUB_STEP_SUMMARY"
+          printf '%s\n\n' 'Not a full browser/security/release parity gate.' \
+            >> "$GITHUB_STEP_SUMMARY"
+          tee -a "$GITHUB_STEP_SUMMARY" < identity.txt
+          tee -a "$GITHUB_STEP_SUMMARY" < summary.json
+      - uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        if: always()
+        with:
+          name: portable-${{ matrix.system }}
+          path: |
+            identity.txt
+            summary.json
+          retention-days: 7
+          if-no-files-found: error
+
+  linux:
+    name: Linux packaged checks
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    steps:
+      - uses: actions/checkout@d23441a48e516b6c34aea4fa41551a30e30af803
+        with:
+          ref: ${{ github.event.pull_request.head.sha || github.sha }}
+          persist-credentials: false
+      - uses: cachix/install-nix-action@3c6342b75005b9cc7c7d4069c3e9179247c89012
+        with:
+          install_url: https://releases.nixos.org/nix/nix-2.34.9/install
+          enable_kvm: false
+      - name: Package, smoke, full unit, browser and e2e
+        run: |
+          git rev-parse HEAD 'HEAD^{tree}'
+          nix build --max-jobs 2 --cores 2 --no-link --print-out-paths -L \
+            .#checks.x86_64-linux.package .#checks.x86_64-linux.smoke \
+            .#checks.x86_64-linux.tests .#checks.x86_64-linux.browser \
+            .#checks.x86_64-linux.e2e

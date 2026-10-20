@@ -10,12 +10,13 @@
   git,
   pal,
   sourceRoot ? ../.,
+  portable ? false,
 }:
 let
   root = sourceRoot;
 in
 stdenv.mkDerivation {
-  pname = "pal-tests";
+  pname = if portable then "pal-portable-tests" else "pal-tests";
   inherit (pal) version pnpmDeps;
 
   src = lib.fileset.toSource {
@@ -27,6 +28,7 @@ stdenv.mkDerivation {
       (root + "/tsconfig.json")
       (root + "/vite.config.ts")
       (root + "/vitest.config.ts")
+      (root + "/vitest.portable.config.ts")
       (root + "/vitest.feasibility.config.ts")
       (root + "/vitest.e2e.config.ts")
       (root + "/eslint.config.js")
@@ -64,12 +66,30 @@ stdenv.mkDerivation {
   buildPhase = ''
     runHook preBuild
     pnpm check
-    pnpm test
+    ${
+      if portable then
+        ''
+          pnpm exec vitest run --config vitest.portable.config.ts --reporter=default --reporter=json --outputFile=test-results.json
+          node --input-type=module -e '
+            import assert from "node:assert/strict";
+            import { readFileSync, writeFileSync } from "node:fs";
+            const result = JSON.parse(readFileSync("test-results.json", "utf8"));
+            const summary = Object.fromEntries(["numTotalTests", "numPassedTests", "numFailedTests", "numPendingTests", "numTodoTests"].map(key => [key, result[key]]));
+            writeFileSync("summary.json", JSON.stringify(summary, null, 2) + "\n");
+            assert(result.success && result.numTotalTests > 0);
+            assert.equal(result.numPassedTests, result.numTotalTests);
+            assert.equal(result.numPendingTests, 0);
+            assert.equal(result.numTodoTests, 0);
+          '
+        ''
+      else
+        "pnpm test"
+    }
     pnpm build
     runHook postBuild
   '';
 
   installPhase = ''
-    touch $out
+    ${if portable then "mkdir -p $out; cp summary.json $out/" else "touch $out"}
   '';
 }
