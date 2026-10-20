@@ -284,10 +284,10 @@ export async function openPal(options: PalOptions, context: Context): Promise<Pa
     const running = await Harness.open(store.storage, { models, registry }, context);
     harness = running;
     running.subscribeClose(() => {
-      status = "closing";
+      if (status !== "failed") status = "closing";
     });
     void running.closed.then((end) => {
-      status = end.reason === "failed" ? "failed" : "closed";
+      status = status === "failed" || end.reason === "failed" ? "failed" : "closed";
     });
 
     const setting = async (key: string, db: SqliteExecutor = database) =>
@@ -336,6 +336,11 @@ export async function openPal(options: PalOptions, context: Context): Promise<Pa
       {
         database,
         harness: running,
+        onStopped: () => {
+          if (status !== "starting" && status !== "ready") return;
+          status = "failed";
+          void running.close(context).catch(() => console.error("pal: stopped admission runtime could not close"));
+        },
         attachments: uploads,
         folderScope: (projectId, chatId) => folders.capture(projectId, chatId),
         extensions: () => extensions.capture(),

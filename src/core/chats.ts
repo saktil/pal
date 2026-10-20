@@ -105,6 +105,8 @@ export type ChatServiceOptions = {
   };
   /** Host authority frozen with the admission, not recomputed during retry or restart. */
   readonly folderScope?: (projectId: string, chatId: string) => Promise<string>;
+  /** Notify the owning host once admission requires restart and reconciliation. */
+  readonly onStopped?: () => void;
   readonly barrier?: (point: Barrier) => void | Promise<void>;
 };
 
@@ -116,7 +118,7 @@ export type ChatServiceOptions = {
 export class ChatService {
   readonly #options: ChatServiceOptions;
   readonly #configurations = new Map<string, Promise<unknown>>();
-  #failure: unknown;
+  #stopped = false;
 
   private constructor(options: ChatServiceOptions) {
     this.#options = options;
@@ -142,7 +144,7 @@ export class ChatService {
   }
 
   get stopped(): boolean {
-    return this.#failure !== undefined;
+    return this.#stopped;
   }
 
   async list(projectId: string): Promise<ChatSummary[]> {
@@ -389,11 +391,17 @@ export class ChatService {
     return this.#admit(chatId, key, this.#input(row.intent), context);
   }
 
+  #stop() {
+    if (this.#stopped) return;
+    this.#stopped = true;
+    this.#options.onStopped?.();
+  }
+
   #input(intent: string): InputBody {
     try {
       return validate(InputBody, JSON.parse(intent));
     } catch (error) {
-      this.#failure ??= error;
+      this.#stop();
       throw new AdmissionStopped("a saved input is corrupt; admission cannot safely resume", { cause: error });
     }
   }
@@ -504,11 +512,11 @@ export class ChatService {
    * closes its Session on one. Restarting reconciles, since every step is keyed and safe to complete again.
    */
   async #guard<T>(work: (db: SqliteDatabase) => Promise<T>): Promise<T> {
-    if (this.#failure !== undefined) throw new AdmissionStopped("admission stopped after a storage failure");
+    if (this.#stopped) throw new AdmissionStopped("admission stopped after a storage failure");
     try {
       return await work(this.#options.database);
     } catch (error) {
-      this.#failure ??= error;
+      this.#stop();
       throw new AdmissionStopped("admission stopped after a storage failure", { cause: error });
     }
   }
