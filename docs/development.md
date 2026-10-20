@@ -72,14 +72,17 @@ pnpm exec vitest run --config vitest.portable.config.ts
 The subset explicitly excludes `mcp-local`, `mcp-stdio`, `release-policy` and `release-state`: those suites
 need immutable Nix programs or Linux release-lock/source-confinement primitives. It fails on zero tests,
 skips or todos, and exports only test counts in `summary.json`. The full `tests` check is unchanged and
-still runs these suites on Linux. A separate Linux job runs all five packaged checks above. Nix may reuse
-an identical derivation; a successful build request is not necessarily a fresh runtime execution.
+still runs these suites on Linux. A separate Ubuntu 22.04 job runs all five packaged checks above: its
+user-namespace support lets Chromium keep its sandbox, unlike the restricted Ubuntu 24.04 hosted image.
+No host policy is disabled. Nix may reuse an identical derivation; a successful build request is not
+necessarily a fresh runtime execution. Both full and portable checks repeat the PTY suite with readline-enabled
+Bash, testing bracketed paste on/off without assuming a newline immediately precedes command output.
 
 This is an initial CI foundation for [#15](https://github.com/valdo766hi/pal/issues/15), not full platform
 acceptance. Build logs distinguish prerequisite errors from assertions; a failure before a suite runs
 leaves that coverage unexecuted, not passed. CI retains commit/tree/OS identity and bounded portable counts;
 it does not upload credentials, full transcripts or local runtime data. Independent onboarding fixtures,
-Bash/readline variants, sanitized rendered failure artifacts and host-scope security/release gates remain
+sanitized rendered failure artifacts and host-scope security/release gates remain
 required work. The Nix e2e suite's user-systemd-scope skip is also unexecuted coverage.
 
 ### Platform acceptance matrix

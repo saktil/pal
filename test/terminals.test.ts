@@ -81,7 +81,7 @@ async function setup(publicOrigin?: string) {
 }
 
 describe("human host terminals", () => {
-  it("is lazy, requires explicit trust, runs a clean real PTY, and restores the actual screen", async () => {
+  it.each(["on", "off"])("runs a clean real PTY and restores its screen with bracketed paste %s", async (paste) => {
     const { pal, project, request, create, connect } = await setup();
     expect(await pal.terminals.list(project.id)).toEqual([]);
     expect((await request(`projects/${project.id}/terminals`, "POST", { cols: 80, rows: 24 })).status).toBe(400);
@@ -96,12 +96,19 @@ describe("human host terminals", () => {
     }
     const client = await connect(terminal.id);
     const epoch = client.last("state")?.epoch;
+    await expect.poll(() => `${client.last("snapshot")?.data ?? ""}${client.output()}`).toContain("$");
+    client.send({
+      type: "input",
+      epoch,
+      data: `bind 'set enable-bracketed-paste ${paste}'; printf 'PASTE-READY\\n'\r`,
+    });
+    await expect.poll(() => client.output().split("PASTE-READY\r\n")[1]).toContain("$");
     client.send({
       type: "input",
       epoch,
       data: "env > environment.txt; pwd > cwd.txt; test -t 0 && printf 'PTY-OK\\n'\r",
     });
-    await expect.poll(client.output).toContain("\r\nPTY-OK\r\n");
+    await expect.poll(client.output).toContain("PTY-OK\r\n");
     const environment = await readFile(join(project.root, "environment.txt"), "utf8");
     expect(environment).not.toMatch(/OPENAI|CHATGPT|MCP|BASH_ENV|ambient-key/);
     expect(environment).toContain("HISTFILE=/dev/null");

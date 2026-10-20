@@ -8,6 +8,7 @@
   node-gyp,
   python3,
   git,
+  bashInteractive,
   pal,
   sourceRoot ? ../.,
   portable ? false,
@@ -85,6 +86,8 @@ stdenv.mkDerivation {
       else
         "pnpm test"
     }
+    # Nix's default Bash has no readline; exercise its bracketed-paste behavior separately.
+    PAL_BASH=${lib.getExe bashInteractive} pnpm exec vitest run test/terminals.test.ts
     pnpm build
     runHook postBuild
   '';
