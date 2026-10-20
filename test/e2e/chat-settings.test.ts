@@ -3,6 +3,7 @@ import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { BACKGROUND_CONTEXT as context } from "@earendil-works/chord/context";
+import { fauxAssistantMessage } from "@earendil-works/pi-ai";
 import { type Browser, chromium, type Page } from "playwright-core";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { createApi } from "../../src/core/api.ts";
@@ -76,7 +77,7 @@ async function setup(width: number) {
     if (request.method() !== "GET" && new URL(request.url()).pathname.startsWith("/api/chats/"))
       mutations.push(`${request.method()} ${new URL(request.url()).pathname}`);
   });
-  return { page, base, saved, other, provider, errors, mutations };
+  return { pal, page, base, saved, other, provider, errors, mutations };
 }
 
 async function holdMetadata(page: Page, id: string) {
@@ -234,6 +235,30 @@ describe("saved chat settings", () => {
     await expect.poll(() => page.getByRole("button", { name: "Send", exact: true }).isEnabled()).toBe(true);
     await page.getByRole("button", { name: "Send", exact: true }).click();
     await expect.poll(() => provider.requests.map((request) => request.path)).toEqual(["/api/v1/chat/completions"]);
+    expect(errors).toEqual([]);
+  });
+});
+
+describe("chat code rendering", () => {
+  it.each([1440, 390])("keeps adversarial YAML/TOML responsive, escaped and intact at %s px", async (width) => {
+    const { pal, page, base, saved, provider, errors } = await setup(width);
+    const code = " ".repeat(100_000) + "x <img src=x onerror=alert(1)>&";
+    const body = ["yaml", "toml"].map((language) => `\`\`\`${language}\n${code}\n\`\`\``).join("\n\n");
+    const conversation = await pal.harness.conversation(saved.conversationId, context);
+    if (conversation === undefined) throw new Error("missing fixture chat");
+    await conversation.submit(
+      { type: "write", entry: { kind: "pi.assistant", model: [fauxAssistantMessage(body)] } },
+      context,
+    );
+    const started = Date.now();
+    await page.goto(`${base}/#/chat/${saved.id}`);
+    await expect.poll(() => page.locator(".code pre code").count()).toBe(2);
+    await page.getByLabel("Message", { exact: true }).fill("Still responsive");
+    expect(Date.now() - started).toBeLessThan(3000);
+    expect(await page.locator(".code pre code").allTextContents()).toEqual([code, code]);
+    expect(await page.locator(".code img").count()).toBe(0);
+    await screenshot(page, `highlight-long-lines-${width}`);
+    expect(provider.requests).toEqual([]);
     expect(errors).toEqual([]);
   });
 });

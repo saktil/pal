@@ -51,7 +51,7 @@ jobs:
         run: |
           nix build --max-jobs 2 --cores 2 -L --out-link result \
             ".#checks.$SYSTEM.portable"
-      - name: Native macOS saved-settings UI
+      - name: Native macOS chat UI subset
         if: runner.os == 'macOS'
         env:
           SYSTEM: ${{ matrix.system }}
@@ -69,7 +69,7 @@ jobs:
           tee -a "$GITHUB_STEP_SUMMARY" < identity.txt
           tee -a "$GITHUB_STEP_SUMMARY" < summary.json
           if test -f native-ui/summary.json; then
-            printf '\n### Native saved-settings UI only\n\n' \
+            printf '\n### Native chat UI subset\n\n' \
               >> "$GITHUB_STEP_SUMMARY"
             tee -a "$GITHUB_STEP_SUMMARY" < native-ui/summary.json
           fi
