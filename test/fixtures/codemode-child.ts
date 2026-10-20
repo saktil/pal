@@ -15,9 +15,33 @@ const c = await tools.fx_read({ key: "c" });
 return { a, b, c };
 `;
 
-const [mode, dataRoot, service, heap] = process.argv.slice(2);
+const [mode, dataRoot, service, heap, budget] = process.argv.slice(2);
+const limited = heap === "budget" || heap === "budget-journal";
+let script = SCRIPT;
+if (heap === "budget-journal") {
+  script = `
+const pending = tools.fx_write({ key: "b" }).catch(error => "unknown: " + error.message);
+const a = await tools.fx_read({ key: "a" });
+await searchTools("read");
+let discovery;
+try { await describeTool("fx_read"); discovery = "unexpected"; } catch (error) { discovery = error.message; }
+const b = await pending;
+return { a, b, discovery };
+`;
+} else if (limited) {
+  script = `
+const a = await tools.fx_read({ key: "a" });
+await describeTool("fx_read");
+let b;
+try { b = await tools.fx_write({ key: "b" }); } catch (error) { b = "unknown: " + error.message; }
+let discovery, c;
+try { await searchTools("read"); discovery = "unexpected"; } catch (error) { discovery = error.message; }
+try { c = await tools.fx_read({ key: "c" }); } catch (error) { c = error.message; }
+return { a, b, discovery, c };
+`;
+}
 if (dataRoot === undefined || service === undefined) {
-  throw new Error("usage: codemode-child.ts <start|resume> <dataRoot> <serviceUrl> [heapBytes]");
+  throw new Error("usage: codemode-child.ts <start|resume> <dataRoot> <serviceUrl> [heapBytes|budget [maxCalls]]");
 }
 
 async function call(path: string, key: string, method: string): Promise<string> {
@@ -50,9 +74,28 @@ registry.install(
 );
 const { extensions, sandbox } = createPalCodemode({
   allows: () => true,
-  caps: { ...DEFAULT_CODEMODE_CAPS, ...(heap === undefined ? {} : { memoryLimitBytes: Number(heap) }) },
+  caps: {
+    ...DEFAULT_CODEMODE_CAPS,
+    memoryLimitBytes: heap === undefined || limited ? DEFAULT_CODEMODE_CAPS.memoryLimitBytes : Number(heap),
+    maxCalls: limited ? Number(budget ?? 3) : DEFAULT_CODEMODE_CAPS.maxCalls,
+  },
 });
 for (const extension of extensions) registry.install(extension);
+if (mode === "start" && heap === "budget-journal") {
+  const start = sandbox.start.bind(sandbox);
+  let announced = false;
+  sandbox.start = (code, options) =>
+    start(code, {
+      ...options,
+      onIdle: (seq, issued) => {
+        options.onIdle?.(seq, issued);
+        if (!announced && seq >= 3 && issued >= 4) {
+          announced = true;
+          process.send?.("budget-journaled");
+        }
+      },
+    });
+}
 
 const faux = fauxProvider();
 const models = createModels();
@@ -60,7 +103,7 @@ models.setProvider(faux.provider);
 // The resumed process only answers after the script: its first request comes after the tool result.
 faux.setResponses([
   ...(mode === "start"
-    ? [fauxAssistantMessage(fauxToolCall("codemode", { code: SCRIPT }), { stopReason: "toolUse" })]
+    ? [fauxAssistantMessage(fauxToolCall("codemode", { code: script }), { stopReason: "toolUse" })]
     : []),
   fauxAssistantMessage(fauxText("Done.")),
 ]);

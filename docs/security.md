@@ -31,8 +31,13 @@ for sensitive work.
 ## What the agent can do
 
 The model has a single tool, `codemode`. Its scripts run in a QuickJS sandbox with memory, time, output and
-call-count limits, and can reach the host only through granted tools. Each call is checked against the current
+call-count limits, and can reach the host only through granted tools. Each tool call is checked against the current
 grants, workspace and command-approval mode immediately before it runs.
+
+Each script has one 100-call host budget shared by `tools.*`, `searchTools()`, `describeTool()` and
+`describeNamespace()`, including rejected calls. Local output, `store()`/`load()` and `ALL_TOOLS` do not consume it.
+Pi journals budget rejections in the same order as other results. Changing the call limit or its adapter version
+refuses an unfinished replay rather than silently resetting its budget.
 
 - **File tools** resolve real paths, refuse symlink escapes and never touch Pal's data directory or credentials.
   Writes are refused when the file changed since the agent read it.
