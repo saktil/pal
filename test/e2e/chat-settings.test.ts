@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, rm } from "node:fs/promises";
+import { mkdtemp, mkdir, rm, writeFile } from "node:fs/promises";
 import type { AddressInfo } from "node:net";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -9,6 +9,7 @@ import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import { createApi } from "../../src/core/api.ts";
 import { openPal } from "../../src/core/app.ts";
 import { startServer } from "../../src/core/server.ts";
+import { runGit } from "../../src/core/git.ts";
 import { GOOD_KEY, startProviderFixture } from "../fixtures/provider-server.ts";
 import { startMcpFixture } from "../fixtures/mcp-server.ts";
 
@@ -79,7 +80,7 @@ async function setup(width: number) {
     if (request.method() !== "GET" && new URL(request.url()).pathname.startsWith("/api/chats/"))
       mutations.push(`${request.method()} ${new URL(request.url()).pathname}`);
   });
-  return { pal, page, base, saved, other, provider, errors, mutations };
+  return { pal, page, base, project, saved, other, provider, errors, mutations };
 }
 
 async function holdMetadata(page: Page, id: string) {
@@ -315,6 +316,198 @@ describe("MCP catalog consent", () => {
       expect(errors).toEqual([]);
     },
   );
+});
+
+async function reviewFixture(width: number) {
+  const fixture = await setup(width);
+  const { pal, project, saved, page, base } = fixture;
+  const workspace = await pal.workspaces.info(saved.id);
+  if (workspace?.state !== "ready" || workspace.root === null) throw new Error("missing review workspace");
+  const root = workspace.root;
+  const git = (...args: string[]) =>
+    runGit(
+      root,
+      ["-c", "user.name=Fixture", "-c", "user.email=fixture@example.test", "-c", "commit.gpgsign=false", ...args],
+      { signal: AbortSignal.timeout(5000) },
+    );
+  await git("init", "-q");
+  for (const path of ["a.txt", "b.txt"]) await writeFile(join(root, path), `Base ${path}\n`);
+  await git("add", "a.txt", "b.txt");
+  await git("commit", "-qm", "Baseline");
+  await pal.changes.capture(root);
+  for (const path of ["a.txt", "b.txt"]) await writeFile(join(root, path), `Changed ${path}\n`);
+  const changes = await pal.changes.list(project.id, "normal", workspace.id);
+  const a = changes.files.find((file) => file.path === "a.txt"),
+    b = changes.files.find((file) => file.path === "b.txt");
+  if (a === undefined || b === undefined) throw new Error("missing review fixtures");
+  await page.goto(`${base}/#/chat/${saved.id}`);
+  if (width < 700) await page.getByRole("button", { name: "Workspace tools", exact: true }).click();
+  await page.getByRole("button", { name: "Changes", exact: true }).click();
+  const panel = page.getByRole("complementary", { name: "Workspace panel" });
+  await panel.getByRole("button", { name: /^a\.txt/ }).click();
+  await panel.getByRole("button", { name: "Comment on line 1", exact: true }).waitFor();
+  return { ...fixture, workspace, root, a, b, panel };
+}
+
+describe("review comment drafts", () => {
+  it.each([1440, 390])(
+    "keeps the original target through a delayed refresh and only retargets explicitly at %s px",
+    async (width) => {
+      const { pal, page, base, project, workspace, root, a, panel, errors } = await reviewFixture(width);
+      await panel.getByRole("button", { name: "Comment on line 1", exact: true }).click();
+      const draft = panel.getByRole("textbox", { name: "Comment on line 1", exact: true });
+      await draft.fill("Feedback about revision A");
+      await writeFile(join(root, "a.txt"), "New revision B\n");
+      const seen = Promise.withResolvers<undefined>(),
+        release = Promise.withResolvers<undefined>(),
+        done = Promise.withResolvers<undefined>();
+      await page.route(
+        "**/api/projects/*/changes?*",
+        async (route) => {
+          const response = await route.fetch();
+          seen.resolve(undefined);
+          await release.promise;
+          await route.fulfill({ response });
+          done.resolve(undefined);
+        },
+        { times: 1 },
+      );
+      cleanups.push(async () => {
+        release.resolve(undefined);
+      });
+      await panel.getByRole("button", { name: "Refresh", exact: true }).click();
+      await seen.promise;
+      await draft.fill("Feedback about revision A, edited while refreshing");
+      release.resolve(undefined);
+      await done.promise;
+      await panel
+        .getByRole("region", { name: "File diff", exact: true })
+        .getByText("New revision B", { exact: true })
+        .waitFor();
+      const path = `${base}/api/projects/${project.id}/comments`;
+      const [stale] = await Promise.all([
+        page.waitForResponse(path),
+        panel.getByRole("button", { name: "Add comment", exact: true }).click(),
+      ]);
+      expect(stale.request().postDataJSON()).toMatchObject({
+        path: "a.txt",
+        revision: a.revision,
+        line: 1,
+        workspace: workspace.id,
+      });
+      expect(stale.status()).toBe(409);
+      await panel
+        .getByRole("alert")
+        .filter({ hasText: /draft.*kept/ })
+        .waitFor();
+      expect(await draft.inputValue()).toBe("Feedback about revision A, edited while refreshing");
+      expect((await pal.changes.list(project.id, "normal", workspace.id)).comments).toEqual([]);
+      await panel.getByRole("button", { name: "Comment on line 1", exact: true }).click();
+      expect(await draft.inputValue()).toBe("Feedback about revision A, edited while refreshing");
+      await panel.getByRole("button", { name: "Retarget draft", exact: true }).click();
+      await screenshot(page, `review-retarget-${width}`);
+      const [submitted] = await Promise.all([
+        page.waitForResponse(path),
+        panel.getByRole("button", { name: "Add comment", exact: true }).click(),
+      ]);
+      expect(submitted.status()).toBe(200);
+      const comments = (await pal.changes.list(project.id, "normal", workspace.id)).comments;
+      expect(comments).toMatchObject([
+        {
+          path: "a.txt",
+          line: 1,
+          lineText: "New revision B",
+          body: "Feedback about revision A, edited while refreshing",
+        },
+      ]);
+      expect(comments[0]?.revision).not.toBe(a.revision);
+      expect(errors).toEqual([]);
+    },
+  );
+
+  it("keeps newer comment text when an older comment acknowledgement arrives", async () => {
+    const { pal, page, project, workspace, panel, errors } = await reviewFixture(1440);
+    await panel.getByRole("button", { name: "Comment on line 1", exact: true }).click();
+    const draft = panel.getByRole("textbox", { name: "Comment on line 1", exact: true });
+    await draft.fill("First comment");
+    const seen = Promise.withResolvers<undefined>(),
+      release = Promise.withResolvers<undefined>(),
+      done = Promise.withResolvers<undefined>();
+    await page.route(
+      "**/api/projects/*/comments",
+      async (route) => {
+        const response = await route.fetch();
+        seen.resolve(undefined);
+        await release.promise;
+        await route.fulfill({ response });
+        done.resolve(undefined);
+      },
+      { times: 1 },
+    );
+    cleanups.push(async () => {
+      release.resolve(undefined);
+    });
+    await panel.getByRole("button", { name: "Add comment", exact: true }).click();
+    await seen.promise;
+    await draft.fill("Newer unsent comment");
+    release.resolve(undefined);
+    await done.promise;
+    await panel.getByText("First comment", { exact: true }).waitFor();
+    expect(await draft.inputValue()).toBe("Newer unsent comment");
+    expect((await pal.changes.list(project.id, "normal", workspace.id)).comments).toMatchObject([
+      { body: "First comment" },
+    ]);
+    expect(errors).toEqual([]);
+  });
+
+  it("retains an ignored-file draft without exposing it while ignored review is off", async () => {
+    const { page, root, panel, errors } = await reviewFixture(1440);
+    await writeFile(join(root, ".gitignore"), "private.secret\n");
+    await writeFile(join(root, "private.secret"), "Private fixture excerpt\n");
+    await panel.locator(".details > summary").click();
+    const scope = panel.getByRole("checkbox", { name: "Include ignored files for review", exact: true });
+    await scope.check();
+    await panel.getByRole("button", { name: /private\.secret/ }).click();
+    await panel.getByRole("button", { name: "Comment on line 1", exact: true }).click();
+    await panel.getByRole("textbox", { name: "Comment on line 1", exact: true }).fill("Private draft fixture");
+    await scope.uncheck();
+    await panel.getByText("Your ignored-file draft is kept.", { exact: false }).waitFor();
+    expect(await panel.getByRole("textbox", { name: /Comment on line/ }).count()).toBe(0);
+    expect(await panel.innerText()).not.toContain("Private fixture excerpt");
+    expect(await panel.innerText()).not.toContain("Private draft fixture");
+    await scope.check();
+    expect(await panel.getByRole("textbox", { name: "Comment on line 1", exact: true }).inputValue()).toBe(
+      "Private draft fixture",
+    );
+    await panel.getByRole("button", { name: "Cancel", exact: true }).click();
+    expect(await panel.getByRole("textbox", { name: /Comment on line/ }).count()).toBe(0);
+    expect(errors).toEqual([]);
+    expect(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth)).toBe(true);
+  });
+
+  it("keeps a draft on its original file when another file is selected", async () => {
+    const { pal, page, base, project, workspace, a, panel, errors } = await reviewFixture(1440);
+    await panel.getByRole("button", { name: "Comment on line 1", exact: true }).click();
+    await panel.getByRole("textbox", { name: "Comment on line 1", exact: true }).fill("Only about a.txt");
+    await panel.getByRole("button", { name: /^b\.txt/ }).click();
+    expect(await panel.getByRole("textbox", { name: "Comment on line 1", exact: true }).inputValue()).toBe(
+      "Only about a.txt",
+    );
+    const [submitted] = await Promise.all([
+      page.waitForResponse(`${base}/api/projects/${project.id}/comments`),
+      panel.getByRole("button", { name: "Add comment", exact: true }).click(),
+    ]);
+    expect(submitted.status()).toBe(200);
+    expect(submitted.request().postDataJSON()).toMatchObject({
+      path: "a.txt",
+      revision: a.revision,
+      workspace: workspace.id,
+    });
+    expect((await pal.changes.list(project.id, "normal", workspace.id)).comments).toMatchObject([
+      { path: "a.txt", body: "Only about a.txt" },
+    ]);
+    expect(errors).toEqual([]);
+  });
 });
 
 describe("chat code rendering", () => {

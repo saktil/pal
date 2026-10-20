@@ -1750,8 +1750,11 @@ describe("Pal in a browser", () => {
     await panel.getByRole("button", { name: "Comment on line 3" }).click();
     await panel.getByRole("textbox", { name: "Comment on line 3" }).fill("Unsubmitted draft");
     await panel.getByRole("button", { name: /host\.txt/ }).click();
-    expect(await panel.getByRole("textbox", { name: /Comment on line/ }).count()).toBe(0);
+    expect(await panel.getByRole("textbox", { name: "Comment on line 3" }).inputValue()).toBe("Unsubmitted draft");
+    expect(await panel.getByText(/^Original target: base\.txt/).count()).toBe(1);
     await panel.getByRole("button", { name: /base\.txt/ }).click();
+    expect(await panel.getByRole("textbox", { name: "Comment on line 3" }).inputValue()).toBe("Unsubmitted draft");
+    await panel.getByRole("button", { name: "Cancel", exact: true }).click();
     expect(await panel.getByRole("textbox", { name: /Comment on line/ }).count()).toBe(0);
     // Comments live on the server, so they survive a reload.
     await page.reload();
