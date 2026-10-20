@@ -9,6 +9,9 @@ import type { McpServerInput, McpServerView as McpServer } from "../../../src/pi
 export type { McpAuth, McpState } from "../../../src/pi/mcp.ts";
 export type { McpServer, McpServerInput };
 
+import type { Admission } from "../../../src/core/chats.ts";
+export type { Admission };
+
 export type Session = { owner: boolean; signedIn: boolean };
 export type { Change, ChangeComment, ChangeSet } from "../../../src/core/changes.ts";
 export type { TerminalInfo } from "../../../src/core/terminals.ts";
@@ -97,10 +100,11 @@ export class ApiError extends Error {
 /** Called when the server says the owner's session ended, so the app can show sign-in again. */
 export const signedOut = new EventTarget();
 
-async function call<T>(method: string, path: string, body?: unknown): Promise<T> {
+async function call<T>(method: string, path: string, body?: unknown, signal?: AbortSignal): Promise<T> {
   const response = await fetch(`/api/${path}`, {
     method,
     cache: "no-store",
+    signal: signal ?? null,
     headers: body === undefined ? {} : { "content-type": "application/json" },
     ...(body === undefined ? {} : { body: JSON.stringify(body) }),
   });
@@ -318,27 +322,39 @@ export const api = {
     key: string,
     text: string,
     whenBusy: "followUp" | "steer",
-    attachments: string[],
+    attachments: readonly string[],
     configuration: string,
+    signal?: AbortSignal,
   ) =>
-    call<{ admission: { submissionId: number } }>("POST", `chats/${id}/inputs`, {
-      requestId: key,
-      text,
-      whenBusy,
-      configuration,
-      ...(attachments.length === 0 ? {} : { attachments }),
-    }),
+    call<{ admission: Admission }>(
+      "POST",
+      `chats/${id}/inputs`,
+      {
+        requestId: key,
+        text,
+        whenBusy,
+        configuration,
+        ...(attachments.length === 0 ? {} : { attachments }),
+      },
+      signal,
+    ),
   /** Admit an upload, then stream its bytes; the server checks size and hashes while receiving. */
-  upload: async (projectId: string, file: File): Promise<Upload> => {
-    const { upload } = await call<{ upload: Upload }>("POST", `projects/${projectId}/uploads`, {
-      name: file.name,
-      size: file.size,
-      type: file.type,
-    });
+  upload: async (projectId: string, file: File, signal?: AbortSignal): Promise<Upload> => {
+    const { upload } = await call<{ upload: Upload }>(
+      "POST",
+      `projects/${projectId}/uploads`,
+      {
+        name: file.name,
+        size: file.size,
+        type: file.type,
+      },
+      signal,
+    );
     const response = await fetch(`/api/uploads/${upload.id}`, {
       method: "PUT",
       headers: { "content-type": "application/octet-stream" },
       body: file,
+      signal: signal ?? null,
     });
     const data = (await response.json()) as { upload?: Upload; error?: string; message?: string };
     if (!response.ok || data.upload === undefined) {

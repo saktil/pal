@@ -22,7 +22,7 @@
     project: Project;
     workspace?: Workspace | null | undefined;
     initialPath?: string | undefined;
-    onFeedback?: (text: string) => void;
+    onFeedback?: (text: string) => boolean;
     /** What the panel header shows: whether a scan is running and the totals of the last one. */
     onStatus?: (status: { busy: boolean; files: number | undefined; add: number; del: number }) => void;
   } = $props();
@@ -247,7 +247,7 @@
   }
   async function feedback() {
     const sending = pending;
-    onFeedback?.(
+    const added = onFeedback?.(
       [
         "Review feedback:",
         `Workspace: ${root}${workspace == null ? "" : ` (${workspace.mode}, ${workspace.id})`}.`,
@@ -257,6 +257,12 @@
         ),
       ].join("\n\n"),
     );
+    if (added !== true) {
+      done = undefined;
+      error =
+        "Feedback could not be added to the draft. Your comments are kept; make room in the composer and copy again.";
+      return;
+    }
     await act(() =>
       api.commentsSent(
         project.id,

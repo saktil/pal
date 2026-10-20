@@ -415,8 +415,9 @@
                         workspace={located.chat.workspace}
                         initialPath={diffPath}
                         onFeedback={(text) => {
-                          chatView?.insertText(text);
-                          if (size !== "desktop") panelRoute = undefined;
+                          const added = chatView?.insertText(text) ?? false;
+                          if (added && size !== "desktop") panelRoute = undefined;
+                          return added;
                         }}
                       />
                     {:catch failure}<p role="alert">Couldn't load changes: {String(failure)}</p>{/await}

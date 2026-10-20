@@ -244,6 +244,215 @@ describe("saved chat settings", () => {
   });
 });
 
+async function attach(page: Page, name: string) {
+  const response = page.waitForResponse(
+    (reply) => reply.url().endsWith("/uploads") && reply.request().method() === "POST",
+  );
+  await page
+    .locator('input[type="file"]')
+    .setInputFiles({ name, mimeType: "text/plain", buffer: Buffer.from(`Fixture ${name}`) });
+  const body = (await (await response).json()) as { upload: { id: string } };
+  await page.getByRole("button", { name: `Remove ${name}`, exact: true }).waitFor();
+  return body.upload.id;
+}
+
+async function navigateChat(page: Page, id: string) {
+  const loaded = page.waitForResponse(new URL(`/api/chats/${id}`, page.url()).href);
+  await page.evaluate((chatId) => {
+    location.hash = `#/chat/${chatId}`;
+  }, id);
+  await loaded;
+  await expect
+    .poll(async () => (await page.getByRole("button", { name: /^Model and reasoning:/ }).getAttribute("title")) ?? "")
+    .toMatch(/Anthropic API|OpenRouter/);
+}
+
+describe("chat draft admission", () => {
+  it.each([1440, 390])(
+    "keeps newer text and attachment edits when an older input is acknowledged at %s px",
+    async (width) => {
+      const { pal, page, base, saved, errors } = await setup(width);
+      await page.goto(`${base}/#/chat/${saved.id}`);
+      const oldFile = await attach(page, "before.txt");
+      const message = page.getByLabel("Message", { exact: true });
+      await message.fill("Original message");
+      const seen = Promise.withResolvers<string>(),
+        release = Promise.withResolvers<undefined>(),
+        done = Promise.withResolvers<undefined>();
+      await page.route(
+        `**/api/chats/${saved.id}/inputs`,
+        async (route) => {
+          const response = await route.fetch({ timeout: 5000 });
+          seen.resolve(route.request().postData() ?? "");
+          await release.promise;
+          await route.fulfill({ response });
+          done.resolve(undefined);
+        },
+        { times: 1 },
+      );
+      cleanups.push(async () => {
+        release.resolve(undefined);
+      });
+      await page.getByRole("button", { name: "Send", exact: true }).click();
+      const sent = JSON.parse(await seen.promise) as { text: string; attachments: string[] };
+      expect(sent).toMatchObject({ text: "Original message", attachments: [oldFile] });
+      await message.fill("A newer draft");
+      await page.getByRole("button", { name: "Remove before.txt", exact: true }).click();
+      await attach(page, "after.txt");
+      expect(await page.getByRole("button", { name: "Send", exact: true }).isDisabled()).toBe(true);
+      release.resolve(undefined);
+      await done.promise;
+      await expect.poll(() => page.getByRole("button", { name: "Send", exact: true }).isEnabled()).toBe(true);
+      expect(await message.inputValue()).toBe("A newer draft");
+      expect(await page.getByRole("button", { name: "Remove before.txt", exact: true }).count()).toBe(0);
+      expect(await page.getByRole("button", { name: "Remove after.txt", exact: true }).count()).toBe(1);
+      expect(
+        await pal.store.database.get("SELECT count(*) AS n FROM pal_admissions WHERE chat_id = ?", saved.id),
+      ).toEqual({ n: 1 });
+      await screenshot(page, `draft-newer-${width}`);
+      expect(errors).toEqual([]);
+    },
+  );
+
+  it("reserves the ten-file budget before starting concurrent uploads", async () => {
+    const { page, base, saved, project, provider, errors } = await setup(1440);
+    await page.goto(`${base}/#/chat/${saved.id}`);
+    const release = Promise.withResolvers<undefined>();
+    let requests = 0;
+    await page.route(`**/api/projects/${project.id}/uploads`, async (route) => {
+      requests++;
+      await release.promise;
+      await route.continue();
+    });
+    cleanups.push(async () => {
+      release.resolve(undefined);
+    });
+    for (let i = 0; i < 11; i++)
+      await page
+        .locator('input[type="file"]')
+        .setInputFiles({ name: `slot-${i}.txt`, mimeType: "text/plain", buffer: Buffer.from("fixture") });
+    await expect.poll(() => requests).toBe(10);
+    await page.getByRole("alert").filter({ hasText: "at most 10 files" }).waitFor();
+    release.resolve(undefined);
+    await expect.poll(() => page.getByRole("button", { name: /^Remove slot-/ }).count()).toBe(10);
+    expect(provider.requests).toEqual([]);
+    expect(errors).toEqual([]);
+  });
+
+  it("retains an in-flight envelope across navigation without enabling a duplicate send", async () => {
+    const { pal, page, base, saved, other, errors } = await setup(1440);
+    await page.goto(`${base}/#/chat/${saved.id}`);
+    await attach(page, "navigation.txt");
+    await page.getByLabel("Message", { exact: true }).fill("Keep the original admission");
+    const seen = Promise.withResolvers<undefined>(),
+      release = Promise.withResolvers<undefined>(),
+      done = Promise.withResolvers<undefined>();
+    await page.route(
+      `**/api/chats/${saved.id}/inputs`,
+      async (route) => {
+        const response = await route.fetch({ timeout: 5000 });
+        seen.resolve(undefined);
+        await release.promise;
+        await route.fulfill({ response });
+        done.resolve(undefined);
+      },
+      { times: 1 },
+    );
+    cleanups.push(async () => {
+      release.resolve(undefined);
+    });
+    await page.getByRole("button", { name: "Send", exact: true }).click();
+    await seen.promise;
+    await navigateChat(page, other.id);
+    expect(await page.getByLabel("Message", { exact: true }).inputValue()).toBe("");
+    await navigateChat(page, saved.id);
+    expect(await page.getByLabel("Message", { exact: true }).inputValue()).toBe("Keep the original admission");
+    expect(await page.getByRole("button", { name: "Remove navigation.txt", exact: true }).count()).toBe(1);
+    expect(await page.getByRole("button", { name: "Send", exact: true }).isDisabled()).toBe(true);
+    await page.getByLabel("Message", { exact: true }).fill("Typed after coming back");
+    release.resolve(undefined);
+    await done.promise;
+    await expect.poll(() => page.getByRole("button", { name: "Send", exact: true }).isEnabled()).toBe(true);
+    expect(await page.getByLabel("Message", { exact: true }).inputValue()).toBe("Typed after coming back");
+    expect(
+      await pal.store.database.get("SELECT count(*) AS n FROM pal_admissions WHERE chat_id = ?", saved.id),
+    ).toEqual({ n: 1 });
+    expect(errors).toEqual([]);
+  });
+
+  it("retries the identical steering envelope after a lost reply and run end", async () => {
+    const { pal, page, base, other, provider, errors } = await setup(1440);
+    provider.behavior.hold = true;
+    await page.goto(`${base}/#/chat/${other.id}`);
+    await page.getByLabel("Message", { exact: true }).fill("Hold the first run");
+    await page.getByRole("button", { name: "Send", exact: true }).click();
+    await expect.poll(() => provider.holding).toBe(1);
+    await page.getByRole("radio", { name: "Steer", exact: true }).click();
+    await page.getByLabel("Message", { exact: true }).fill("A steering message");
+    const lost = Promise.withResolvers<string>();
+    await page.route(
+      `**/api/chats/${other.id}/inputs`,
+      async (route) => {
+        await route.fetch({ timeout: 5000 });
+        lost.resolve(route.request().postData() ?? "");
+        await route.abort("failed");
+      },
+      { times: 1 },
+    );
+    await page.getByRole("button", { name: "Steer", exact: true }).click();
+    const original = await lost.promise;
+    expect(JSON.parse(original)).toMatchObject({ whenBusy: "steer", text: "A steering message" });
+    await page.getByRole("alert").waitFor();
+    provider.behavior.hold = false;
+    await page.getByRole("button", { name: "Stop", exact: true }).click();
+    await expect.poll(() => page.getByRole("button", { name: "Stop", exact: true }).count()).toBe(0);
+    await page.setViewportSize({ width: 390, height: 900 });
+    await screenshot(page, "draft-saved-send-390");
+    // The old UI retried through Send; exercise the enabled retry action in either UI.
+    const retry = page.locator("button:enabled").and(page.getByRole("button", { name: /^(Retry saved send|Send)$/ }));
+    const [response] = await Promise.all([page.waitForResponse(`${base}/api/chats/${other.id}/inputs`), retry.click()]);
+    expect(response.request().postData()).toBe(original);
+    expect(response.status()).toBe(200);
+    const key = (JSON.parse(original) as { requestId: string }).requestId;
+    expect(
+      await pal.store.database.get(
+        "SELECT count(*) AS n FROM pal_admissions WHERE chat_id = ? AND request_id = ?",
+        other.id,
+        key,
+      ),
+    ).toEqual({ n: 1 });
+    expect(errors).toEqual([]);
+  });
+
+  it("keeps unsent drafts per chat but clears them on reload and sign-out", async () => {
+    const { page, base, saved, other, provider, errors } = await setup(1440);
+    await page.goto(`${base}/#/chat/${saved.id}`);
+    await page.getByLabel("Message", { exact: true }).fill("Unsent saved-chat draft");
+    await attach(page, "unsent.txt");
+    await navigateChat(page, other.id);
+    await page.getByLabel("Message", { exact: true }).fill("Other chat draft");
+    await navigateChat(page, saved.id);
+    expect(await page.getByLabel("Message", { exact: true }).inputValue()).toBe("Unsent saved-chat draft");
+    expect(await page.getByRole("button", { name: "Remove unsent.txt", exact: true }).count()).toBe(1);
+    await page.reload();
+    await expect.poll(() => page.getByRole("button", { name: /^Model and reasoning:/ }).isEnabled()).toBe(true);
+    expect(await page.getByLabel("Message", { exact: true }).inputValue()).toBe("");
+    expect(await page.getByRole("button", { name: "Remove unsent.txt", exact: true }).count()).toBe(0);
+    await page.getByLabel("Message", { exact: true }).fill("Discard this on sign-out");
+    await page.evaluate(() => {
+      location.hash = "#/settings/general";
+    });
+    await page.getByRole("button", { name: "Sign out of Pal", exact: true }).click();
+    await page.getByLabel("Passphrase", { exact: true }).fill("correct horse battery");
+    await page.getByRole("button", { name: "Sign in", exact: true }).click();
+    await page.getByRole("button", { name: "Sign out of Pal", exact: true }).waitFor();
+    await navigateChat(page, saved.id);
+    expect(await page.getByLabel("Message", { exact: true }).inputValue()).toBe("");
+    expect(provider.requests).toEqual([]);
+    expect(errors).toEqual([]);
+  });
+});
+
 describe("MCP catalog consent", () => {
   it.each([1440, 390])(
     "keeps a stale tab's selection but requires the changed definitions to be reviewed at %s px",
@@ -350,6 +559,24 @@ async function reviewFixture(width: number) {
 }
 
 describe("review comment drafts", () => {
+  it("keeps review feedback recoverable if the composer cannot accept the text", async () => {
+    const { pal, page, project, workspace, panel, provider, errors } = await reviewFixture(1440);
+    await panel.getByRole("button", { name: "Comment on line 1", exact: true }).click();
+    await panel.getByRole("textbox", { name: "Comment on line 1", exact: true }).fill("Small feedback");
+    await panel.getByRole("button", { name: "Add comment", exact: true }).click();
+    await panel.getByText("Small feedback", { exact: true }).waitFor();
+    const text = "x".repeat(100_000);
+    await page.getByLabel("Message", { exact: true }).fill(text);
+    await panel.getByRole("button", { name: "Send feedback to chat (1)", exact: true }).click();
+    await panel.getByRole("alert").filter({ hasText: "Feedback could not be added" }).waitFor();
+    expect(await page.getByLabel("Message", { exact: true }).inputValue()).toBe(text);
+    expect((await pal.changes.list(project.id, "normal", workspace.id)).comments).toMatchObject([
+      { body: "Small feedback", sent: false },
+    ]);
+    expect(provider.requests).toEqual([]);
+    expect(errors).toEqual([]);
+  });
+
   it.each([1440, 390])(
     "keeps the original target through a delayed refresh and only retargets explicitly at %s px",
     async (width) => {

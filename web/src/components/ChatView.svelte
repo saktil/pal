@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { tick } from "svelte";
+  import { tick, untrack } from "svelte";
   import {
     api,
     ApiError,
@@ -8,7 +8,6 @@
     type Effort,
     type Project,
     requestId,
-    type Upload,
     type WorkspaceMode as Mode,
   } from "../lib/api.ts";
   import {
@@ -31,6 +30,7 @@
   import ModelControl, { type Group } from "./ModelControl.svelte";
   import ProjectMcpSettings from "./ProjectMcpSettings.svelte";
   import WorkspaceMode from "./WorkspaceMode.svelte";
+  import { drafts, MAX_DRAFT_CHARS, MAX_DRAFT_FILES, type PendingInput } from "../lib/drafts.svelte.ts";
   import { codeCopy } from "../lib/copy.ts";
   import { renderMarkdown } from "../lib/markdown.ts";
   import { rise } from "../lib/motion.ts";
@@ -104,19 +104,16 @@
   let loadEpoch = 0;
   const hydrated = $derived(metadataChat === chat.id && (metadata === "unset" || metadata === "configured"));
   let choosing = $state(false);
-  let draft = $state("");
+  // Workspace keys this component by chat.id; the shared cells outlive observation of that chat.
+  const writing = drafts.open(untrack(() => chat.id));
   let typing = $state(false);
   let composer: HTMLTextAreaElement | undefined = $state();
   /** Add text the owner chose elsewhere (a terminal selection, a file reference) to the draft; never sends it. */
-  export function insertText(text: string) {
-    draft += `${draft ? "\n\n" : ""}${text}`;
-    composer?.focus();
+  export function insertText(text: string): boolean {
+    const added = writing.append(text);
+    if (added) composer?.focus();
+    return added;
   }
-  let pending: { key: string; text: string; files: string; configuration: string } | undefined;
-  let attachments: Upload[] = $state([]);
-  let uploading = $state(0);
-  let whenBusy: "followUp" | "steer" = $state("followUp");
-  let sending = $state(false);
   let error: string | undefined = $state();
   let openSteps: Record<string, boolean> = $state({});
   /** Texts this page queued, by submission, so a queued item can show what it says. */
@@ -237,7 +234,16 @@
       app.chatgpt.default.modelId === effective.modelId,
   );
   const canSend = $derived(
-    hydrated && ready && !sending && !choosing && uploading === 0 && draft.trim() !== "" && usable,
+    hydrated &&
+      ready &&
+      writing.active &&
+      !writing.blocked &&
+      !writing.sending &&
+      writing.pending === undefined &&
+      !choosing &&
+      writing.uploading === 0 &&
+      writing.text.trim() !== "" &&
+      usable,
   );
 
   function build(entries: Entry[], partial: Message | undefined, approvals: readonly CommandApproval[]): Item[] {
@@ -342,59 +348,85 @@
     return built;
   }
 
-  async function send() {
-    const text = draft.trim();
-    if (!canSend) return;
-    const id = chat.id,
-      epoch = loadEpoch;
-    const ids = attachments.map((attachment) => attachment.id);
-    sending = true;
+  async function attempt(work: (epoch: number) => Promise<void>) {
+    if (!writing.active || writing.blocked || writing.sending) return;
+    const epoch = loadEpoch;
+    writing.sending = true;
+    writing.error = undefined;
+    writing.notice = undefined;
     error = undefined;
     try {
-      let selected = configuration;
-      if (model === null && effective !== null) {
-        const chosen = await api.setChatModel(id, effective.modelId, undefined, effective.provider, selected);
-        if (epoch !== loadEpoch) return;
-        model = chosen.model;
-        provider = chosen.provider;
-        effort = chosen.effort;
-        configuration = selected = chosen.configuration;
-        metadata = "configured";
-      }
-      // A retry after a lost response reuses the same destination and key.
-      if (pending?.text !== text || pending.files !== ids.join() || pending.configuration !== selected)
-        pending = { key: requestId(), text, files: ids.join(), configuration: selected };
-      const { admission } = await api.send(
-        id,
-        pending.key,
-        text,
-        stream?.running ? whenBusy : "followUp",
-        ids,
-        selected,
-      );
-      if (epoch !== loadEpoch) return;
-      if (stream?.running) queuedTexts[admission.submissionId] = text;
-      pending = undefined;
-      draft = "";
-      attachments = [];
-      if (chat.title === null) void refreshProjects();
+      await work(epoch);
     } catch (failure) {
-      if (epoch === loadEpoch) settingsFailure(failure);
+      if (!writing.active) return;
+      if (failure instanceof ApiError && failure.code === "configuration_stale") {
+        if (writing.pending !== undefined) writing.reject(writing.pending);
+        if (epoch === loadEpoch) settingsFailure(failure);
+        else writing.error = failure.message;
+      } else writing.error = failure instanceof Error ? failure.message : String(failure);
     } finally {
-      if (epoch === loadEpoch) sending = false;
+      writing.sending = false;
     }
+  }
+
+  async function deliver(envelope: PendingInput, epoch: number) {
+    const { text, whenBusy, attachments, configuration } = envelope.body;
+    const { admission } = await api.send(
+      envelope.chatId,
+      envelope.requestId,
+      text,
+      whenBusy,
+      attachments,
+      configuration,
+      writing.signal,
+    );
+    writing.confirm(envelope, admission);
+    if (epoch !== loadEpoch) return;
+    if (stream?.running) queuedTexts[admission.submissionId] = text;
+    if (chat.title === null) void refreshProjects();
+  }
+
+  async function send() {
+    if (!canSend) return;
+    const snapshot = writing.snapshot(stream?.running === true);
+    const destination = effective;
+    let selected = configuration;
+    await attempt(async (epoch) => {
+      if (model === null && destination !== null) {
+        const chosen = await api.setChatModel(
+          writing.chatId,
+          destination.modelId,
+          undefined,
+          destination.provider,
+          selected,
+        );
+        selected = chosen.configuration;
+        if (epoch === loadEpoch) {
+          model = chosen.model;
+          provider = chosen.provider;
+          effort = chosen.effort;
+          configuration = chosen.configuration;
+          metadata = "configured";
+        }
+      }
+      if (writing.active) await deliver(writing.stage(requestId(), snapshot, selected), epoch);
+    });
+  }
+
+  async function retrySaved() {
+    const envelope = writing.pending;
+    if (envelope !== undefined) await attempt((epoch) => deliver(envelope, epoch));
   }
 
   function settingsFailure(failure: unknown) {
     if (failure instanceof ApiError && failure.code === "configuration_stale") {
       metadata = "failed";
       metadataError = failure.message;
-      pending = undefined;
     } else error = failure instanceof ApiError ? failure.message : String(failure);
   }
 
   async function chooseModel(choice: { provider: string; id: string }, level?: Effort) {
-    if (choosing || sending || !hydrated) return;
+    if (choosing || writing.sending || !hydrated) return;
     const id = chat.id,
       epoch = loadEpoch;
     choosing = true;
@@ -474,14 +506,23 @@
   }
 
   async function upload(files: File[]) {
+    const projectId = project.id;
     for (const file of files) {
-      uploading += 1;
+      if (!writing.active || writing.blocked) return;
+      if (writing.attachments.length + writing.uploading >= MAX_DRAFT_FILES) {
+        writing.error = `A draft can attach at most ${MAX_DRAFT_FILES} files.`;
+        return;
+      }
+      writing.touch();
+      writing.uploading++;
       try {
-        attachments = [...attachments, await api.upload(project.id, file)];
+        const attachment = await api.upload(projectId, file, writing.signal);
+        writing.attachments = [...writing.attachments, attachment];
       } catch (failure) {
-        error = `${file.name}: ${failure instanceof ApiError ? failure.message : String(failure)}`;
+        if (writing.active)
+          writing.error = `${file.name}: ${failure instanceof ApiError ? failure.message : String(failure)}`;
       } finally {
-        uploading -= 1;
+        writing.uploading--;
       }
     }
   }
@@ -534,7 +575,7 @@
     {current}
     {effort}
     busy={choosing}
-    disabled={!hydrated || sending}
+    disabled={!hydrated || writing.sending}
     {connected}
     {isDefault}
     {usable}
@@ -546,11 +587,17 @@
 
 {#snippet busySwitch()}
   <div class="seg" role="radiogroup" aria-label="While the agent is running">
-    <button class="segb" role="radio" aria-checked={whenBusy === "steer"} onclick={() => (whenBusy = "steer")}
-      >Steer</button
+    <button
+      class="segb"
+      role="radio"
+      aria-checked={writing.whenBusy === "steer"}
+      onclick={() => (writing.whenBusy = "steer")}>Steer</button
     >
-    <button class="segb" role="radio" aria-checked={whenBusy === "followUp"} onclick={() => (whenBusy = "followUp")}
-      >Queue</button
+    <button
+      class="segb"
+      role="radio"
+      aria-checked={writing.whenBusy === "followUp"}
+      onclick={() => (writing.whenBusy = "followUp")}>Queue</button
     >
   </div>
 {/snippet}
@@ -753,7 +800,7 @@
     <div class="dockin">
       {#if app.pet.enabled}
         {#await import("./Pet.svelte") then { default: Pet }}
-          <Pet coat={app.pet.coat} running={stream?.running ?? false} active={typing || draft !== ""} />
+          <Pet coat={app.pet.coat} running={stream?.running ?? false} active={typing || writing.text !== ""} />
         {/await}
       {/if}
       {#if !ready}
@@ -824,23 +871,39 @@
         </div>
       {/if}
       {#if error !== undefined}<div class="callout er" role="alert">{error}</div>{/if}
+      {#if writing.pending !== undefined && !writing.sending}
+        <div class="callout wa" role="alert">
+          <span class="grow"
+            >This send isn't confirmed. {writing.error} Retry its saved message and destination before sending another.</span
+          >
+          <button class="b sm" onclick={retrySaved}>Retry saved send</button>
+        </div>
+        <details class="activity">
+          <summary class="acth" title={`Request ${writing.pending.requestId}`}
+            >Saved message · {writing.pending.body.attachments.length} attached<Icon name="chevR" size={13} /></summary
+          >
+          <pre class="out">{writing.pending.body.text}</pre>
+        </details>
+      {:else if writing.error !== undefined}<div class="callout er" role="alert">{writing.error}</div>{/if}
+      {#if writing.notice !== undefined}<div class="callout ac" role="status">{writing.notice}</div>{/if}
       {#if phone && stream?.running}{@render busySwitch()}{/if}
 
       <div class="cbx" class:oneline={phone}>
-        {#if attachments.length > 0 || uploading > 0}
+        {#if writing.attachments.length > 0 || writing.uploading > 0}
           <div class="chips">
-            {#each attachments as attachment (attachment.id)}
+            {#each writing.attachments as attachment (attachment.id)}
               <span class="chip">
                 <Icon name="file" /><span class="ellipsis">{attachment.name}</span>
                 <button
                   class="chipx"
                   aria-label={`Remove ${attachment.name}`}
-                  onclick={() => (attachments = attachments.filter((kept) => kept.id !== attachment.id))}
+                  onclick={() =>
+                    (writing.attachments = writing.attachments.filter((kept) => kept.id !== attachment.id))}
                   ><Icon name="x" size={12} /></button
                 >
               </span>
             {/each}
-            {#if uploading > 0}<span class="chip plain"
+            {#if writing.uploading > 0}<span class="chip plain"
                 ><span class="ring spin" aria-hidden="true"></span>Uploading…</span
               >{/if}
           </div>
@@ -856,12 +919,15 @@
               ? "Steer or queue"
               : "Steer the run or queue a follow-up"
             : "Message Pal"}
-          bind:value={draft}
+          maxlength={MAX_DRAFT_CHARS}
+          disabled={writing.blocked || !writing.active}
+          title="Drafts stay in this tab only. Reloading or signing out clears them."
+          bind:value={writing.text}
           onfocus={() => (typing = true)}
           onblur={() => (typing = false)}
           onkeydown={onKey}></textarea>
         <div class="tools">
-          <AddMenu onFiles={upload} />
+          {#if writing.active && !writing.blocked}<AddMenu onFiles={upload} />{/if}
           {#if !phone}
             {#if workspace?.mode !== "read-only"}<CommandMode mode={stream?.mode} onChoose={chooseMode} />{/if}
             <WorkspaceMode {workspace} {onNewChat} />
@@ -871,7 +937,9 @@
           {/if}
           {#if stream?.running}
             <button class="b p send busy" onclick={send} disabled={!canSend}>
-              <Icon name={whenBusy === "steer" ? "steer" : "send"} />{whenBusy === "steer" ? "Steer" : "Queue"}
+              <Icon name={writing.whenBusy === "steer" ? "steer" : "send"} />{writing.whenBusy === "steer"
+                ? "Steer"
+                : "Queue"}
             </button>
           {:else}
             <button class="b p send" aria-label="Send" title="Send" onclick={send} disabled={!canSend}>
