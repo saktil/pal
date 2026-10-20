@@ -53,6 +53,7 @@
           smoke = pkgs.callPackage ./nix/smoke.nix { inherit pal; };
           inherit tests;
           portable = tests.override { portable = true; };
+          evaluation = pkgs.callPackage ./nix/evaluation.nix { };
         }
         # Chromium's macOS sandbox cannot start inside Nix's darwin build sandbox, and disabling it is not an option.
         // pkgs.lib.optionalAttrs pkgs.stdenv.hostPlatform.isLinux {

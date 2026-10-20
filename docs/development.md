@@ -122,6 +122,31 @@ Browser and release activation currently fail closed without their Linux protect
 replacements pass adversarial tests; do not count unavailable capabilities or skipped tests as completed
 macOS support. Service installation or host security changes require a separately approved host plan.
 
+### Evaluation foundations
+
+The first versioned development task is `checkout-rounding-v1` (`src/evaluation/tasks.ts`). Its repository fixtures
+and independent grader are original Pal test material. The editable public test passes even on the buggy snapshot;
+the protected grader checks unit rounding and multi-line totals independently.
+
+```sh
+nix build .#checks.x86_64-linux.evaluation
+nix build .#checks.aarch64-darwin.evaluation
+```
+
+These are **grading controls, not model evaluations or quality scores**. They run fixed correct, buggy, forged,
+hanging and flooding programs inside the Nix build sandbox. Candidate Node processes have read-only access to their
+frozen snapshot, no child-process/worker/addon permission, a per-case deadline and bounded output. Controls check
+that candidates cannot read or rewrite grader/task files, forge success, or choose the tests. This is not a general
+sandbox for Pal's host shell. Writable artifacts and symlinked source are rejected; snapshots have file/byte/depth
+limits. Reports retain task/version, initial/candidate/grader hashes and immutable paths, native Node/OS identity,
+grading limits and every case outcome, including failures. CI retains bounded control counts on both native targets;
+the protected release evaluator uses its own immutable grading sources, never the candidate's recipes.
+
+The agent/baseline runner, full task corpus, held-out split, model/configuration/budget traces, matched/unmatched
+comparisons, interventions, repeated-run uncertainty and bottleneck report remain required by
+[#26](https://github.com/valdo766hi/pal/issues/26). No comparative model result is established by these controls.
+Live-provider evaluations are owner-run; ordinary checks must not use real accounts or spend provider credit.
+
 ## Project layout
 
 ```

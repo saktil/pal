@@ -1,0 +1,75 @@
+import assert from "node:assert/strict";
+import { spawnSync } from "node:child_process";
+import { mkdir, writeFile } from "node:fs/promises";
+import { join } from "node:path";
+import { fileURLToPath } from "node:url";
+import { grade } from "./grade.ts";
+import { checkout } from "./tasks.ts";
+
+const output = process.argv[2];
+const malformed = process.argv[3];
+if (output === undefined || malformed === undefined) throw new Error("missing control output or malformed fixtures");
+const fixtures = fileURLToPath(new URL("../../test/fixtures/evaluation/", import.meta.url));
+await mkdir(output, { recursive: true });
+let checks = 0;
+for (const name of ["buggy", "fixed"]) {
+  const root = join(fixtures, name);
+  const result = spawnSync(process.execPath, ["--permission", `--allow-fs-read=${root}`, join(root, "test.mjs")], {
+    env: { LANG: "C" },
+    encoding: "utf8",
+    timeout: 2000,
+    killSignal: "SIGKILL",
+    maxBuffer: 16 * 1024,
+  });
+  assert.equal(result.status, 0, `${name} public test: ${result.stderr}`);
+  checks++;
+}
+const reference = await grade(join(fixtures, "fixed"));
+assert.notEqual(reference.task.initial.digest, reference.candidate.digest);
+for (const name of ["buggy", "fixed", "forged", "hang", "flood"]) {
+  const result = name === "fixed" ? reference : await grade(join(fixtures, name));
+  assert.equal(result.passed, name === "fixed", name);
+  assert.equal(result.cases.length, checkout.cases.length);
+  assert.equal(result.task.initial.digest, reference.task.initial.digest);
+  assert.equal(result.grader.digest, reference.grader.digest);
+  if (name === "buggy") assert.equal(result.candidate.digest, result.task.initial.digest);
+  if (name === "forged")
+    for (const test of result.cases)
+      assert.deepEqual(test.output, {
+        passed: true,
+        denied: { readGrader: true, writeGrader: true, writeTask: true, spawn: true, worker: true },
+      });
+  if (name === "hang") assert(result.cases.every((test) => test.failure === "timeout"));
+  if (name === "flood") assert(result.cases.every((test) => test.failure === "output_limit"));
+  await writeFile(join(output, `${name}.json`), `${JSON.stringify(result, null, 2)}\n`);
+  checks++;
+}
+await assert.rejects(grade(output), /frozen Nix-store candidate|writable path/);
+checks++;
+for (const [name, pattern] of [
+  ["symlink", /symlink/],
+  ["bytes", /one MiB/],
+  ["files", /128 regular files/],
+  ["deep", /depth/],
+  ["wide", /too many entries/],
+  ["entries", /entry limit/],
+] as const) {
+  await assert.rejects(grade(join(malformed, name)), pattern);
+  checks++;
+}
+await writeFile(
+  join(output, "summary.json"),
+  `${JSON.stringify(
+    {
+      kind: "grading-controls-not-model-evaluations",
+      numTotalTests: checks,
+      numPassedTests: checks,
+      numFailedTests: 0,
+      numPendingTests: 0,
+      numTodoTests: 0,
+    },
+    null,
+    2,
+  )}\n`,
+);
+process.stdout.write(`Independent grading controls: ${checks}/${checks}; no model evaluation performed.\n`);

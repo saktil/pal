@@ -1,0 +1,30 @@
+{
+  lib,
+  runCommand,
+  nodejs_24,
+}:
+let
+  root = ../.;
+  source = lib.fileset.toSource {
+    inherit root;
+    fileset = lib.fileset.unions [
+      ../src/evaluation
+      ../test/fixtures/evaluation
+    ];
+  };
+  malformed = runCommand "pal-grading-malformed-artifacts" { } ''
+    mkdir -p "$out"/{symlink/src,bytes,files/a,files/b,deep,wide,entries}
+    ln -s ${source}/test/fixtures/evaluation/fixed/src/main.mjs "$out/symlink/src/main.mjs"
+    head -c 1048577 /dev/zero > "$out/bytes/large"
+    for n in $(seq 1 65); do touch "$out/files/a/$n" "$out/files/b/$n"; done
+    path="$out/deep"
+    for n in $(seq 1 9); do path="$path/$n"; mkdir "$path"; done
+    for n in $(seq 1 129); do touch "$out/wide/$n"; done
+    for a in $(seq 1 3); do
+      for b in $(seq 1 95); do mkdir -p "$out/entries/$a/$b"; done
+    done
+  '';
+in
+runCommand "pal-evaluation-controls" { nativeBuildInputs = [ nodejs_24 ]; } ''
+  node ${source}/src/evaluation/controls.ts "$out" ${malformed}
+''
