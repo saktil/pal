@@ -61,6 +61,7 @@ export type PalOptions = {
 
 /** One running installation: the store's single owner and every service built on it. */
 export type Pal = {
+  readonly status: "starting" | "ready" | "closing" | "closed" | "failed";
   readonly store: Store;
   readonly owner: Owner;
   readonly projects: Projects;
@@ -115,6 +116,7 @@ export async function openPal(options: PalOptions, context: Context): Promise<Pa
   const locks = new WorkspaceLocks(async (root) => {
     await changes?.capture(root);
   });
+  let status: Pal["status"] = "starting";
   let harness: Harness | undefined;
   let sandbox: { close(): Promise<void> } | undefined;
   let mcp: McpManager | undefined;
@@ -124,8 +126,9 @@ export async function openPal(options: PalOptions, context: Context): Promise<Pa
   let approvals: CommandApprovals | undefined;
   // The Harness, once open, owns the storage and closes it; scripts stop before their sandbox and connections do.
   let closing: Promise<void> | undefined;
-  const close = () =>
-    (closing ??= (async () => {
+  const close = () => {
+    if (status === "ready" || status === "starting") status = "closing";
+    return (closing ??= (async () => {
       try {
         await workspaces?.close();
         approvals?.close();
@@ -136,6 +139,7 @@ export async function openPal(options: PalOptions, context: Context): Promise<Pa
         await Promise.all([sandbox?.close(), mcp?.close()]);
       }
     })());
+  };
   try {
     const { database } = store;
     const registry = createRegistry();
@@ -277,6 +281,12 @@ export async function openPal(options: PalOptions, context: Context): Promise<Pa
     registry.install(chatContext.extension);
     const running = await Harness.open(store.storage, { models, registry }, context);
     harness = running;
+    running.subscribeClose(() => {
+      status = "closing";
+    });
+    void running.closed.then((end) => {
+      status = end.reason === "failed" ? "failed" : "closed";
+    });
 
     const setting = async (key: string) =>
       (await database.get<{ value: string }>("SELECT value FROM pal_settings WHERE key = ?", key))?.value;
@@ -335,8 +345,13 @@ export async function openPal(options: PalOptions, context: Context): Promise<Pa
       },
       context,
     );
+    if (status !== "starting") throw new Error("durable runtime closed during startup");
+    status = "ready";
     running.resume();
     return {
+      get status() {
+        return status;
+      },
       store,
       owner,
       projects: openedProjects,

@@ -214,7 +214,9 @@ class SignInAttempt {
  * state-changing request must come from Pal's own origin.
  */
 export function createApi(pal: Pal, publicOrigin?: string, releases?: Pick<ReleaseRpc, "call">) {
-  const external = publicOrigin === undefined ? undefined : new URL(publicOrigin);
+  const parsedOrigin = publicOrigin === undefined ? undefined : URL.parse(publicOrigin);
+  if (parsedOrigin === null) throw new Error("invalid public origin");
+  const external = parsedOrigin;
   let attempt: SignInAttempt | undefined;
   let listing: { models: ChatGPTModel[] } | { error: string } | undefined;
 
@@ -839,14 +841,21 @@ export function createApi(pal: Pal, publicOrigin?: string, releases?: Pick<Relea
     });
   }
 
+  const unavailable = new HttpError(
+    503,
+    "runtime_unavailable",
+    "Pal's durable runtime is unavailable. Restart to reconcile committed work.",
+  );
   return async (request: IncomingMessage, response: ServerResponse, url: URL): Promise<void> => {
     try {
+      if (pal.status !== "ready") throw unavailable;
       await route(request, response, url);
     } catch (error) {
-      const [status, code] = classify(error);
-      if (status >= 500) console.error(error);
+      const failure = pal.status === "ready" ? error : unavailable;
+      const [status, code] = classify(failure);
+      if (status >= 500 && failure !== unavailable) console.error(failure);
       if (!response.headersSent) {
-        sendJson(request, response, status, { error: code, message: (error as Error).message });
+        sendJson(request, response, status, { error: code, message: (failure as Error).message });
       } else {
         response.end();
       }

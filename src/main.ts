@@ -66,6 +66,7 @@ async function main(argv: readonly string[]): Promise<number> {
       const supervised = process.env.PAL_SUPERVISED === "1";
       let admitting = !supervised,
         stopping = false,
+        runtimeEnded = false,
         closingServer = false,
         inFlight = 0;
       let pal: Pal | undefined, server: Server | undefined, closed: Promise<unknown> | undefined;
@@ -149,22 +150,27 @@ async function main(argv: readonly string[]): Promise<number> {
         if (stopping) return 0;
         const current = pal,
           api = createApi(current, publicOrigin, rpc);
+        const available = () => admitting && !stopping && current.status === "ready";
+        current.harness.subscribeClose(() => {
+          if (stopping) return;
+          runtimeEnded = true;
+          admitting = false;
+          process.stderr.write("pal: durable runtime stopped; restart to reconcile committed work\n");
+          queueMicrotask(stop);
+        });
         server = await startServer({
           host,
           port,
           version: pkg.version,
           publicOrigin,
           webRoot: existsSync(join(webRoot, "index.html")) ? webRoot : undefined,
-          available: () => admitting && !stopping,
-          health: supervised
-            ? () => ({
-                status: "ok",
-                name: "pal",
-                version: pkg.version,
-                release: current.extensions.release,
-                admitting,
-              })
-            : undefined,
+          available,
+          health: () => ({
+            status: current.status === "ready" && !stopping ? "ok" : "unavailable",
+            name: "pal",
+            version: pkg.version,
+            ...(supervised ? { release: current.extensions.release, admitting: available() } : {}),
+          }),
           api: async (request, response, url) => {
             const counted = !/^\/api\/releases(?:\/|$)/.test(url.pathname);
             if (counted) inFlight++;
@@ -200,9 +206,9 @@ async function main(argv: readonly string[]): Promise<number> {
           if (!stopping) await rpc?.call("online", { port: address.port, release: current.extensions.release }, 5000);
         }
         await closed;
-        return 0;
+        return runtimeEnded ? 1 : 0;
       } catch (error) {
-        if (stopping) return 0;
+        if (stopping) return runtimeEnded ? 1 : 0;
         const { DatabaseOwnedError } = await import("./storage/sqlite.ts");
         if (!(error instanceof DatabaseOwnedError)) throw error;
         process.stderr.write(`pal: ${dataRoot} is in use by another Pal process\n`);
