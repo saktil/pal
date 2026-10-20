@@ -10,6 +10,7 @@ import { createApi } from "../../src/core/api.ts";
 import { openPal } from "../../src/core/app.ts";
 import { startServer } from "../../src/core/server.ts";
 import { GOOD_KEY, startProviderFixture } from "../fixtures/provider-server.ts";
+import { startMcpFixture } from "../fixtures/mcp-server.ts";
 
 let browser: Browser;
 const cleanups: (() => Promise<unknown>)[] = [];
@@ -240,6 +241,80 @@ describe("saved chat settings", () => {
     await expect.poll(() => provider.requests.map((request) => request.path)).toEqual(["/api/v1/chat/completions"]);
     expect(errors).toEqual([]);
   });
+});
+
+describe("MCP catalog consent", () => {
+  it.each([1440, 390])(
+    "keeps a stale tab's selection but requires the changed definitions to be reviewed at %s px",
+    async (width) => {
+      const { pal, page, base, provider, errors } = await setup(width);
+      const fixture = await startMcpFixture();
+      cleanups.push(fixture.close);
+      const server = await pal.mcp.add({
+        name: "Catalog fixture",
+        url: fixture.url,
+        auth: { kind: "none" },
+        private: true,
+      });
+      const a = await pal.mcp.test(server.id);
+      await pal.mcp.approve(server.id, ["fetch"], a.catalog);
+      const tab = await page.context().newPage();
+      tab.on("pageerror", (error) => errors.push(error.message));
+      for (const view of [page, tab]) {
+        await view.goto(`${base}/#/settings/mcp`);
+        await view.getByRole("button", { name: /^Catalog fixture/ }).click();
+        await view.getByRole("checkbox", { name: /^fetch/ }).waitFor();
+      }
+      await page.getByRole("checkbox", { name: /^search/ }).check();
+      const search = fixture.state.tools[0];
+      if (search === undefined) throw new Error("missing fixture tool");
+      search.description = "Search definition B needs scope";
+      search.inputSchema.required = ["query", "scope"];
+      await tab.getByRole("button", { name: "Test connection", exact: true }).click();
+      await tab.getByText(search.description, { exact: true }).waitFor();
+      const approval = page.getByRole("button", { name: "Approve selected tools", exact: true });
+      const [stale] = await Promise.all([
+        page.waitForResponse(`${base}/api/mcp/servers/${server.id}/tools`),
+        approval.click(),
+      ]);
+      expect(stale.status()).toBe(409);
+      await page
+        .getByRole("alert")
+        .filter({ hasText: /catalog.*changed/ })
+        .waitFor();
+      await page.getByText(search.description, { exact: true }).waitFor();
+      expect(await page.getByRole("checkbox", { name: /^search/ }).isChecked()).toBe(true);
+      expect(await page.getByRole("checkbox", { name: /^fetch/ }).isChecked()).toBe(true);
+      expect(await approval.isDisabled()).toBe(true);
+      expect((await pal.mcp.get(server.id)).tools.filter((tool) => tool.approved).map((tool) => tool.name)).toEqual([
+        "fetch",
+      ]);
+      await page.getByText("Previously reviewed catalog and selection", { exact: true }).click();
+      const previous = page
+        .locator("details")
+        .filter({ has: page.getByText("Previously reviewed catalog and selection", { exact: true }) });
+      expect(await previous.innerText()).toContain("Search the fixture web index");
+      expect(await previous.innerText()).not.toContain(search.description);
+      expect(await previous.innerText()).toContain('"selection": [');
+      await page.getByText("Definition: search", { exact: true }).click();
+      const definition = page.locator("details").filter({ has: page.getByText("Definition: search", { exact: true }) });
+      expect(await definition.innerText()).toContain('"scope"');
+      await screenshot(page, `mcp-catalog-conflict-${width}`);
+      await page.getByRole("button", { name: "I reviewed the current catalog", exact: true }).click();
+      const [approved] = await Promise.all([
+        page.waitForResponse(`${base}/api/mcp/servers/${server.id}/tools`),
+        approval.click(),
+      ]);
+      expect(approved.status()).toBe(200);
+      await expect
+        .poll(async () => (await pal.mcp.get(server.id)).tools.find((tool) => tool.name === "search")?.approved)
+        .toBe(true);
+      expect((await pal.mcp.get(server.id)).tools.find((tool) => tool.name === "search")?.changed).toBe(false);
+      expect(fixture.calls).toEqual([]);
+      expect(provider.requests).toEqual([]);
+      expect(errors).toEqual([]);
+    },
+  );
 });
 
 describe("chat code rendering", () => {

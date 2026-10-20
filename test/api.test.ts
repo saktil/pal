@@ -294,7 +294,9 @@ describe("API", () => {
     expect(tested.body.server).toMatchObject({ state: "ready", tools: [{ name: "inspect", approved: false }] });
     expect(await readFile(marker, "utf8")).toBe("start\n");
     expect(JSON.stringify((await api("GET", "mcp")).body)).not.toContain(key);
-    expect((await api("PUT", `${path}/tools`, { tools: ["inspect"] })).status).toBe(200);
+    expect(
+      (await api("PUT", `${path}/tools`, { tools: ["inspect"], catalog: tested.body.server.catalog })).status,
+    ).toBe(200);
     expect((await api("PUT", `${path}/enabled`, { enabled: true })).status).toBe(200);
     const revoked = await api("PUT", `${path}/program`, { ...approval, approved: false });
     expect(revoked.body.server).toMatchObject({ enabled: false, state: "approval_required", tools: [] });
@@ -646,6 +648,71 @@ describe("API", () => {
     expect((await api("GET", "projects")).status).toBe(401);
   });
 
+  it.each(["description", "input", "output", "removed", "added"])(
+    "rejects stale MCP catalog consent after a %s change without altering approvals",
+    async (change) => {
+      const { pal, api } = await signedIn();
+      const fixture = await startMcpFixture();
+      cleanups.push(fixture.close);
+      const { server } = (
+        await api("POST", "mcp/servers", {
+          name: "Reviewed catalog",
+          url: fixture.url,
+          auth: { kind: "none" },
+          private: true,
+        })
+      ).body;
+      const path = `mcp/servers/${server.id}`;
+      const a = (await api("POST", `${path}/test`)).body.server;
+      expect((await api("PUT", `${path}/tools`, { tools: ["fetch"], catalog: a.catalog })).status).toBe(200);
+      const before = await pal.store.database.get("SELECT approved FROM pal_mcp_servers WHERE id = ?", server.id);
+      const search = fixture.state.tools[0];
+      if (search === undefined) throw new Error("missing fixture tool");
+      if (change === "description") search.description = "A changed search definition";
+      if (change === "input") search.inputSchema.required = ["query", "scope"];
+      if (change === "output" && search.outputSchema !== undefined)
+        search.outputSchema.required = ["results", "source"];
+      if (change === "removed") fixture.state.tools = fixture.state.tools.filter((tool) => tool.name !== "search");
+      if (change === "added") fixture.state.tools.push({ ...search, name: "another_search" });
+      const b = (await api("POST", `${path}/test`)).body.server;
+      const stale = await api("PUT", `${path}/tools`, { tools: ["search"], catalog: a.catalog });
+      expect(stale.status).toBe(409);
+      expect(stale.body.message).toMatch(/catalog.*changed/);
+      expect(await pal.store.database.get("SELECT approved FROM pal_mcp_servers WHERE id = ?", server.id)).toEqual(
+        before,
+      );
+      expect(b.catalog).toMatch(/^[a-f0-9]{64}$/);
+      expect(b.catalog).not.toBe(a.catalog);
+      expect((await api("PUT", `${path}/tools`, { tools: ["fetch"], catalog: b.catalog })).status).toBe(200);
+      expect((await api("PUT", `${path}/tools`, { tools: [], catalog: b.catalog })).status).toBe(200);
+      expect((await pal.mcp.get(server.id)).tools.every((tool) => !tool.approved)).toBe(true);
+      expect(fixture.calls).toEqual([]);
+    },
+  );
+
+  it("requires a reviewed MCP catalog and accepts unchanged rediscovery without widening consent", async () => {
+    const { api } = await signedIn();
+    const fixture = await startMcpFixture();
+    cleanups.push(fixture.close);
+    const { server } = (
+      await api("POST", "mcp/servers", {
+        name: "Same catalog",
+        url: fixture.url,
+        auth: { kind: "none" },
+        private: true,
+      })
+    ).body;
+    const path = `mcp/servers/${server.id}`;
+    const a = (await api("POST", `${path}/test`)).body.server;
+    expect((await api("PUT", `${path}/tools`, { tools: ["search"] })).status).toBe(400);
+    fixture.state.tools.reverse();
+    const b = (await api("POST", `${path}/test`)).body.server;
+    expect(b.catalog).toBe(a.catalog);
+    expect((await api("PUT", `${path}/tools`, { tools: ["search"], catalog: a.catalog })).status).toBe(200);
+    expect((await api("PUT", `${path}/tools`, { tools: ["missing"], catalog: a.catalog })).status).toBe(400);
+    expect(fixture.calls).toEqual([]);
+  });
+
   it("keeps MCP discovery and execution scoped to actual durable conversations", async () => {
     const { pal, api, fixture: openai } = await signedIn();
     const started = await api("POST", "chatgpt/sign-in");
@@ -658,7 +725,7 @@ describe("API", () => {
     cleanups.push(fixture.close);
     const server = await pal.mcp.add({ name: "Scoped", url: fixture.url, auth: { kind: "none" }, private: true });
     await pal.mcp.test(server.id);
-    await pal.mcp.approve(server.id, ["search", "fetch"]);
+    await pal.mcp.approve(server.id, ["search", "fetch"], (await pal.mcp.get(server.id)).catalog);
     await pal.mcp.setEnabled(server.id, true);
     const a = (await api("POST", "projects", { requestId: "scoped-project-a", name: "A" })).body.project;
     const b = (await api("POST", "projects", { requestId: "scoped-project-b", name: "B" })).body.project;

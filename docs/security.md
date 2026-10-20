@@ -69,7 +69,9 @@ you do not control.
 - **Network policy.** Remote MCP servers must use HTTPS. Connections to loopback, private, link-local and other
   non-public addresses are refused at connect time, after DNS resolution, unless you opt a server into a private
   endpoint. Redirects are refused, and responses and results are size-limited.
-- **Tool approval.** You approve exact tool definitions. A changed definition is blocked until approved again, and
+- **Tool approval.** You approve exact tool definitions against the displayed catalog digest and connection
+  authority. Stale submissions conflict without changing approvals; the UI keeps the old selection for comparison
+  and requires review of the current definitions. A changed definition is blocked until approved again, and
   disabling a server or revoking a grant stops calls that are already queued or running.
 - **Local MCP programs** are trusted code that runs unsandboxed on the host, like shell commands. Only
   Nix-store executables with exact arguments are accepted, after explicit consent.

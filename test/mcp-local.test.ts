@@ -76,7 +76,7 @@ async function setup(auth: StdioAuth = { kind: "none" }) {
   const enable = async () => {
     await approve();
     await pal.mcp.test(server.id);
-    await pal.mcp.approve(server.id, ["inspect"]);
+    await pal.mcp.approve(server.id, ["inspect"], (await pal.mcp.get(server.id)).catalog);
     return pal.mcp.setEnabled(server.id, true);
   };
   return {
@@ -117,7 +117,7 @@ describe("local MCP owner consent and durable tool policy", () => {
     const tested = await pal.mcp.test(server.id);
     expect(tested).toMatchObject({ state: "ready", tools: [{ name: "inspect", approved: false }] });
     expect(await readFile(marker, "utf8")).toBe("start\n");
-    await pal.mcp.approve(server.id, ["inspect"]);
+    await pal.mcp.approve(server.id, ["inspect"], (await pal.mcp.get(server.id)).catalog);
     await pal.mcp.setEnabled(server.id, true);
     const tool = mcpToolName(server.id, "inspect");
     const agent = await fixture.agent();

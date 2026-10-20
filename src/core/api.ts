@@ -113,6 +113,10 @@ const ToolChoice = Type.Object(
   { tools: Type.Array(Type.String({ maxLength: 200 }), { maxItems: 128 }) },
   { additionalProperties: false },
 );
+const CatalogApproval = Type.Object(
+  { tools: ToolChoice.properties.tools, catalog: Type.String({ pattern: "^[a-f0-9]{64}$" }) },
+  { additionalProperties: false },
+);
 const Review = Type.Object({ enable: Type.Boolean() }, { additionalProperties: false });
 const ReviewScope = Type.Enum(["normal", "include-ignored"]);
 const FileDiscard = Type.Object(
@@ -468,9 +472,8 @@ export function createApi(pal: Pal, publicOrigin?: string, releases?: Pick<Relea
         }
         if (part === "test" && method === "POST") return send(200, { server: await pal.mcp.test(serverId) });
         if (part === "tools" && method === "PUT") {
-          return send(200, {
-            server: await pal.mcp.approve(serverId, validate(ToolChoice, await readJson(request)).tools),
-          });
+          const body = validate(CatalogApproval, await readJson(request));
+          return send(200, { server: await pal.mcp.approve(serverId, body.tools, body.catalog) });
         }
       }
     }

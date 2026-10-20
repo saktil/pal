@@ -382,5 +382,6 @@ export const api = {
   mcpFakeIp: (id: string, enabled: boolean) =>
     call<{ server: McpServer }>("PUT", `mcp/servers/${id}/fake-ip`, { enabled }),
   mcpTest: (id: string) => call<{ server: McpServer }>("POST", `mcp/servers/${id}/test`),
-  mcpTools: (id: string, tools: string[]) => call<{ server: McpServer }>("PUT", `mcp/servers/${id}/tools`, { tools }),
+  mcpTools: (id: string, tools: string[], catalog: string) =>
+    call<{ server: McpServer }>("PUT", `mcp/servers/${id}/tools`, { tools, catalog }),
 };
