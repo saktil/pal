@@ -83,6 +83,9 @@ The server prints a one-time setup link. Open it, choose an owner passphrase, th
 sign-in, an API key, or an OpenAI-compatible endpoint. Arguments after `pnpm start` go to the server, for example
 `pnpm start --port 8080 --data-dir /srv/pal`. Run `pnpm serve` to start an existing build without rebuilding.
 
+Stop Pal before changing its runtime or dependencies. Unfinished work needs the same implementation bytes;
+keep an intact build for recovery. See [source-installation resume safety](docs/development.md#mutable-installations-and-resume-safety).
+
 Platform notes:
 
 - **macOS:** agent shell commands and Git-backed features (Changes, Worktree chats) need GNU `timeout`.

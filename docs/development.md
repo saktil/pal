@@ -31,6 +31,26 @@ libraries. direnv users can rely on `.envrc`.
 `pnpm dev` uses your default data directory. Its UI proxy forwards plain HTTP only, so the Terminal and Browser
 panels, which use WebSockets, need the built app (`pnpm start`).
 
+## Mutable installations and resume safety
+
+Nix packages keep their immutable store-output identity. Source and other non-Nix installations instead
+snapshot the actual `src/` and `dist/` bytes, package/lock manifests, installed production/optional/peer
+dependency graph, and Node runtime/flags at startup. Dependency versions alone are not enough: edited
+installed files change the pin. Missing, linked, special or over-limit runtime files fail closed.
+The snapshot is bounded to 256 packages, 20,000 directory entries/files, 256 MiB total and 128 MiB per file.
+
+**Stop Pal before editing, rebuilding or reinstalling its runtime, and keep it unchanged while running.**
+This startup snapshot is not an atomic filesystem snapshot, sandbox or custom-loader/monkeypatch guarantee.
+Keep data, projects and credentials outside the installation; Pal never includes its private data in the
+digest. It does not freeze external programs, OS state, MCP services or their effects.
+
+Pal persists the pin before admitting work and checks it before starting unfinished tasks. A changed or
+unverifiable installation cannot resume them: use the intact retained build and dependencies instead.
+There is no unsafe override. Finish/reconcile unfinished work before updating; do not edit database pins
+or discard work to bypass the check. Older source installations used an unverifiable `development` label:
+finish their work with the original installation before upgrading, since its original bytes cannot be
+reconstructed from that label.
+
 ## Tests
 
 Tests use real temporary SQLite databases, Git repositories and folders, with loopback fixture services standing

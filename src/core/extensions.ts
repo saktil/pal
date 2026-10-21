@@ -121,11 +121,13 @@ export function selectedExtensions(scope: string | undefined): ExtensionScope["s
   return validate(Scope, value).selected;
 }
 
-/** The immutable Nix output pins implementation bytes; nonpackaged development cannot activate releases. */
-export async function releaseIdentity(installRoot: string): Promise<string> {
+/** Pin immutable outputs directly; verify mutable runtime bytes before any unfinished work can resume. */
+export async function releaseIdentity(installRoot: string, dataRoot?: string): Promise<string> {
   const root = await realpath(installRoot).catch(() => installRoot);
   const output = /^\/nix\/store\/[a-z0-9]{32}-[^/]+/.exec(root)?.[0];
-  return output === undefined ? "development" : createHash("sha256").update(output).digest("hex");
+  if (output !== undefined) return createHash("sha256").update(output).digest("hex");
+  const { mutableIdentity } = await import("./implementation.ts");
+  return mutableIdentity(root, dataRoot);
 }
 
 export class BuiltinExtensions {

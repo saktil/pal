@@ -124,7 +124,12 @@ describe("trusted host commands", () => {
     const dataRoot = join(root, "data");
     const child = spawn(
       process.execPath,
-      [join(import.meta.dirname, "fixtures/execution-child.ts"), dataRoot, JSON.stringify(fixture.endpoints)],
+      [
+        ...process.execArgv,
+        join(import.meta.dirname, "fixtures/execution-child.ts"),
+        dataRoot,
+        JSON.stringify(fixture.endpoints),
+      ],
       { stdio: ["ignore", "pipe", "inherit"] },
     );
     cleanups.push(async () => {

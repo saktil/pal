@@ -129,7 +129,7 @@ describe("immutable per-chat workspaces", () => {
       context,
     );
     const workspace = await pal.workspaces.provision(chat.id);
-    expect(workspace).toMatchObject({
+    expect(workspace, JSON.stringify(workspace)).toMatchObject({
       mode: "worktree",
       state: "ready",
       root: join(dataRoot, "worktrees", workspace.id),
@@ -473,7 +473,7 @@ describe("immutable per-chat workspaces", () => {
       await fixture.pal.close();
       const child = spawn(
         process.execPath,
-        [new URL("./fixtures/workspace-child.ts", import.meta.url).pathname, fixture.root, phase],
+        [...process.execArgv, new URL("./fixtures/workspace-child.ts", import.meta.url).pathname, fixture.root, phase],
         { stdio: ["ignore", "pipe", "pipe"] },
       );
       cleanups.push(async () => {

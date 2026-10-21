@@ -339,7 +339,11 @@ describe("API", () => {
     const created = await api("POST", "chats", body);
     expect(created.status).toBe(200);
     const chat = created.body.chat;
-    expect(chat.workspace).toMatchObject({ mode: "worktree", state: "ready", source: project.root });
+    expect(chat.workspace, JSON.stringify(chat.workspace)).toMatchObject({
+      mode: "worktree",
+      state: "ready",
+      source: project.root,
+    });
     expect(chat.workspace.root).not.toBe(project.root);
     expect((await api("POST", "chats", body)).body.chat).toEqual(chat);
     expect((await api("POST", "chats", { ...body, workspace: "local" })).status).toBe(409);

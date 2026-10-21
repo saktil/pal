@@ -2599,7 +2599,7 @@ describe("Pal in a browser", () => {
       await pins.getByText("files@1", { exact: true }).waitFor();
       expect(await pins.getByText("shell@1", { exact: true }).count()).toBe(0);
       await pins.getByText("Recent native request pins", { exact: true }).click();
-      await pins.getByText(/Task \d+ · development/).waitFor();
+      await pins.getByText(new RegExp(`Task \\d+ · ${before.release}`)).waitFor();
       await shoot("extension-pins-1440");
     } finally {
       const current = await pal.extensions.view();

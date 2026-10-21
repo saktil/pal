@@ -152,7 +152,7 @@ export async function openPal(options: PalOptions, context: Context): Promise<Pa
         if (harness === undefined) throw new Error("the harness is not open");
         return harness;
       },
-      await releaseIdentity(options.installRoot),
+      await releaseIdentity(options.installRoot, options.dataRoot),
     );
     const credentials = new SqliteCredentialStore(
       database,

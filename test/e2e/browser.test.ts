@@ -384,7 +384,7 @@ describe("agent browser", () => {
     const path = `/external-effect/crash-${Date.now()}`;
     const child = spawn(
       process.execPath,
-      [join(import.meta.dirname, "../fixtures/browser-child.ts"), dataRoot, String(site), path],
+      [...process.execArgv, join(import.meta.dirname, "../fixtures/browser-child.ts"), dataRoot, String(site), path],
       {
         stdio: ["ignore", "pipe", "inherit"],
       },

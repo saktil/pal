@@ -240,7 +240,12 @@ describe("local MCP owner consent and durable tool policy", () => {
     cleanups.push(fixture.close);
     const child = spawn(
       process.execPath,
-      [join(import.meta.dirname, "fixtures/mcp-local-child.ts"), root, JSON.stringify(fixture.endpoints)],
+      [
+        ...process.execArgv,
+        join(import.meta.dirname, "fixtures/mcp-local-child.ts"),
+        root,
+        JSON.stringify(fixture.endpoints),
+      ],
       { stdio: ["ignore", "pipe", "inherit", "ipc"] },
     );
     cleanups.push(async () => {
